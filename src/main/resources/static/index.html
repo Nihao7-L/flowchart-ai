@@ -1,6 +1,325 @@
-<html>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlowAI - AI 流程图生成器</title>
+    <style>
+        /* ===== 全局样式 ===== */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: linear-gradient(135deg, #f0f4ff 0%, #e8edf5 100%);
+            min-height: 100vh;
+        }
+
+        /* ===== 顶部导航栏 ===== */
+        .header {
+            background: white;
+            border-bottom: 1px solid #e0e6ed;
+            padding: 16px 32px;
+        }
+        .header-inner {
+            max-width: 900px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .logo {
+            font-size: 22px;
+            font-weight: 700;
+            color: #4a6cf7;
+            letter-spacing: -0.5px;
+        }
+        .logo span { color: #333; font-weight: 400; }
+
+        /* ===== 主体容器 ===== */
+        .container {
+            max-width: 900px;
+            margin: 32px auto;
+            padding: 0 16px;
+        }
+
+        /* ===== 输入卡片 ===== */
+        .input-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .input-card p {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 12px;
+        }
+
+        /* ===== 文本输入框 ===== */
+        textarea {
+            width: 100%;
+            height: 100px;
+            padding: 14px 16px;
+            font-size: 14px;
+            font-family: inherit;
+            border: 2px solid #e8ecf1;
+            border-radius: 10px;
+            resize: vertical;
+            transition: border-color 0.2s;
+            outline: none;
+            line-height: 1.6;
+        }
+        textarea:focus {
+            border-color: #4a6cf7;
+        }
+        textarea::placeholder {
+            color: #bbb;
+        }
+
+        /* ===== 快捷示例 ===== */
+        .examples {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        .example-tag {
+            font-size: 12px;
+            padding: 5px 12px;
+            border-radius: 16px;
+            border: 1px solid #dce3ed;
+            background: #f8fafc;
+            color: #555;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .example-tag:hover {
+            border-color: #4a6cf7;
+            color: #4a6cf7;
+            background: #f0f4ff;
+        }
+
+        /* ===== 按钮区 ===== */
+        .btn-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 16px;
+        }
+        .btn-generate {
+            padding: 10px 28px;
+            font-size: 15px;
+            font-family: inherit;
+            background: #4a6cf7;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+            font-weight: 500;
+        }
+        .btn-generate:hover { background: #3b5de7; }
+        .btn-generate:active { transform: scale(0.97); }
+        /* loading 态：按钮禁用 + 灰色 */
+        .btn-generate:disabled {
+            background: #a0b4f7;
+            cursor: not-allowed;
+        }
+
+        /* ===== 输出区域（流程图展示） ===== */
+        .output-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: auto;
+            padding: 24px;
+        }
+        /* 空状态占位 */
+        .empty-state {
+            text-align: center;
+            color: #bbb;
+        }
+        .empty-state .icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+        .empty-state p {
+            font-size: 14px;
+        }
+
+        /* ===== 错误提示 ===== */
+        .error-msg {
+            color: #e74c3c;
+            font-size: 14px;
+            text-align: center;
+            padding: 20px;
+        }
+    </style>
+</head>
 <body>
-<h1>hello word!!!</h1>
-<p>this is a html page</p>
+
+<!-- 顶部 -->
+<div class="header">
+    <div class="header-inner">
+        <div class="logo">FlowAI <span>| 流程图生成器</span></div>
+    </div>
+</div>
+
+<!-- 主体 -->
+<div class="container">
+
+    <!-- 输入区域 -->
+    <div class="input-card">
+        <p>✍️ 用自然语言描述你的业务流程，AI 自动生成流程图</p>
+        <textarea id="textInput"
+            placeholder="例如：用户输入账号密码 → 系统验证 → 验证通过进入首页，验证失败提示错误"></textarea>
+
+        <!-- 快捷填入示例 -->
+        <div class="examples">
+            <span class="example-tag" onclick="fillExample('登录')">🔐 登录流程</span>
+            <span class="example-tag" onclick="fillExample('审批')">📋 审批流程</span>
+            <span class="example-tag" onclick="fillExample('订单')">🛒 订单流程</span>
+        </div>
+
+        <div class="btn-row">
+            <button class="btn-generate" id="genBtn" onclick="generate()">⚡ 生成流程图</button>
+            <button class="btn-generate" id="downloadBtn" onclick="downloadSvg()" style="display:none; background:#27ae60;">⬇️ 下载 SVG</button>
+        </div>
+    </div>
+
+    <!-- 输出区域 -->
+    <div class="output-card" id="outputCard">
+        <div class="empty-state" id="emptyState">
+            <div class="icon">📊</div>
+            <p>输入描述后点击"生成流程图"</p>
+        </div>
+        <div id="svgDisplay" style="display:none; width:100%;"></div>
+        <div class="error-msg" id="errorMsg" style="display:none;"></div>
+    </div>
+
+</div>
+
+<script>
+    /* ===== 快捷填入示例 ===== */
+    function fillExample(type) {
+        const examples = {
+            '登录': '用户输入账号密码 → 系统验证 → 验证通过则进入首页，验证失败则提示错误并重新输入',
+            '审批': '员工提交请假申请 → 主管审批 → 审批通过则通知员工并记录，审批驳回则通知员工修改重新提交',
+            '订单': '用户下单 → 系统生成订单 → 用户支付 → 商家发货 → 用户确认收货 → 订单完成'
+        };
+        document.getElementById('textInput').value = examples[type] || '';
+    }
+
+    /* ===== 核心：发起生成请求 ===== */
+    async function generate() {
+        // 获取页面元素引用
+        const btn = document.getElementById('genBtn');
+        const emptyState = document.getElementById('emptyState');
+        const svgDisplay = document.getElementById('svgDisplay');
+        const errorMsg = document.getElementById('errorMsg');
+        const downloadBtn = document.getElementById('downloadBtn');
+
+        // 开始生成时隐藏
+        downloadBtn.style.display = 'none';
+        const text = document.getElementById('textInput').value.trim();
+
+        if (!text) {
+            errorMsg.textContent = '请输入流程描述';
+            errorMsg.style.display = 'block';
+            return;
+        }
+
+        // ===== 边界2：太长拦截 =====
+        if (text.length > 2000) {
+            errorMsg.textContent = '输入内容过长，请精简到 2000 字以内';
+            errorMsg.style.display = 'block';
+            return;
+        }
+
+        // --- 进入 loading 状态：隐藏旧内容，禁用按钮 ---
+        emptyState.style.display = 'none';
+        svgDisplay.style.display = 'none';
+        errorMsg.style.display = 'none';
+        btn.disabled = true;
+        btn.textContent = '⏳ 生成中...';
+
+        // 创建 AbortController：30 秒超时自动取消请求
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+        try {
+            const res = await fetch('/api/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text }),
+                signal: controller.signal  // ← 关联 AbortController
+            });
+            clearTimeout(timeoutId);  // 请求完成，清除定时器
+            const result = await res.json();
+
+
+                if (result.code === 200) {
+                    // ===== 成功 =====
+                    const data = result.data;
+                    console.log('✅ 返回数据:', data);
+
+                    // 渲染 SVG（后端返回的 data.svg 是完整的 <svg>...</svg> 字符串）
+                    svgDisplay.innerHTML = data.svg;
+                    svgDisplay.style.display = 'block';
+                    downloadBtn.style.display = 'inline-block';
+
+                } else {
+                // ===== 失败 =====
+                errorMsg.textContent = result.message;
+                errorMsg.style.display = 'block';
+            }
+
+        } catch (err) {
+            console.error('❌ 请求失败:', err);
+            if (err.name === 'AbortError') {
+                errorMsg.textContent = '请求超时（30秒），请检查网络或代理是否正常';
+            }else {
+                errorMsg.textContent = '生成失败: ' + err.message;
+            }
+            errorMsg.style.display = 'block';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '⚡ 生成流程图';
+        }
+    }
+    /* ===== 下载 SVG ===== */
+    function downloadSvg() {
+        const svg = document.getElementById('svgDisplay').querySelector('svg');
+        if (!svg) return;
+
+        // 把 SVG 转成 Blob
+        const svgData = new XMLSerializer().serializeToString(svg);
+        const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+
+        // 创建临时 <a> 标签触发下载
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'flowchart.svg';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // 释放 URL 对象
+        URL.revokeObjectURL(url);
+    }
+
+
+    /* ===== 支持 Ctrl+Enter 快捷发送 ===== */
+    document.getElementById('textInput').addEventListener('keydown', function(e) {
+        if (e.ctrlKey && e.key === 'Enter') {
+            generate();
+        }
+    });
+</script>
 </body>
 </html>

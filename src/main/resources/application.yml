@@ -1,2 +1,7 @@
 server:
   port: 8080
+
+llm:
+  base-url: https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent
+  api-key: ${LLM_API_KEY}
+  temperature: 1
