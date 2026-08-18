@@ -36,3 +36,11 @@ build/
 # 项目自定义
 *.log
 application-local.yml
+
+# 环境变量文件（含密钥，禁止提交到 git）
+.env
+.env.*
+!.env.example
+
+# WorkBuddy 项目记忆数据（非源码，禁止提交）
+.workbuddy/

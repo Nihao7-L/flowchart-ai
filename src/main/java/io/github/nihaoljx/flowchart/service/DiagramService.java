@@ -1,6 +1,7 @@
 package io.github.nihaoljx.flowchart.service;
 
 import io.github.nihaoljx.flowchart.model.FlowchartData;
+import io.github.nihaoljx.flowchart.model.MindmapData;
 import net.sourceforge.plantuml.FileFormat;
 import net.sourceforge.plantuml.FileFormatOption;
 import net.sourceforge.plantuml.SourceStringReader;
@@ -31,10 +32,98 @@ public class DiagramService {
         return os.toString("UTF-8");
     }
     /**
+     * 思维导图数据 → PlantUML 语法（入口方法）
+     *
+     * 思维导图的语法就是"缩进即层级"：
+     * @startmindmap
+     * * 根节点
+     * ** 子节点1
+     * *** 孙节点
+     * ** 子节点2
+     * @endmindmap
+     *
+     * 星号越多层级越深，和 JSON 的嵌套深度一一对应。
+     * 这就是为什么 MindmapData 用递归结构——转换就是无脑递归，
+     * 不需要像流程图那样建 nodeMap/edgeMap 查表。
+     */
+    public String buildMindMap(MindmapData data) {
+        StringBuilder sb = new StringBuilder("@startmindmap\n");
+        // 根节点层级是 1，从根开始递归
+        appendMindMapNode(sb, data, 1);
+        sb.append("@endmindmap\n");
+        return sb.toString();
+    }
+
+    /**
+     * 递归拼思维导图节点（和 flowMap 的 traverse 对比着看）
+     *
+     * 两者都是递归，区别只在"递归出口"和"每层做什么"：
+     * - traverse：出口 = end 节点 / 已访问节点；每层查表找下一节点
+     * - appendMindMapNode：出口 = children 为空；每层遍历子节点列表
+     *
+     * @param sb    输出缓冲
+     * @param node  当前节点
+     * @param level 当前层级（根 = 1，每深入一层 +1）
+     */
+    private void appendMindMapNode(StringBuilder sb, MindmapData node, int level) {
+        // 一个 * 表示一级：level=1 是 "*"，level=2 是 "**"，依此类推
+        sb.append("*".repeat(level)).append(" ").append(node.getLabel()).append("\n");
+
+        // 递归出口：children 为空 → for 循环一次都不执行，自然结束
+        for (MindmapData child : node.getChildren()) {
+            appendMindMapNode(sb, child, level + 1);
+        }
+    }
+
+    /**
+     * 架构图数据 → PlantUML 语法
+     *
+     * 架构图用 PlantUML 的【组件图】语法：
+     * - 组件用方括号 [名字] 表示
+     * - 依赖关系用 --> 表示
+     * - 冒号后是连接说明
+     *
+     * 示例：
+     * @startuml
+     * [Web前端] --> [订单服务] : HTTP
+     * [订单服务] --> [MySQL数据库] : SQL
+     * @enduml
+     *
+     * 注意：架构图复用 FlowchartData 类（nodes + edges 天然适合表达组件依赖），
+     *       但只关心 label 和 from/to，不关心节点的 type。
+     */
+    public String buildArchitecture(FlowchartData data) {
+        // 建 nodeMap：id → Node，方便根据边里的 from/to 查组件名
+        Map<String, FlowchartData.Node> nodeMap = new HashMap<>();
+        for (FlowchartData.Node node : data.getNodes()) {
+            nodeMap.put(node.getId(), node);
+        }
+
+        StringBuilder sb = new StringBuilder("@startuml\n");
+
+        // 遍历每条边，输出一条依赖关系
+        for (FlowchartData.Edge edge : data.getEdges()) {
+            FlowchartData.Node from = nodeMap.get(edge.getFrom());
+            FlowchartData.Node to = nodeMap.get(edge.getTo());
+            if (from == null || to == null) {
+                continue;  // 防御：边引用了不存在的节点，跳过（ParserService 已校验过，这里只是双保险）
+            }
+            sb.append("[").append(from.getLabel()).append("] --> [").append(to.getLabel()).append("]");
+            // 边有 label（如 HTTP、依赖）就加上，没有就不加
+            if (edge.getLabel() != null && !edge.getLabel().isBlank()) {
+                sb.append(" : ").append(edge.getLabel());
+            }
+            sb.append("\n");
+        }
+
+        sb.append("@enduml\n");
+        return sb.toString();
+    }
+
+    /**
      * JSON 数据 → PlantUML 语法（入口方法）
      */
-    public String buildPlantUml(FlowchartData data) {
-        // ① 建 nodeMap：id → Node
+    public String buildPlantUml(FlowchartData data) {        // ① 建 nodeMap：id → Node
         Map<String, FlowchartData.Node> nodeMap = new HashMap<>();
         for (FlowchartData.Node node : data.getNodes()) {
             nodeMap.put(node.getId(), node);
@@ -78,10 +167,16 @@ public class DiagramService {
                           StringBuilder sb,
                           Set<String> visited) {
 
+        // ===== end 节点：终点，多条分支汇聚到 end 是正常的，不走 visited 检查 =====
+        if ("end".equals(node.getType())) {
+            sb.append("stop\n");
+            return;
+        }
+
         // ===== 防死循环：已经访问过的节点直接跳过 =====
         if (visited.contains(node.getId())) {
             sb.append("note right: [循环回到 ").append(node.getLabel()).append("]\n");
-            sb.append("stop\n");  // ← 显式结束这条分支，避免悬空线
+            sb.append("stop\n");
             return;
         }
         visited.add(node.getId());
@@ -94,11 +189,6 @@ public class DiagramService {
                 sb.append("start\n");
                 sb.append(":").append(node.getLabel()).append(";\n");
                 break;
-
-            case "end":
-                // end 节点：写 stop，然后直接返回（没有出边）
-                sb.append("stop\n");
-                return;
 
             case "process":
                 // process 节点：写标签
@@ -138,7 +228,6 @@ public class DiagramService {
                 // decision 的两条分支都处理完了，不需要再往后走
                 return;
         }
-
         // ===== 非 decision、非 end 节点：顺着唯一出边继续 =====
         List<FlowchartData.Edge> edges = edgeMap.get(node.getId());
         if (edges != null && !edges.isEmpty()) {
@@ -146,5 +235,24 @@ public class DiagramService {
             traverse(nextNode, nodeMap, edgeMap, sb, visited);
         }
     }
+    /**
+     * PlantUML 源码 → PNG 字节数组
+     *
+     * 和 renderToSvg 的区别：
+     * - SVG 是文本（XML 字符串），用 String 返回
+     * - PNG 是二进制图片，用 byte[] 返回
+     * - 前端拿到后需要转成 base64 才能放进 JSON 传输
+     */
+    public byte[] renderToPng(String plantUmlCode) throws IOException {
+        SourceStringReader reader = new SourceStringReader(plantUmlCode);
+
+        ByteArrayOutputStream os = new ByteArrayOutputStream();
+
+        // 唯一区别：FileFormat.SVG → FileFormat.PNG
+        reader.outputImage(os, new FileFormatOption(FileFormat.PNG));
+
+        return os.toByteArray();
+    }
+
 
 }

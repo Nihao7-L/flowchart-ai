@@ -2,9 +2,9 @@ package io.github.nihaoljx.flowchart.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.nihaoljx.flowchart.model.FlowchartData;
+import io.github.nihaoljx.flowchart.model.MindmapData;
 import org.springframework.stereotype.Service;
 
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -12,9 +12,11 @@ import java.util.stream.Collectors;
  * JSON 解析服务
  *
  * 职责：
- * 1. 从 Gemini 返回的原始 JSON 中提取文本内容
- * 2. 把文本转成 FlowchartData 对象
- * 3. 校验数据合法性（必须有 start/end、decision 必须有两条出边等）
+ * 1. 把 LLM 返回的纯文本转成 FlowchartData 对象
+ * 2. 校验数据合法性（必须有 start/end、decision 必须有两条出边等）
+ *
+ * 注意：本类不关心 LLM 是哪家（Kimi/DeepSeek/...），
+ *       LlmProvider 已经把原始响应提取成纯文本了。
  */
 @Service
 public class ParserService {
@@ -23,65 +25,77 @@ public class ParserService {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
-     * 完整流程：原始 Gemini 响应 → FlowchartData 对象
+     * LLM 返回的纯文本 → FlowchartData 对象
      *
-     * @param rawResponse Gemini API 返回的原始 JSON 字符串
+     * @param llmText LLM 返回的纯文本（JSON 格式的流程图数据）
      * @return 解析并校验后的流程图数据
      * @throws Exception 解析失败或校验不通过
      */
-    public FlowchartData parse(String rawResponse) throws Exception {
-        // 步骤 1：从 Gemini 的嵌套 JSON 里抽出真正的文本
-        String text = extractText(rawResponse);
+    public FlowchartData parse(String llmText) throws Exception {
+        // 文本 → FlowchartData 对象
+        FlowchartData data = objectMapper.readValue(llmText, FlowchartData.class);
 
-        // 步骤 2：文本 → FlowchartData 对象
-        FlowchartData data = objectMapper.readValue(text, FlowchartData.class);
-
-        // 步骤 3：数据合法性校验
+        // 数据合法性校验
         validate(data);
 
         return data;
     }
 
+
     /**
-     * 从 Gemini 响应中提取文本内容
+     * LLM 返回的纯文本 → MindmapData 对象（思维导图）
      *
-     * Gemini 返回格式（一大坨嵌套 JSON）：
-     * {
-     *   "candidates": [{
-     *     "content": {
-     *       "parts": [{ "text": "{"title":"...","nodes":[...]}" }]
-     *     }
-     *   }]
-     * }
+     * 为什么和 parse() 分开？因为两种数据结构完全不同：
+     * - parse() 处理平铺结构（nodes + edges），校验严格（start/end/decision）
+     * - parseMindmap() 处理嵌套结构（递归 children），校验很轻
+     * 校验规则跟着数据结构走，两个方法并存、互不影响。
      *
-     * 这个方法用 Jackson 正经解析，不再手动 indexOf 截字符串了
+     * @param llmText LLM 返回的纯文本（JSON 格式的思维导图数据）
+     * @return 解析后的思维导图数据
      */
-    private String extractText(String rawResponse) throws Exception {
-        // 先把原始 JSON 解析成一棵树（Map 结构），不用定义类
-        Map<String, Object> root = objectMapper.readValue(rawResponse, Map.class);
+    public MindmapData parseMindmap(String llmText) throws Exception {
+        MindmapData data = objectMapper.readValue(llmText, MindmapData.class);
 
-        // 往下钻：candidates → [0] → content → parts → [0] → text
-        java.util.List<Map<String, Object>> candidates =
-                (java.util.List<Map<String, Object>>) root.get("candidates");
+        // 轻校验：树结构不可能有循环、不可能有悬空引用，只需要根节点有字
+        if (data.getLabel() == null || data.getLabel().isBlank()) {
+            throw new Exception("校验失败：思维导图缺少根节点 label");
+        }
+        return data;
+    }
 
-        if (candidates == null || candidates.isEmpty()) {
-            throw new Exception("Gemini 返回中没有 candidates 字段");
+    /**
+     * LLM 返回的纯文本 → FlowchartData 对象（架构图）
+     *
+     * 架构图复用 FlowchartData 类（nodes + edges 表达组件依赖），
+     * 但校验必须放宽——架构图没有 start/end/decision，
+     * 不能走 parse() 的严格校验（那会要求恰好一个 start 一个 end）。
+     *
+     * @param llmText LLM 返回的纯文本（JSON 格式的架构图数据）
+     * @return 解析后的架构图数据
+     */
+    public FlowchartData parseArchitecture(String llmText) throws Exception {
+        FlowchartData data = objectMapper.readValue(llmText, FlowchartData.class);
+
+        // 轻校验：节点和边必须非空，边的引用必须存在
+        if (data.getNodes() == null || data.getNodes().isEmpty()) {
+            throw new Exception("校验失败：架构图组件列表为空");
+        }
+        if (data.getEdges() == null || data.getEdges().isEmpty()) {
+            throw new Exception("校验失败：架构图依赖列表为空");
         }
 
-        Map<String, Object> content = (Map<String, Object>) candidates.get(0).get("content");
-        java.util.List<Map<String, Object>> parts =
-                (java.util.List<Map<String, Object>>) content.get("parts");
-
-        if (parts == null || parts.isEmpty()) {
-            throw new Exception("Gemini 返回中没有 parts 字段");
+        Set<String> nodeIds = data.getNodes().stream()
+                .map(FlowchartData.Node::getId)
+                .collect(Collectors.toSet());
+        for (FlowchartData.Edge edge : data.getEdges()) {
+            if (!nodeIds.contains(edge.getFrom())) {
+                throw new Exception("校验失败：边引用了不存在的组件 ID: " + edge.getFrom());
+            }
+            if (!nodeIds.contains(edge.getTo())) {
+                throw new Exception("校验失败：边引用了不存在的组件 ID: " + edge.getTo());
+            }
         }
-
-        Object textObj = parts.get(0).get("text");
-        if (textObj == null) {
-            throw new Exception("Gemini 返回的 text 字段为空");
-        }
-
-        return textObj.toString();
+        return data;
     }
 
     /**

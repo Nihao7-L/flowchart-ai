@@ -1,0 +1,16 @@
+# ===== Docker Compose：一条命令启动完整服务 =====
+#
+# 使用方式：
+#   1. 设置环境变量：set LLM_API_KEY=你的Kimi_API_Key
+#   2. 启动：docker compose up --build
+#   3. 停止：docker compose down
+#   4. 后台运行：docker compose up -d --build
+
+services:
+  flowai:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY}
+    restart: unless-stopped

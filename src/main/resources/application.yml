@@ -2,6 +2,18 @@ server:
   port: 8080
 
 llm:
-  base-url: https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent
-  api-key: ${LLM_API_KEY}
+  provider: openai
+  base-url: https://api.moonshot.cn/v1/chat/completions
+  api-key: ${LLM_API_KEY:}                 # ✅ 从环境变量读取，没配时 isConfigured() 返回 false，前端提示 503
+#  api-key: sk-xxxx                          # ❌ 切勿在此填写真实 Key（会随 git 泄露）
+  model: kimi-k2.7-code-highspeed               # 模型名以 platform.moonshot.cn 控制台显示的为准
   temperature: 1
+
+
+  proxy:
+    enabled: false               # Kimi 国内直连，不需要代理了
+    host: 127.0.0.1
+    port: 7890
+
+
+  llm.timeout-seconds: 60

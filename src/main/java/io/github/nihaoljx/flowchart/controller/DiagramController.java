@@ -1,90 +1,134 @@
 package io.github.nihaoljx.flowchart.controller;
 
-import io.github.nihaoljx.flowchart.client.AiApiClient;
+import io.github.nihaoljx.flowchart.client.LlmProvider;
+import io.github.nihaoljx.flowchart.model.DownloadRequest;
+import io.github.nihaoljx.flowchart.model.GenerateRequest;
 import io.github.nihaoljx.flowchart.model.FlowchartData;
+import io.github.nihaoljx.flowchart.model.MindmapData;
 import io.github.nihaoljx.flowchart.model.Result;
 import io.github.nihaoljx.flowchart.service.DiagramService;
 import io.github.nihaoljx.flowchart.service.ParserService;
 import io.github.nihaoljx.flowchart.service.PromptService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 流程图相关接口
- *
- * /api/health  → 健康检查
- * /api/generate → 核心：文字 → 流程图数据
+ * 图表相关接口
  */
+@Tag(name = "图表接口", description = "文字 → 流程图 / 思维导图 / 架构图 的生成与下载")
 @RestController
 public class DiagramController {
 
-    // Spring 自动注入（@Autowired 告诉 Spring 帮我找这些 Bean 塞进来）
     @Autowired private PromptService promptService;
-    @Autowired private AiApiClient aiApiClient;
+    @Autowired private LlmProvider llmProvider;
     @Autowired private ParserService parserService;
-    @Autowired private DiagramService diagramService;  // ← 新增
+    @Autowired private DiagramService diagramService;
 
-
-    /**
-     * 健康检查接口
-     * GET /api/health
-     */
+    @Operation(summary = "健康检查", description = "返回服务是否正常，常用于容器探活")
     @GetMapping("/api/health")
     public Result<Void> health() {
-        return Result.success();  // 返回 {"code":200,"message":"ok","data":null}
+        return Result.success();
     }
 
-    /**
-     * 核心接口：接收用户文字，返回流程图数据
-     *
-     * 请求体 JSON：
-     * { "text": "用户输入账号密码 → 系统验证 → 成功进入首页，失败提示错误" }
-     *
-     * 响应 JSON：
-     * { "success": true, "data": { "title": "...", "nodes": [...], "edges": [...] } }
-     * 或
-     * { "success": false, "error": "错误原因" }
-     *
-     * @param body 请求体，用 Map 接收（简单场景不想建专门的请求类）
-     * @return 流程图数据 或 错误信息
-     */
+    @Operation(summary = "生成图表", description = "传入文字描述 + 图表类型，调用 LLM 生成图表数据、SVG 与 PlantUML 源码")
     @PostMapping("/api/generate")
-    public Result<Map<String, Object>> generate(@RequestBody Map<String, String> body) {
+    public Result<Map<String, Object>> generate(@RequestBody GenerateRequest req) {
         try {
-            String userText = body.get("text");
+            String userText = req.text();
+            // record 字段可能为 null（前端没传），这里给默认值
+            String type = req.type() != null ? req.type() : "flowchart";
+            String format = req.format() != null ? req.format() : "svg";
+
+            if (!llmProvider.isConfigured()) {
+                return Result.error(503, "服务未配置：请联系管理员设置 LLM_API_KEY");
+            }
             if (userText == null || userText.isBlank()) {
                 return Result.error(400, "请输入流程描述");
             }
             if (userText.length() > 2000) {
                 return Result.error(400, "描述过长，请精简到 2000 字以内");
             }
+            if (!"flowchart".equals(type) && !"mindmap".equals(type) && !"architecture".equals(type)) {
+                return Result.error(400, "不支持的图表类型: " + type);
+            }
 
-            String prompt = promptService.buildPrompt(userText);
-            String llmResponse = aiApiClient.chat(prompt);
-            FlowchartData data = parserService.parse(llmResponse);
+            String prompt = promptService.buildPrompt(userText, type);
+            String llmText = llmProvider.chat(prompt);
 
-            // 任务7：JSON → PlantUML 语法
-            String plantUml = diagramService.buildPlantUml(data);
+            String plantUml;
+            Map<String, Object> result = new HashMap<>();
 
-            // 任务8：PlantUML → SVG 渲染
+            switch (type) {
+                case "mindmap":
+                    MindmapData mindmap = parserService.parseMindmap(llmText);
+                    plantUml = diagramService.buildMindMap(mindmap);
+                    result.put("data", mindmap);
+                    break;
+                case "architecture":
+                    FlowchartData arch = parserService.parseArchitecture(llmText);
+                    plantUml = diagramService.buildArchitecture(arch);
+                    result.put("data", arch);
+                    break;
+                default:
+                    FlowchartData data = parserService.parse(llmText);
+                    plantUml = diagramService.buildPlantUml(data);
+                    result.put("data", data);
+            }
+
             String svg = diagramService.renderToSvg(plantUml);
-
-            // 打包返回：flowchart 数据 + SVG
-            Map<String, Object> result = Map.of(
-                    "flowchart", data,
-                    "svg", svg
-            );
+            result.put("svg", svg);
+            result.put("plantUml", plantUml);
+            result.put("type", type);
 
             return Result.success(result);
 
         } catch (Exception e) {
-            // 日志记录真实错误（排查用），前端只给用户友好的提示
-            System.err.println("生成流程图失败: " + e.getMessage());
+            System.err.println("生成图表失败: " + e.getMessage());
             e.printStackTrace();
             return Result.error(500, "AI 生成失败，请换一种描述试试");
         }
     }
 
+    @Operation(summary = "下载图表", description = "传入 PlantUML 源码 + 格式，按需渲染 svg/png 返回二进制文件")
+    @PostMapping("/api/download")
+    public ResponseEntity<byte[]> download(@RequestBody DownloadRequest req) {
+        try {
+            String plantUml = req.plantUml();
+            String format = req.format() != null ? req.format() : "png";
+
+            byte[] fileBytes;
+            String contentType;
+            String filename;
+
+            if ("svg".equals(format)) {
+                fileBytes = diagramService.renderToSvg(plantUml).getBytes("UTF-8");
+                contentType = "image/svg+xml";
+                filename = "flowchart.svg";
+            } else {
+                fileBytes = diagramService.renderToPng(plantUml);
+                contentType = "image/png";
+                filename = "flowchart.png";
+            }
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.parseMediaType(contentType));
+            headers.setContentDispositionFormData("attachment", filename);
+            headers.setContentLength(fileBytes.length);
+
+            return ResponseEntity.ok().headers(headers).body(fileBytes);
+
+        } catch (Exception e) {
+            System.err.println("下载渲染失败: " + e.getMessage());
+            e.printStackTrace();
+            return ResponseEntity.internalServerError().build();
+        }
+    }
 }
