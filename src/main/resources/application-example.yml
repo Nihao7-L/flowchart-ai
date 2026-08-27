@@ -1,0 +1,50 @@
+# ============================================================
+# flowchart-ai 配置样例（可安全入库，不含真实 Key）
+# 用法：
+#   cp src/main/resources/application-example.yml src/main/resources/application.yml
+#   然后把下面两处 sk-xxx 换成你自己的真实 Key 即可运行。
+# 本文件已确认不含任何真实密钥，可放心提交到 git。
+# ============================================================
+
+server:
+  port: 8080
+
+llm:
+  routing-strategy: fixed          # fixed | round_robin | weighted（weighted 暂等同 fixed）
+  cache-ttl-minutes: 60            # 相同输入的结果缓存时长（分钟）
+
+  providers:
+    # 主用模型：按自己有的 Key 填；capability 决定走 json_schema 还是 json_object
+    - name: mimo
+      base-url: https://api.xiaomimimo.com/v1/chat/completions
+      api-key: sk-换成你的MiMoKey            # 占位，复制后替换
+      model: mimo-v2.5
+      capability: json_object       # MiMo 只支持 json_object，不支持 strict
+    # 备用模型：主用挂了会自动 Fallback 到这里；留空或删掉也能跑（只是没备份）
+    - name: kimi
+      base-url: https://api.moonshot.cn/v1/chat/completions
+      api-key: sk-换成你的KimiKey            # 占位，复制后替换
+      model: kimi-k2.7-code-highspeed
+      capability: json_schema       # Kimi 支持 json_schema + strict
+
+  timeout-seconds: 60
+
+  retry:                           # 顶层共享，工厂自动填进每个 Provider
+    max-attempts: 3
+    initial-backoff-ms: 1000
+    max-backoff-ms: 8000
+
+  pricing:                        # 成本审计用的单价表（元 / 千 token，按你实际账单填）
+    "kimi-k2.7-code-highspeed": 12.0
+    default: 10.0
+
+  proxy:
+    enabled: false               # Kimi / MiMo 国内直连一般不用代理
+    host: 127.0.0.1
+    port: 7890
+
+# 旧式单份配置（向后兼容）：不写 providers 时，用下面这三行也能跑单个模型
+# llm:
+#   base-url: https://api.moonshot.cn/v1/chat/completions
+#   api-key: sk-换成你的Key
+#   model: kimi-k2.7-code-highspeed

@@ -6,3 +6,11 @@ target/
 docs/
 *.md
 .claude/
+
+# ===== 安全：不要把含明文 key 的本地配置烤进镜像 =====
+# .gitignore 只挡 git，挡不住 docker build（它拷的是磁盘文件）。
+# 下面这些文件含真实 API Key，必须排除，否则 key 会写进镜像层、可被任意解包扒出。
+src/main/resources/application.yml
+src/main/resources/application-local.yml
+.env
+.env.*
