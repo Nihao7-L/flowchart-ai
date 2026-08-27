@@ -1,0 +1,59 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "流程图标题，一句话概括整张图"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "节点唯一 ID，纯数字字符串，从 \"1\" 开始递增"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["start", "process", "decision", "end"],
+            "description": "节点类型：start 起点 / process 处理 / decision 判断 / end 终点"
+          },
+          "label": {
+            "type": "string",
+            "description": "节点显示文字，简洁，不超过 20 字"
+          }
+        },
+        "required": ["id", "type", "label"],
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "起始节点 ID，必须是 nodes 中存在的 id"
+          },
+          "to": {
+            "type": "string",
+            "description": "目标节点 ID，必须是 nodes 中存在的 id"
+          },
+          "label": {
+            "anyOf": [
+              { "type": "string" },
+              { "type": "null" }
+            ],
+            "description": "连线标签，如：是/否/成功后；没有可填 null"
+          }
+        },
+        "required": ["from", "to", "label"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["title", "nodes", "edges"],
+  "additionalProperties": false
+}

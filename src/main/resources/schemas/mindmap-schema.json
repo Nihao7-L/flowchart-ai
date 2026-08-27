@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "properties": {
+    "label": {
+      "type": "string",
+      "description": "根节点文字（整张思维导图的中心主题），不超过 10 字"
+    },
+    "children": {
+      "type": "array",
+      "description": "子节点列表，叶子节点为 []",
+      "items": { "$ref": "#/$defs/node" }
+    }
+  },
+  "required": ["label", "children"],
+  "additionalProperties": false,
+  "$defs": {
+    "node": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "节点文字，简洁，不超过 8 字"
+        },
+        "children": {
+          "type": "array",
+          "description": "子节点列表，叶子节点为 []",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      },
+      "required": ["label", "children"],
+      "additionalProperties": false
+    }
+  }
+}

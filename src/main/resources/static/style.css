@@ -146,6 +146,32 @@ body {
 }
 .chip.coming { opacity: 0.7; }
 
+/* 输出格式切换（任务37）：SVG / Mermaid，复用 .chip 基础样式，缩小一点与类型区分 */
+.format-chips { display: flex; gap: 8px; margin-left: 16px; }
+.chip.small {
+    padding: 4px 11px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    background: transparent;
+}
+/* 暗色模式下格式切换的未选中态更清晰 */
+[data-theme="dark"] .chip.small { background: rgba(255,255,255,0.04); }
+
+/* Mermaid 渲染失败时的源码兜底显示 */
+.mermaid-fallback {
+    background: var(--card-bg);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-main);
+    white-space: pre-wrap;
+    max-height: 70vh;
+    overflow: auto;
+}
+
 /* 画布区：显示图形（在输入框上面，占满剩余空间） */
 .canvas-area {
     flex: 1;
@@ -195,9 +221,18 @@ body {
 .svg-viewport:active { cursor: grabbing; }
 .svg-wrapper {
     transform-origin: center center;
-    will-change: transform;
+    /* 注意：不要在这里写 will-change: transform —— 它会把元素丢进合成层，
+       导致 Chrome 下 SVG 内的文字/线条发虚。缩放交给 JS 在 scale≠1 时才加 transform。 */
 }
-.svg-wrapper svg { display: block; max-width: none; }
+/* SVG 矢量图：充满容器宽度、按几何精度渲染，保证 Mermaid 与 PlantUML 两种模式都清晰 */
+.svg-wrapper svg {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    shape-rendering: geometricPrecision;
+    text-rendering: geometricPrecision;
+}
 
 /* 画布工具栏（浮在画布上方） */
 .canvas-toolbar {
@@ -236,7 +271,8 @@ body {
 .tool-btn:hover { border-color: var(--primary); color: var(--primary); }
 .btn-svg { background: #27ae60; color: white; border-color: #27ae60; }
 .btn-png { background: #e67e22; color: white; border-color: #e67e22; }
-.btn-svg:hover, .btn-png:hover { opacity: 0.9; }
+.btn-mmd { background: #4a6cf7; color: white; border-color: #4a6cf7; }
+.btn-svg:hover, .btn-png:hover, .btn-mmd:hover { opacity: 0.9; }
 
 /* 输入区（底部，固定） */
 .input-area {
@@ -340,3 +376,84 @@ textarea::placeholder { color: var(--text-muted); opacity: 0.6; }
     z-index: 100;
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ===== 生成进度面板：紧凑状态条，嵌在输入框内部（SSE 实时进度，任务37） ===== */
+.progress-panel {
+    width: 100%;
+    max-width: none;
+    background: var(--bg);
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.progress-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 22px;
+}
+.status-pill {
+    font-size: 13px;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+.status-pill b {
+    color: var(--primary);
+    font-weight: 600;
+}
+.pill-sep { margin: 0 5px; }
+.token-mini {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-left: 6px;
+    opacity: 0.85;
+}
+.pill-note {
+    font-size: 12px;
+    color: #e67e22;
+    margin-left: 6px;
+    font-weight: 500;
+}
+.progress-tip {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    opacity: 0.8;
+}
+/* 进度日志：最多显示 3 行，紧凑 */
+.progress-logs {
+    max-height: 78px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.progress-log {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-main);
+}
+.log-dot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-top: 5px;
+    background: var(--text-muted);
+}
+/* 不同事件类型用不同颜色的小圆点区分 */
+.log-provider_call .log-dot { background: #4a6cf7; }
+.log-retry .log-dot { background: #e67e22; }
+.log-provider_switch .log-dot { background: #8b5cf6; }
+.log-provider_exhausted .log-dot { background: #ef4444; }
+.log-cache_hit .log-dot,
+.log-token_usage .log-dot { background: #27ae60; }
+.log-info .log-dot { background: var(--text-muted); }

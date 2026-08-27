@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "mermaid": {
+      "type": "string",
+      "description": "可直接被 Mermaid 渲染的图表代码文本，不含 ``` 代码块包裹"
+    }
+  },
+  "required": ["mermaid"],
+  "additionalProperties": false
+}

@@ -1,11 +1,11 @@
 package io.github.nihaoljx.flowchart.client;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Component;
+import io.github.nihaoljx.flowchart.client.stream.ProgressContext;
+import io.github.nihaoljx.flowchart.client.stream.ProgressEvent;
+import io.github.nihaoljx.flowchart.service.UsageService;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ProxySelector;
 import java.net.URI;
@@ -13,150 +13,225 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * OpenAI 兼容格式的 LLM Provider
+ * OpenAI 兼容格式的 LLM Provider（任务34重构）
  *
- * 适用范围：Kimi、DeepSeek、通义千问、智谱 GLM 等——
- * 凡是遵循 OpenAI Chat Completions 格式的 API，都用这一个类，改配置就行
- *
- * @ConditionalOnProperty：Spring 条件装配
- *   当 application.yml 里 llm.provider=openai 时，这个类才会被创建
- *   换成别的 provider 时，这个类不会被加载
+ * 改造点（相对任务33版本）：
+ * - 去掉 @Component / @ConditionalOnProperty / @Value / @Autowired，
+ *   改为由 LlmProviderConfig 工厂按 llm.providers 列表逐个 new 出来。
+ *   同一个类可对应多个 Provider（mimo / kimi 各一份独立配置）。
+ * - 配置全部来自构造器传入的 ProviderConfig，不再读 Spring @Value。
+ * - HttpClient 在构造器里构建（@PostConstruct 对 new 出来的对象不生效）。
+ * - chatStructured 按 capability 分支：JSON_SCHEMA 走原 strict 逻辑；
+ *   JSON_OBJECT 只发 {"type":"json_object"}（MiMo 不支持 strict）；
+ *   NONE 退回普通 chat。这就是能力矩阵——主备切换时自动降级 response_format。
  */
-@Component
-@ConditionalOnProperty(name = "llm.provider", havingValue = "openai", matchIfMissing = true)
 public class OpenAiCompatibleProvider implements LlmProvider {
 
-    @Value("${llm.base-url}")
-    private String apiUrl;
-
-    @Value("${llm.api-key}")
-    private String apiKey;
-
-    @Value("${llm.model}")
-    private String model;
-
-    @Value("${llm.proxy.enabled:false}")
-    private boolean proxyEnabled;
-
-    @Value("${llm.proxy.host:127.0.0.1}")
-    private String proxyHost;
-
-    @Value("${llm.proxy.port:7890}")
-    private int proxyPort;
-
-    @Value("${llm.timeout-seconds:60}")
-    private int timeoutSeconds;
-
-    private HttpClient httpClient;
-
-    /** Jackson 用于 JSON 序列化（转义 prompt）和反序列化（解析响应） */
+    private final ProviderConfig config;
+    private final UsageService usageService; // 单测时可能为 null
+    private final HttpClient httpClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @PostConstruct
-    public void init() {
+    public OpenAiCompatibleProvider(ProviderConfig config, UsageService usageService) {
+        this.config = config;
+        this.usageService = usageService;
+
         HttpClient.Builder builder = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10));
-        if (proxyEnabled) {
-            builder.proxy(ProxySelector.of(new InetSocketAddress(proxyHost, proxyPort)));
+        if (Boolean.TRUE.equals(config.getProxyEnabled())) {
+            builder.proxy(ProxySelector.of(
+                    new InetSocketAddress(config.getProxyHost(), config.getProxyPort())));
         }
-        httpClient = builder.build();
+        this.httpClient = builder.build();
     }
 
     @Override
     public boolean isConfigured() {
-        return apiKey != null && !apiKey.isBlank()
-                && !apiKey.equals("${LLM_API_KEY}")
-                && !apiKey.startsWith("请配置");
+        String key = config.getApiKey();
+        return key != null && !key.isBlank()
+                && !key.startsWith("${")
+                && !key.startsWith("请配置");
     }
 
-    /**
-     * 发送 prompt → 返回提取后的纯文本
-     *
-     * 两步合一：发 HTTP 请求 + 解析响应 JSON
-     * 对外只暴露纯文本，调用方（ParserService）不关心响应格式
-     */
+    @Override
+    public String name() {
+        return config.getName();
+    }
+
     @Override
     public String chat(String prompt) throws Exception {
-        // ===== 1. 构建 OpenAI 兼容格式的请求体 =====
-        // 用 Jackson 自动转义，不再手拼 JSON
         String escapedPrompt = objectMapper.writeValueAsString(prompt);
-
         String body = String.format("""
             {
                 "model": "%s",
                 "messages": [{"role": "user", "content": %s}]
             }
-            """, model, escapedPrompt);
+            """, config.getModel(), escapedPrompt);
 
-        // ===== 2. 发 HTTP 请求（Bearer 鉴权）=====
+        String rawResponse = sendWithRetry(body);
+        System.out.println("=== LLM 原始响应: " + rawResponse);
+        return extractContent(rawResponse);
+    }
+
+    @Override
+    public String chatStructured(String prompt, String schemaJson) throws Exception {
+        return switch (config.getCapability()) {
+            case JSON_SCHEMA -> buildWithSchema(prompt, schemaJson);
+            case JSON_OBJECT -> buildWithJsonObject(prompt, schemaJson);
+            case NONE -> chat(prompt);
+        };
+    }
+
+    /** JSON_SCHEMA 模式：沿用任务33的 json_schema + strict:true 硬约束 */
+    private String buildWithSchema(String prompt, String schemaJson) throws Exception {
+        Map<String, Object> schemaObj = objectMapper.readValue(schemaJson, Map.class);
+
+        Map<String, Object> jsonSchema = new LinkedHashMap<>();
+        jsonSchema.put("name", "generated_diagram");
+        jsonSchema.put("strict", true);
+        jsonSchema.put("schema", schemaObj);
+
+        Map<String, Object> responseFormat = new LinkedHashMap<>();
+        responseFormat.put("type", "json_schema");
+        responseFormat.put("json_schema", jsonSchema);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", config.getModel());
+        payload.put("messages", List.of(Map.of("role", "user", "content", prompt)));
+        payload.put("response_format", responseFormat);
+
+        String body = objectMapper.writeValueAsString(payload);
+        String rawResponse = sendWithRetry(body);
+        System.out.println("=== LLM 原始响应: " + rawResponse);
+        return extractContent(rawResponse);
+    }
+
+    /** JSON_OBJECT 模式：只发 {"type":"json_object"}（MiMo 不支持 strict/name） */
+    private String buildWithJsonObject(String prompt, String schemaJson) throws Exception {
+        Map<String, Object> responseFormat = new LinkedHashMap<>();
+        responseFormat.put("type", "json_object");
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", config.getModel());
+        payload.put("messages", List.of(Map.of("role", "user", "content", prompt)));
+        payload.put("response_format", responseFormat);
+
+        String body = objectMapper.writeValueAsString(payload);
+        String rawResponse = sendWithRetry(body);
+        System.out.println("=== LLM 原始响应: " + rawResponse);
+        return extractContent(rawResponse);
+    }
+
+    /** 带重试的请求发送（任务30逻辑，变量来源从 @Value 字段改为 config） */
+    private String sendWithRetry(String body) throws Exception {
+        long backoff = config.getInitialBackoffMs();
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return sendOnce(body);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw e;
+            } catch (RetryableException | IOException e) {
+                if (attempt >= config.getMaxAttempts()) {
+                    throw e;
+                }
+                long sleepMs = backoff / 2
+                        + ThreadLocalRandom.current().nextLong(backoff / 2 + 1);
+                // 任务37：推一条"第 N 次失败，X 秒后重试"
+                ProgressContext.publish(ProgressEvent.of("retry",
+                        "第" + attempt + "次调用失败，" + String.format("%.1f", sleepMs / 1000.0)
+                                + " 秒后重试（原因：" + e.getMessage() + "）",
+                        config.getName(), Map.of("attempt", attempt)));
+                System.out.printf("=== LLM 调用失败（第%d次/%d），%.1f 秒后重试... 原因: %s%n",
+                        attempt, config.getMaxAttempts(), sleepMs / 1000.0, e.getMessage());
+                Thread.sleep(sleepMs);
+                backoff = Math.min(config.getMaxBackoffMs(), backoff * 2);
+            }
+        }
+    }
+
+    private String sendOnce(String body) throws IOException, RetryableException, InterruptedException {
+        // 任务37：真正发起 HTTP 调用前，推一条"正在调用某模型"（前端进度面板会显示）
+        ProgressContext.publish(ProgressEvent.of("provider_call",
+                "调用 " + config.getName() + "（" + config.getModel() + "）",
+                config.getName(), Map.of("model", config.getModel())));
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(apiUrl))
+                .uri(URI.create(config.getBaseUrl()))
                 .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + apiKey)
-                .timeout(Duration.ofSeconds(timeoutSeconds))
+                .header("Authorization", "Bearer " + config.getApiKey())
+                .timeout(Duration.ofSeconds(config.getTimeoutSeconds()))
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
 
         HttpResponse<String> response = httpClient.send(
                 request, HttpResponse.BodyHandlers.ofString());
 
-        // 打印日志方便排查
         System.out.println("=== LLM HTTP 状态码: " + response.statusCode());
-        System.out.println("=== LLM 原始响应: " + response.body());
 
-        if (response.statusCode() != 200) {
-            throw new Exception("LLM API 返回错误码 " + response.statusCode()
-                    + "，响应内容: " + response.body());
+        int code = response.statusCode();
+        if (code != 200) {
+            if (code == 429 || code >= 500) {
+                throw new RetryableException(code, response.body());
+            }
+            throw new NonRetryableException(code, response.body());
         }
-
-        // ===== 3. 解析响应：choices[0].message.content =====
-        return extractContent(response.body());
+        return response.body();
     }
 
-    /**
-     * 从 OpenAI 兼容格式的响应中提取文本
-     *
-     * 响应格式：
-     * {
-     *   "choices": [{ "message": { "role": "assistant", "content": "..." } }],
-     *   "usage": { "prompt_tokens": 123, "completion_tokens": 456, "total_tokens": 579 }
-     * }
-     *
-     * 成本统计预留：usage 字段先打日志，以后要做成本统计时
-     * 把 log 换成存数据库即可，chat() 接口签名不用改
-     */
+    private static class RetryableException extends Exception {
+        RetryableException(int statusCode, String body) {
+            super("LLM API 返回错误码 " + statusCode + "，响应内容: " + body);
+        }
+    }
+
+    private static class NonRetryableException extends RuntimeException {
+        NonRetryableException(int statusCode, String body) {
+            super("LLM API 返回错误码 " + statusCode + "，响应内容: " + body);
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private String extractContent(String rawResponse) throws Exception {
         Map<String, Object> root = objectMapper.readValue(rawResponse, Map.class);
 
-        // ===== 提取 usage（成本统计用，目前只打日志）=====
         Map<String, Object> usage = (Map<String, Object>) root.get("usage");
         if (usage != null) {
-            System.out.println("=== Token 用量: prompt=" + usage.get("prompt_tokens")
-                    + ", completion=" + usage.get("completion_tokens")
-                    + ", total=" + usage.get("total_tokens"));
+            int promptTokens = ((Number) usage.get("prompt_tokens")).intValue();
+            int completionTokens = ((Number) usage.get("completion_tokens")).intValue();
+            int totalTokens = promptTokens + completionTokens;
+            System.out.println("=== Token 用量: prompt=" + promptTokens
+                    + ", completion=" + completionTokens
+                    + ", total=" + totalTokens);
+            if (usageService != null) {
+                usageService.record(config.getModel(), promptTokens, completionTokens);
+            }
+            // 任务37：把 Token 用量推给前端，进度面板顶部会用大数字显示
+            Map<String, Object> tokenData = new LinkedHashMap<>();
+            tokenData.put("promptTokens", promptTokens);
+            tokenData.put("completionTokens", completionTokens);
+            tokenData.put("totalTokens", totalTokens);
+            tokenData.put("model", config.getModel());
+            ProgressContext.publish(ProgressEvent.of("token_usage", "Token 用量", config.getName(), tokenData));
         }
 
-        // ===== 提取 choices[0].message.content =====
         List<Map<String, Object>> choices = (List<Map<String, Object>>) root.get("choices");
         if (choices == null || choices.isEmpty()) {
             throw new Exception("LLM 返回中没有 choices 字段，原始响应: " + rawResponse);
         }
-
         Map<String, Object> message = (Map<String, Object>) choices.get(0).get("message");
         if (message == null) {
             throw new Exception("LLM 返回中没有 message 字段，原始响应: " + rawResponse);
         }
-
         Object textObj = message.get("content");
         if (textObj == null || textObj.toString().isBlank()) {
             throw new Exception("LLM 返回的 content 为空，原始响应: " + rawResponse);
         }
-
         return textObj.toString();
     }
 }

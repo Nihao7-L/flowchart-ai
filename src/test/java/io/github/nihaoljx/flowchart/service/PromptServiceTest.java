@@ -96,4 +96,85 @@ class PromptServiceTest {
         // Then：两次结果应该一样（缓存生效）
         assertEquals(prompt1, prompt2, "同一类型两次调用结果应一致");
     }
+
+    // ===== 任务33新增：JSON Schema 加载测试 =====
+
+    @Test
+    @DisplayName("任务33：加载流程图 Schema，应包含枚举/必填/禁止额外字段契约")
+    void testLoadSchemaFlowchart() throws IOException {
+        // When
+        String schema = promptService.loadSchema("flowchart");
+
+        // Then：Schema 是"契约"——字段、类型、枚举、必填、额外属性都要写死
+        assertTrue(schema.contains("\"enum\""), "节点 type 应有枚举约束");
+        assertTrue(schema.contains("\"required\""), "应有必填字段声明");
+        assertTrue(schema.contains("\"additionalProperties\": false"), "应禁止未声明字段");
+        assertTrue(schema.contains("decision"), "枚举应包含 decision");
+        assertFalse(schema.contains("{userText}"), "Schema 里不应有占位符");
+    }
+
+    @Test
+    @DisplayName("任务33：加载思维导图 Schema，递归嵌套应使用 $ref")
+    void testLoadSchemaMindmap() throws IOException {
+        // When
+        String schema = promptService.loadSchema("mindmap");
+
+        // Then：树的递归结构靠 $ref 表达（引用自身定义）
+        assertTrue(schema.contains("$ref"), "递归结构应使用 $ref");
+        assertTrue(schema.contains("\"children\""), "应包含 children 字段");
+        assertTrue(schema.contains("$defs"), "递归类型应定义在 $defs 中");
+    }
+
+    @Test
+    @DisplayName("任务33：加载架构图 Schema，type 枚举只允许 component")
+    void testLoadSchemaArchitecture() throws IOException {
+        // When
+        String schema = promptService.loadSchema("architecture");
+
+        // Then
+        assertTrue(schema.contains("\"enum\": [\"component\"]"), "type 应只允许 component");
+        assertTrue(schema.contains("\"required\""), "应有必填字段声明");
+    }
+
+    @Test
+    @DisplayName("任务33：未知类型应回退到流程图 Schema")
+    void testLoadSchemaUnknownTypeFallback() throws IOException {
+        // When：传一个不存在的类型
+        String schema = promptService.loadSchema("nonexistent");
+
+        // Then：回退到流程图 Schema（能读到枚举约束）
+        assertTrue(schema.contains("\"enum\""), "应回退到流程图 Schema");
+    }
+
+    @Test
+    @DisplayName("任务33：Schema 缓存：同一类型第二次调用应返回相同结果")
+    void testSchemaCache() throws IOException {
+        // When：同一类型加载两次
+        String schema1 = promptService.loadSchema("flowchart");
+        String schema2 = promptService.loadSchema("flowchart");
+
+        // Then：两次结果应一致（缓存生效）
+        assertEquals(schema1, schema2, "同一类型两次加载应一致");
+    }
+
+    // ===== 任务37新增：Mermaid 提示词 / Schema 测试 =====
+
+    @Test
+    @DisplayName("任务37：buildMermaidPrompt 替换 userText 与 type 占位符")
+    void testBuildMermaidPrompt() throws IOException {
+        String prompt = promptService.buildMermaidPrompt("用户登录验证", "flowchart");
+        assertTrue(prompt.contains("用户登录验证"), "应包含用户原始文本");
+        assertTrue(prompt.contains("flowchart"), "应包含图表类型");
+        assertFalse(prompt.contains("{userText}"), "userText 占位符应被替换");
+        assertFalse(prompt.contains("{type}"), "type 占位符应被替换");
+    }
+
+    @Test
+    @DisplayName("任务37：loadMermaidSchema 返回非空且含 mermaid 字段契约")
+    void testLoadMermaidSchema() throws IOException {
+        String schema = promptService.loadMermaidSchema();
+        assertFalse(schema.isBlank(), "Schema 不应为空");
+        assertTrue(schema.contains("\"mermaid\""), "应约束只输出 mermaid 字段");
+        assertTrue(schema.contains("\"required\""), "应有必填字段声明");
+    }
 }

@@ -1,0 +1,61 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "架构图标题，一句话概括系统"
+    },
+    "nodes": {
+      "type": "array",
+      "description": "组件列表，4~10 个，覆盖前端、后端、数据库、中间件、外部系统等",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "组件唯一 ID，纯数字字符串，从 \"1\" 开始递增"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["component"],
+            "description": "架构图节点类型，只有 component 一种"
+          },
+          "label": {
+            "type": "string",
+            "description": "组件名称，如：Web前端、订单服务、MySQL数据库、Redis缓存"
+          }
+        },
+        "required": ["id", "type", "label"],
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "description": "组件间依赖/调用关系，4~12 条；from 是调用方，to 是被调用方",
+      "items": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "起始组件 ID，必须是 nodes 中存在的 id"
+          },
+          "to": {
+            "type": "string",
+            "description": "目标组件 ID，必须是 nodes 中存在的 id"
+          },
+          "label": {
+            "anyOf": [
+              { "type": "string" },
+              { "type": "null" }
+            ],
+            "description": "连接说明，如：调用/依赖/读写；没有可填 null"
+          }
+        },
+        "required": ["from", "to", "label"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["title", "nodes", "edges"],
+  "additionalProperties": false
+}

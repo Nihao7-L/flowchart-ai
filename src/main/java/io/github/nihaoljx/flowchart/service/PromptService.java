@@ -38,6 +38,20 @@ public class PromptService {
     );
 
     /**
+     * JSON Schema 路径表：图表类型 → Schema 文件路径（任务33新增）
+     *
+     * 为什么 Schema 要独立成文件而不是写死在代码里？
+     * 1. Schema 是"数据"不是"代码"——放 resources 里可维护、可复用
+     * 2. 改 Schema 不用重编译（改模板也是这个道理）
+     * 3. 面试讲"配置与代码分离"时是加分项
+     */
+    private static final Map<String, String> SCHEMA_PATHS = Map.of(
+            "flowchart", "schemas/flowchart-schema.json",
+            "mindmap", "schemas/mindmap-schema.json",
+            "architecture", "schemas/architecture-schema.json"
+    );
+
+    /**
      * 缓存：type → 模板内容
      * 每个模板只读一次，后面复用
      * 线程安全：HashMap 理论上并发会出问题，但这里是个人项目、请求量低，
@@ -46,8 +60,35 @@ public class PromptService {
      */
     private final Map<String, String> templateCache = new HashMap<>();
 
+    /** Schema 缓存：type → Schema 内容（任务33新增，同样懒加载） */
+    private final Map<String, String> schemaCache = new HashMap<>();
+
+    /** Mermaid 模板缓存（任务37：让 LLM 直接产出 mermaid 文本，不走 PlantUML） */
+    private final Map<String, String> mermaidTemplateCache = new HashMap<>();
+
     /**
      * 加载模板文件到内存（懒加载：第一次用到某类型时才读）
+     */
+    private String loadTemplate(String type) throws IOException {
+        return loadText(TEMPLATE_PATHS.get(type), templateCache);
+    }
+
+    /**
+     * 加载 JSON Schema 文件到内存（任务33新增）
+     *
+     * @param type 图表类型：flowchart | mindmap | architecture
+     * @return Schema 的 JSON 字符串，直接传给 chatStructured
+     */
+    public String loadSchema(String type) throws IOException {
+        // 类型不存在时兜底成流程图 Schema
+        if (!SCHEMA_PATHS.containsKey(type)) {
+            type = "flowchart";
+        }
+        return loadText(SCHEMA_PATHS.get(type), schemaCache);
+    }
+
+    /**
+     * 通用文件加载：读 resources 下的文本文件，带缓存
      *
      * computeIfAbsent 是 Map 的"取不到就放"方法：
      * - key 存在 → 直接返回缓存值，不执行 lambda
@@ -57,11 +98,11 @@ public class PromptService {
      *       所以把 IOException 包成 RuntimeException 抛出去，
      *       外面 buildPrompt 声明了 throws IOException，再解包即可。
      */
-    private String loadTemplate(String type) throws IOException {
+    private String loadText(String path, Map<String, String> cache) throws IOException {
         try {
-            return templateCache.computeIfAbsent(type, t -> {
+            return cache.computeIfAbsent(path, p -> {
                 try {
-                    ClassPathResource resource = new ClassPathResource(TEMPLATE_PATHS.get(t));
+                    ClassPathResource resource = new ClassPathResource(p);
                     // Files.readString: Java 11 引入，一行读完整个文件
                     return Files.readString(resource.getFile().toPath(), StandardCharsets.UTF_8);
                 } catch (IOException e) {
@@ -88,5 +129,29 @@ public class PromptService {
         String template = loadTemplate(type);
         // 把模板里的占位符 {userText} 替换成用户输入
         return template.replace("{userText}", userText);
+    }
+
+    /**
+     * 任务37：Mermaid 输出专用 prompt 组装
+     *
+     * 和 buildPrompt 的区别：这里不约束成 {title, nodes, edges} 的图数据，
+     * 而是让 LLM 直接产出一段**可被 Mermaid 渲染的图表代码文本**，
+     * 放进 JSON 的 `mermaid` 字段里，后端不再调 PlantUML 渲染。
+     *
+     * @param userText 用户在网页输入框里的文字
+     * @param type     图表类型：flowchart / mindmap / architecture（决定 Mermaid 语法示例）
+     * @return 拼接好的完整 prompt
+     */
+    public String buildMermaidPrompt(String userText, String type) throws IOException {
+        String template = loadText("templates/mermaid-prompt.txt", mermaidTemplateCache);
+        // 模板里有 {userText} 和 {type} 两个占位符
+        return template.replace("{userText}", userText).replace("{type}", type);
+    }
+
+    /**
+     * 任务37：加载 Mermaid 的 JSON Schema（约束 LLM 只输出 { "mermaid": "..." }）
+     */
+    public String loadMermaidSchema() throws IOException {
+        return loadText("schemas/mermaid-schema.json", schemaCache);
     }
 }
