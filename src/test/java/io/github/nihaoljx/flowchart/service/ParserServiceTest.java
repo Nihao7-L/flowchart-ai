@@ -1,6 +1,6 @@
 package io.github.nihaoljx.flowchart.service;
 
-import io.github.nihaoljx.flowchart.model.FlowchartData;
+import io.github.nihaoljx.flowchart.model.GraphJson;
 import io.github.nihaoljx.flowchart.model.MindmapData;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -47,17 +47,17 @@ class ParserServiceTest {
                     {"id": "5", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null},
-                    {"from": "2", "to": "3", "label": null},
-                    {"from": "3", "to": "4", "label": "是"},
-                    {"from": "3", "to": "5", "label": "否"},
-                    {"from": "4", "to": "5", "label": null}
+                    {"source": "1", "target": "2", "label": null},
+                    {"source": "2", "target": "3", "label": null},
+                    {"source": "3", "target": "4", "label": "是"},
+                    {"source": "3", "target": "5", "label": "否"},
+                    {"source": "4", "target": "5", "label": null}
                   ]
                 }
                 """;
 
         // When
-        FlowchartData data = parserService.parse(json);
+        GraphJson data = parserService.parse(json);
 
         // Then
         assertNotNull(data, "解析结果不应为 null");
@@ -90,7 +90,7 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null}
+                    {"source": "1", "target": "2", "label": null}
                   ]
                 }
                 """;
@@ -113,7 +113,7 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null}
+                    {"source": "1", "target": "2", "label": null}
                   ]
                 }
                 """;
@@ -137,8 +137,8 @@ class ParserServiceTest {
                     {"id": "3", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null},
-                    {"from": "2", "to": "3", "label": "是"}
+                    {"source": "1", "target": "2", "label": null},
+                    {"source": "2", "target": "3", "label": "是"}
                   ]
                 }
                 """;
@@ -161,7 +161,7 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "999", "label": null}
+                    {"source": "1", "target": "999", "label": null}
                   ]
                 }
                 """;
@@ -257,14 +257,14 @@ class ParserServiceTest {
                     {"id": "3", "type": "process", "label": "MySQL"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": "HTTP"},
-                    {"from": "2", "to": "3", "label": "SQL"}
+                    {"source": "1", "target": "2", "label": "HTTP"},
+                    {"source": "2", "target": "3", "label": "SQL"}
                   ]
                 }
                 """;
 
         // When
-        FlowchartData data = parserService.parseArchitecture(json);
+        GraphJson data = parserService.parseArchitecture(json);
 
         // Then
         assertNotNull(data, "解析结果不应为 null");
@@ -302,7 +302,7 @@ class ParserServiceTest {
                     {"id": "2", "type": "process", "label": "组件B"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "999", "label": "调用"}
+                    {"source": "1", "target": "999", "label": "调用"}
                   ]
                 }
                 """;
@@ -334,14 +334,14 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null}
+                    {"source": "1", "target": "2", "label": null}
                   ]
                 }
                 ```
                 """;
 
         // When
-        FlowchartData data = parserService.parse(fenced);
+        GraphJson data = parserService.parse(fenced);
 
         // Then
         assertEquals("登录流程", data.getTitle(), "围栏内的 JSON 应能正常解析");
@@ -362,7 +362,7 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null}
+                    {"source": "1", "target": "2", "label": null}
                   ]
                 }
 
@@ -370,7 +370,7 @@ class ParserServiceTest {
                 """;
 
         // When
-        FlowchartData data = parserService.parse(withText);
+        GraphJson data = parserService.parse(withText);
 
         // Then
         assertEquals("审批流程", data.getTitle(), "夹带文字的 JSON 应能正常解析");
@@ -390,13 +390,13 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null}
+                    {"source": "1", "target": "2", "label": null}
                   ]
                 }
                 """;
 
         // When
-        FlowchartData data = parserService.parse(withUnknown);
+        GraphJson data = parserService.parse(withUnknown);
 
         // Then：多余字段被忽略，不报错
         assertEquals("带未知字段的流程", data.getTitle());
@@ -416,14 +416,14 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null}
+                    {"source": "1", "target": "2", "label": null}
                   ]
                 }
                 ```
                 """;
 
         // When
-        FlowchartData data = parserService.parse(plainFenced);
+        GraphJson data = parserService.parse(plainFenced);
 
         // Then
         assertEquals("纯围栏", data.getTitle(), "``` 围栏（无 json 标识）应能正常解析");
@@ -444,7 +444,7 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null}
+                    {"source": "1", "target": "2", "label": null}
                   ]
                 }
                 ```
@@ -453,7 +453,7 @@ class ParserServiceTest {
                 """;
 
         // When
-        FlowchartData data = parserService.parse(mixed);
+        GraphJson data = parserService.parse(mixed);
 
         // Then
         assertEquals("混合场景", data.getTitle(), "围栏+前后文字混合应能正常解析");
@@ -496,14 +496,14 @@ class ParserServiceTest {
                     {"id": "2", "type": "process", "label": "服务"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": "调用"}
+                    {"source": "1", "target": "2", "label": "调用"}
                   ]
                 }
                 ```
                 """;
 
         // When
-        FlowchartData data = parserService.parseArchitecture(fenced);
+        GraphJson data = parserService.parseArchitecture(fenced);
 
         // Then
         assertEquals("微服务", data.getTitle(), "围栏内的架构图 JSON 应能正常解析");
@@ -540,7 +540,7 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null}
+                    {"source": "1", "target": "2", "label": null}
                   ]
                 }
                 """;
@@ -601,8 +601,8 @@ class ParserServiceTest {
                     {"id": "3", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "2", "label": null},
-                    {"from": "2", "to": "3", "label": "是"}
+                    {"source": "1", "target": "2", "label": null},
+                    {"source": "2", "target": "3", "label": "是"}
                   ]
                 }
                 """;
@@ -633,7 +633,7 @@ class ParserServiceTest {
                     {"id": "2", "type": "end", "label": "结束"}
                   ],
                   "edges": [
-                    {"from": "1", "to": "999", "label": null}
+                    {"source": "1", "target": "999", "label": null}
                   ]
                 }
                 """;

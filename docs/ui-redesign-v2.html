@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlowAI UI v2 - 画布干净 + 实时状态流</title>
+<style>
+:root{--bg:#0f1117;--sidebar:#161922;--card:#1c1f2a;--text:#f3f4f6;--muted:#9ca3af;--border:#2d313e;--primary:#6366f1;--primary-h:#818cf8;--chip:#252836;--chip-a:#2d3142;--chip-ab:#4f46e5;--canvas:#0f1117;--success:#22c55e;--radius:16px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;background:var(--bg);color:var(--text);height:100vh;overflow:hidden}
+.app{display:flex;height:100vh}
+
+/* sidebar */
+.sidebar{width:220px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 16px;flex-shrink:0}
+.brand{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:700;color:var(--primary);margin-bottom:28px;padding-left:8px}
+.brand span{color:var(--text);font-weight:500}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;color:var(--muted);font-size:14px;cursor:pointer;margin-bottom:4px;transition:all .15s}
+.nav-item:hover{background:var(--chip);color:var(--text)}
+.nav-item.active{background:var(--chip-a);color:var(--primary);font-weight:500}
+.nav-divider{height:1px;background:var(--border);margin:16px 8px}
+.sidebar-footer{margin-top:auto}
+.theme-toggle{display:flex;align-items:center;padding:10px 12px;border-radius:10px;cursor:pointer;color:var(--muted);font-size:14px}
+
+/* main */
+.main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;min-width:0}
+.top-bar{flex-shrink:0;height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:1px solid var(--border)}
+.top-bar h1{font-size:18px;font-weight:700}
+.top-bar .sub{color:var(--muted);font-size:13px;margin-left:8px}
+.chips{display:flex;gap:8px;margin-left:auto}
+.chip{padding:5px 14px;border-radius:18px;background:var(--chip);border:1px solid transparent;color:var(--muted);font-size:13px;cursor:pointer;transition:all .15s}
+.chip:hover{color:var(--text)}
+.chip.active{background:var(--chip-a);color:var(--primary);border-color:var(--chip-ab);font-weight:500}
+.fmt-chips{display:flex;gap:6px;margin-left:16px}
+.chip.sm{padding:3px 10px;font-size:12px;border:1px solid var(--border);background:rgba(255,255,255,.04)}
+
+/* canvas - 100% CLEAN */
+.canvas{flex:1;background:var(--canvas);display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+.canvas-placeholder{text-align:center;color:var(--muted);opacity:.5}
+.canvas-placeholder .ico{font-size:56px;margin-bottom:12px}
+.canvas-placeholder p{font-size:14px}
+.canvas-result{width:90%;max-width:700px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:center}
+.canvas-result .flow{font-size:13px;color:var(--muted);line-height:2}
+.canvas-result .flow b{color:var(--primary)}
+
+/* gen-status - between canvas and input */
+.gen-status{flex-shrink:0;padding:6px 24px 8px;border-top:1px solid var(--border);background:var(--bg);display:flex;flex-direction:column;gap:4px;max-height:120px;overflow-y:auto;animation:slideup .3s ease}
+@keyframes slideup{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.gen-tools{display:flex;flex-wrap:wrap;gap:6px}
+.gen-tool{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:6px;font-size:12px;color:var(--muted);background:var(--chip);transition:all .2s}
+.gen-tool.running{color:var(--primary);background:var(--chip-a)}
+.gen-tool.done{color:var(--success)}
+.gen-tool-icon{font-size:11px}
+.gen-tool-name{font-weight:500}
+.gen-tool-dot{width:5px;height:5px;border-radius:50%;background:var(--muted)}
+.gen-tool-dot.running{background:var(--primary);animation:gpulse 1s infinite}
+.gen-tool-dot.done{background:var(--success)}
+@keyframes gpulse{0%,100%{opacity:1}50%{opacity:.4}}
+.gen-thinking{display:flex;flex-direction:column;gap:3px}
+.gen-thinking-row{display:flex;align-items:flex-start;gap:6px;font-size:12px;color:var(--muted);line-height:1.5;animation:fadein .3s ease}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.gen-thinking-dot{width:4px;height:4px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:6px}
+.gen-thinking-text{color:var(--text)}
+.gen-loading{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.gen-loading-dot{width:5px;height:5px;border-radius:50%;background:var(--primary);animation:gpulse 1.2s infinite}
+
+/* input */
+.input-area{flex-shrink:0;padding:12px 24px 16px;border-top:1px solid var(--border);background:var(--bg);display:flex;gap:16px;align-items:stretch;justify-content:center}
+.input-card{flex:1;max-width:760px;background:var(--card);border-radius:var(--radius);border:1px solid var(--border);padding:12px 16px}
+.input-toolbar{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.mini-tag{font-size:12px;padding:3px 10px;border-radius:14px;background:var(--chip);color:var(--muted);cursor:pointer;transition:all .15s}
+.mini-tag:hover{color:var(--primary);background:var(--chip-a)}
+.input-box{display:flex;align-items:flex-end;gap:8px;background:transparent;border:1px solid var(--border);border-radius:10px;padding:6px 10px;transition:border-color .15s}
+.input-box:focus-within{border-color:var(--primary)}
+.input-box textarea{flex:1;background:transparent;border:none;outline:none;color:var(--text);font-size:14px;line-height:1.5;resize:none;min-height:24px;max-height:100px;font-family:inherit;padding:2px 0}
+.input-box textarea::placeholder{color:var(--muted)}
+.send-btn{width:32px;height:32px;border-radius:8px;border:none;background:var(--primary);color:white;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;transition:all .15s}
+.send-btn:hover{background:var(--primary-h)}
+.input-tools{display:flex;align-items:center;gap:4px;margin-top:8px;padding:0 2px}
+.tool-toggle{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:6px;font-size:11px;color:var(--muted);cursor:pointer;border:1px solid transparent;transition:all .15s;user-select:none}
+.tool-toggle:hover{background:var(--chip)}
+.tool-toggle.active{background:var(--chip-a);border-color:var(--chip-ab);color:var(--primary)}
+.tool-toggle-icon{font-size:12px}
+.model-select{margin-left:auto;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--chip);color:var(--text);font-size:11px;cursor:pointer;outline:none}
+.token-compact{margin-left:auto;font-size:11px;color:var(--muted);padding:2px 8px;border-radius:6px;background:var(--chip)}
+
+/* search panel */
+.search-panel{width:0;background:var(--sidebar);border-left:1px solid var(--border);overflow:hidden;transition:width .3s ease;flex-shrink:0;display:flex;flex-direction:column}
+.search-panel.open{width:360px}
+.search-hdr{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.search-hdr-title{font-size:14px;font-weight:600;flex:1}
+.search-hdr-count{font-size:12px;color:var(--muted);background:var(--chip);padding:2px 8px;border-radius:10px}
+.search-close{width:28px;height:28px;border-radius:6px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:16px}
+.search-close:hover{background:var(--chip);color:var(--text)}
+.search-results{flex:1;overflow-y:auto;padding:8px}
+.sr-item{padding:10px 12px;border-radius:8px;cursor:pointer;transition:background .15s;border:1px solid transparent;margin-bottom:4px}
+.sr-item:hover{background:var(--chip);border-color:var(--border)}
+.sr-src{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.sr-fav{width:16px;height:16px;border-radius:3px;background:var(--chip-a);display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--primary);font-weight:700}
+.sr-site{font-size:12px;color:var(--muted)}
+.sr-date{font-size:11px;color:var(--muted);margin-left:auto}
+.sr-title{font-size:13px;font-weight:500;margin-bottom:3px;line-height:1.4}
+.sr-snippet{font-size:12px;color:var(--muted);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sr-score{font-size:11px;color:var(--primary);margin-top:3px}
+
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span>⚡</span><div>FlowAI <span>流程图</span></div></div>
+    <div style="flex:1">
+      <div class="nav-item active"><span>➕</span> 新建流程图</div>
+      <div class="nav-item"><span>🕘</span> 历史记录</div>
+      <div class="nav-item"><span>📁</span> 模板中心</div>
+      <div class="nav-divider"></div>
+      <div class="nav-item"><span>📚</span> 知识库管理</div>
+      <div class="nav-item"><span>⚙️</span> 设置</div>
+    </div>
+    <div class="sidebar-footer">
+      <div class="theme-toggle"><span>🌙 深色模式</span></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="top-bar">
+      <div><h1>FlowAI</h1><span class="sub">帮你画流程图</span></div>
+      <div class="chips">
+        <div class="chip active">🔄 流程图</div>
+        <div class="chip">🧠 思维导图</div>
+        <div class="chip">🏗️ 架构图</div>
+      </div>
+      <div class="fmt-chips">
+        <div class="chip sm active">🖼️ SVG</div>
+        <div class="chip sm">📐 Mermaid</div>
+      </div>
+    </div>
+
+    <!-- 画布：100% 干净 -->
+    <div class="canvas">
+      <div class="canvas-result">
+        <div style="font-size:36px;margin-bottom:16px">📊</div>
+        <div class="flow">
+          <b>用户登录流程</b><br>
+          输入账号密码 → 系统验证 → 验证通过 → 进入首页<br>
+          验证失败 → 提示错误 → 重新输入
+        </div>
+        <div style="margin-top:16px;font-size:12px;color:var(--muted)">基于 read_file + web_search 的素材生成</div>
+      </div>
+    </div>
+
+    <!-- 实时状态区：画布下方、输入区上方 -->
+    <div class="gen-status" id="genStatus" style="display:none">
+      <div class="gen-tools">
+        <div class="gen-tool done"><span class="gen-tool-icon">📄</span><span class="gen-tool-name">read_file</span><span class="gen-tool-dot done"></span></div>
+        <div class="gen-tool running"><span class="gen-tool-icon">🔍</span><span class="gen-tool-name">web_search</span><span class="gen-tool-dot running"></span></div>
+      </div>
+      <div class="gen-thinking">
+        <div class="gen-thinking-row"><span class="gen-thinking-dot"></span><span class="gen-thinking-text">分析用户意图：需要参考本地文件 + 联网搜索安全规范</span></div>
+        <div class="gen-thinking-row"><span class="gen-thinking-dot"></span><span class="gen-thinking-text">调用 read_file 读取 docs/login.md 获取登录流程原始数据</span></div>
+        <div class="gen-thinking-row"><span class="gen-thinking-dot"></span><span class="gen-thinking-text">调用 web_search 搜索"流程图设计规范 2026"获取最新资料</span></div>
+      </div>
+    </div>
+
+    <!-- 输入区 -->
+    <div class="input-area">
+      <div class="input-card">
+        <div class="input-toolbar">
+          <span class="mini-tag">🔐 登录流程</span>
+          <span class="mini-tag">📋 审批流程</span>
+          <span class="mini-tag">🧠 电商组成</span>
+          <span class="mini-tag">🏗️ 系统架构</span>
+        </div>
+        <div class="input-box">
+          <textarea placeholder="描述你想画的图表，Ctrl+Enter 发送" rows="1">参考 docs/login.md 画登录流程图，搜一下最新的安全规范</textarea>
+          <button class="send-btn">➤</button>
+        </div>
+        <div class="input-tools">
+          <div class="tool-toggle active"><span class="tool-toggle-icon">📚</span> 知识库</div>
+          <div class="tool-toggle active"><span class="tool-toggle-icon">🛠️</span> 工具</div>
+          <select class="model-select"><option>kimi</option><option>mimo</option></select>
+          <span class="token-compact">1,247 token</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 搜索面板 -->
+  <div class="search-panel open" id="searchPanel">
+    <div class="search-hdr">
+      <span>🔍</span>
+      <span class="search-hdr-title">搜索结果</span>
+      <span class="search-hdr-count">5 条</span>
+      <button class="search-close" onclick="document.getElementById('searchPanel').classList.toggle('open')">✕</button>
+    </div>
+    <div class="search-results">
+      <div class="sr-item"><div class="sr-src"><div class="sr-fav">J</div><span class="sr-site">JavaGuide</span><span class="sr-date">2026/08</span></div><div class="sr-title">登录安全规范：OAuth 2.0 + JWT 最佳实践</div><div class="sr-snippet">生产环境必须使用 HTTPS，JWT 有效期不超过 15 分钟…</div><div class="sr-score">相关度 92%</div></div>
+      <div class="sr-item"><div class="sr-src"><div class="sr-fav">B</div><span class="sr-site">博客园</span><span class="sr-date">2026/07</span></div><div class="sr-title">Web 登录流程的安全加固</div><div class="sr-snippet">密码存储必须使用 bcrypt/argon2，禁止 MD5/SHA1…</div><div class="sr-score">相关度 87%</div></div>
+      <div class="sr-item"><div class="sr-src"><div class="sr-fav">C</div><span class="sr-site">CSDN</span><span class="sr-date">2026/06</span></div><div class="sr-title">OAuth 2.0 授权码流程详解</div><div class="sr-snippet">授权码模式是最安全的 OAuth 流程…</div><div class="sr-score">相关度 83%</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// 模拟实时状态流：3秒后显示 gen-status
+setTimeout(()=>{document.getElementById('genStatus').style.display='flex'},1500);
+</script>
+</body>
+</html>

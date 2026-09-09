@@ -3,7 +3,7 @@ package io.github.nihaoljx.flowchart.service;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.nihaoljx.flowchart.model.FlowchartData;
+import io.github.nihaoljx.flowchart.model.GraphJson;
 import io.github.nihaoljx.flowchart.model.MindmapData;
 import org.springframework.stereotype.Service;
 
@@ -17,8 +17,9 @@ import java.util.stream.Collectors;
  * JSON 解析服务
  *
  * 职责：
- * 1. 把 LLM 返回的纯文本转成 FlowchartData 对象
+ * 1. 把 LLM 返回的纯文本转成 GraphJson 对象（任务43：唯一图模型，LLM 直出）
  * 2. 校验数据合法性（必须有 start/end、decision 必须有两条出边等）
+ * 3. 给边补 id（交由 GraphJsonService.assignEdgeIds，LLM 不生成 id）
  *
  * 注意：本类不关心 LLM 是哪家（Kimi/DeepSeek/...），
  *       LlmProvider 已经把原始响应提取成纯文本了。
@@ -35,6 +36,9 @@ public class ParserService {
      */
     private final ObjectMapper objectMapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+    // 任务43：边 id 由 GraphJsonService.assignEdgeIds 静态方法统一补（静态方法，
+    // 避免本类被 new 出来时（如单测）因注入为空而空指针）
 
     /**
      * 从 LLM 的原始输出中提取纯净的 JSON 文本
@@ -92,20 +96,20 @@ public class ParserService {
     }
 
     /**
-     * LLM 返回的纯文本 → FlowchartData 对象
+     * LLM 返回的纯文本 → GraphJson 对象（任务43：LLM 直出权威格式，不再有中间模型）
      *
      * @param llmText LLM 返回的纯文本（JSON 格式的流程图数据）
-     * @return 解析并校验后的流程图数据
+     * @return 解析并校验后的图数据
      * @throws Exception 解析失败或校验不通过
      */
-    public FlowchartData parse(String llmText) throws Exception {
+    public GraphJson parse(String llmText) throws Exception {
         // 预处理：剥离围栏 + 截取纯净 JSON
         String json = extractJsonText(llmText);
 
-        // 文本 → FlowchartData 对象
-        FlowchartData data;
+        // 文本 → GraphJson 对象
+        GraphJson data;
         try {
-            data = objectMapper.readValue(json, FlowchartData.class);
+            data = objectMapper.readValue(json, GraphJson.class);
         } catch (Exception e) {
             // 解析失败时带上原始文本片段，方便排查 LLM 到底返回了什么
             throw new Exception(
@@ -115,6 +119,9 @@ public class ParserService {
 
         // 数据合法性校验
         validate(data);
+
+        // 边 id 由后端统一补，LLM 不生成
+        GraphJsonService.assignEdgeIds(data);
 
         return data;
     }
@@ -184,65 +191,107 @@ public class ParserService {
     }
 
     /**
-     * LLM 返回的纯文本 → FlowchartData 对象（架构图）
+     * 通用宽松解析（任务45 Refine 复用，也供架构图）。
      *
-     * 架构图复用 FlowchartData 类（nodes + edges 表达组件依赖），
-     * 但校验必须放宽——架构图没有 start/end/decision，
-     * 不能走 parse() 的严格校验（那会要求恰好一个 start 一个 end）。
+     * 与 parse() 的严格校验（必须恰好一个 start / 一个 end / decision 恰两条出边）不同，
+     * 这里只做"能渲染"的最低校验：节点非空、每个节点 id/label 必填、边引用必须存在。
+     * 这样流程图 / 架构图 / 思维导图（节点 type 各异）都能过，且不会把人工编辑误杀。
      *
-     * @param llmText LLM 返回的纯文本（JSON 格式的架构图数据）
-     * @return 解析后的架构图数据
+     * @param llmText LLM 返回的纯文本（JSON 格式的图数据）
+     * @return 解析后的图数据
      */
-    public FlowchartData parseArchitecture(String llmText) throws Exception {
+    private GraphJson parseLenientGraph(String llmText) throws Exception {
         String json = extractJsonText(llmText);
-        FlowchartData data;
+        GraphJson data;
         try {
-            data = objectMapper.readValue(json, FlowchartData.class);
+            data = objectMapper.readValue(json, GraphJson.class);
         } catch (Exception e) {
             throw new Exception(
-                    "架构图 JSON 解析失败：" + e.getMessage()
+                    "JSON 解析失败：" + e.getMessage()
                             + " | 原始文本前200字：" + truncateForLog(llmText, 200), e);
         }
 
-        // 轻校验：节点/边非空、边引用存在（架构图没有 start/end/decision 规则）
+        // 轻校验：节点/边非空、边引用存在（不强制 start/end/decision 规则）
         List<ValidationIssue> issues = new ArrayList<>();
 
         if (data.getNodes() == null || data.getNodes().isEmpty()) {
             issues.add(new ValidationIssue(
                     "nodes",
-                    "架构图组件列表为空",
-                    "请至少提供 1 个组件节点，例如：[{\"id\":\"1\",\"label\":\"API网关\"}]"));
-            finish(issues);  // 组件都没有，引用检查无意义
-            return null;
+                    "节点列表为空",
+                    "请至少提供 1 个节点"));
+            finish(issues);  // 节点都没有，引用检查无意义（finish 在 issues 非空时抛异常，故无需 return）
         }
         if (data.getEdges() == null || data.getEdges().isEmpty()) {
             issues.add(new ValidationIssue(
                     "edges",
-                    "架构图依赖列表为空",
-                    "请至少提供 1 条依赖关系，例如：[{\"from\":\"1\",\"to\":\"2\",\"label\":\"HTTP\"}]"));
+                    "连线列表为空",
+                    "请至少提供 1 条连线，没有时写 []"));
+        }
+
+        // 每个节点必须有非空 id 与 label（MiMo 的 json_object 不强制 required，
+        // 偶尔漏写 label 会让渲染变成 [null]，这里提前拦截并给出明确报错）
+        for (GraphJson.GraphNode node : data.getNodes()) {
+            if (node.getId() == null || node.getId().isBlank()) {
+                issues.add(new ValidationIssue(
+                        "nodes[].id", "存在 id 为空的节点",
+                        "请为每个节点填写唯一 id，如 \"1\""));
+            }
+            if (node.getLabel() == null || node.getLabel().isBlank()) {
+                issues.add(new ValidationIssue(
+                        "nodes[].label", "存在 label 为空的节点（会渲染成 [null]）",
+                        "请为每个节点填写名称"));
+            }
         }
 
         Set<String> nodeIds = data.getNodes().stream()
-                .map(FlowchartData.Node::getId)
+                .map(GraphJson.GraphNode::getId)
                 .collect(Collectors.toSet());
-        for (FlowchartData.Edge edge : data.getEdges()) {
-            if (!nodeIds.contains(edge.getFrom())) {
+        for (GraphJson.GraphEdge edge : data.getEdges()) {
+            if (!nodeIds.contains(edge.getSource())) {
                 issues.add(new ValidationIssue(
-                        "edges[from=" + edge.getFrom() + "]",
-                        "依赖起点引用了不存在的组件 ID: " + edge.getFrom(),
-                        "请检查 from 字段，确保它指向 nodes 中已定义的 id"));
+                        "edges[source=" + edge.getSource() + "]",
+                        "连线起点引用了不存在的节点 ID: " + edge.getSource(),
+                        "请检查 source 字段，确保它指向 nodes 中已定义的 id"));
             }
-            if (!nodeIds.contains(edge.getTo())) {
+            if (!nodeIds.contains(edge.getTarget())) {
                 issues.add(new ValidationIssue(
-                        "edges[to=" + edge.getTo() + "]",
-                        "依赖终点引用了不存在的组件 ID: " + edge.getTo(),
-                        "请检查 to 字段，确保它指向 nodes 中已定义的 id"));
+                        "edges[target=" + edge.getTarget() + "]",
+                        "连线终点引用了不存在的节点 ID: " + edge.getTarget(),
+                        "请检查 target 字段，确保它指向 nodes 中已定义的 id"));
             }
         }
 
         finish(issues);
+        GraphJsonService.assignEdgeIds(data);
         return data;
+    }
 
+    /**
+     * LLM 返回的纯文本 → GraphJson 对象（架构图）
+     *
+     * 架构图和流程图共用 GraphJson，但校验必须放宽——
+     * 架构图没有 start/end/decision，不能走 parse() 的严格校验（那会要求恰好一个 start 一个 end）。
+     * 这里直接复用通用宽松解析（任务45 抽出，避免重复校验逻辑）。
+     *
+     * @param llmText LLM 返回的纯文本（JSON 格式的架构图数据）
+     * @return 解析后的架构图数据
+     */
+    public GraphJson parseArchitecture(String llmText) throws Exception {
+        return parseLenientGraph(llmText);
+    }
+
+    /**
+     * 任务45：Refine 输出解析（流程图 / 架构图 / 思维导图 统一走这里）
+     *
+     * Refine 让 LLM 在"当前图"基础上输出修改后的完整图，节点类型可能是
+     * start/process/decision/end/component/mindmap 任意一种，且必须保留人工编辑，
+     * 因此用宽松校验（节点非空、id/label 必填、边引用存在），不强制 start/end/decision 规则。
+     *
+     * @param llmText LLM 返回的纯文本（JSON 格式的修改后的图数据）
+     * @return 解析后的图数据
+     */
+    public GraphJson parseGraph(String llmText) throws Exception {
+        return parseLenientGraph(llmText);
     }
 
     /**
@@ -256,12 +305,12 @@ public class ParserService {
      * 1. 必须有 title
      * 2. 必须有且仅有一个 start 和一个 end
      * 3. decision 节点必须有恰好两条出边
-     * 4. 所有连线的 from/to 都指向存在的节点
+     * 4. 所有连线的 source/target 都指向存在的节点
      *
      * 不再声明 throws Exception：校验失败抛的是 ValidationException（运行时异常），
      * 编译器不需要调用方强制处理，但 Controller 依然能 catch 到。
      */
-    private void validate(FlowchartData data) {
+    private void validate(GraphJson data) {
         List<ValidationIssue> issues = new ArrayList<>();
 
         // 检查 1: title
@@ -284,7 +333,7 @@ public class ParserService {
         }
 
         // edges 可能为 null：记一条 issue，但用空列表兜底继续检查（避免 NPE）
-        List<FlowchartData.Edge> edges = data.getEdges() == null ? List.of() : data.getEdges();
+        List<GraphJson.GraphEdge> edges = data.getEdges() == null ? List.of() : data.getEdges();
         if (data.getEdges() == null) {
             issues.add(new ValidationIssue(
                     "edges",
@@ -294,7 +343,7 @@ public class ParserService {
 
         // 收集所有节点 ID，方便后续检查连线引用
         Set<String> nodeIds = data.getNodes().stream()
-                .map(FlowchartData.Node::getId)
+                .map(GraphJson.GraphNode::getId)
                 .collect(Collectors.toSet());
 
         // 检查 3: 有且仅有一个 start
@@ -322,13 +371,13 @@ public class ParserService {
         }
 
         // 检查 5: 每个 decision 节点必须有恰好两条出边
-        for (FlowchartData.Node node : data.getNodes()) {
+        for (GraphJson.GraphNode node : data.getNodes()) {
             if ("decision".equals(node.getType())) {
                 long outEdgeCount = edges.stream()
-                        .filter(e -> node.getId().equals(e.getFrom())).count();
+                        .filter(e -> node.getId().equals(e.getSource())).count();
                 if (outEdgeCount != 2) {
                     issues.add(new ValidationIssue(
-                            "edges[from=" + node.getId() + "]",
+                            "edges[source=" + node.getId() + "]",
                             "decision 节点 [" + node.getLabel() + "] 需要有 2 条出边，实际有 " + outEdgeCount,
                             "请为该 decision 节点补充/删除出边，使其恰好有 2 条（label 分别为\"是\"和\"否\"）"));
                 }
@@ -336,18 +385,18 @@ public class ParserService {
         }
 
         // 检查 6: 所有边引用的节点 ID 必须存在
-        for (FlowchartData.Edge edge : edges) {
-            if (!nodeIds.contains(edge.getFrom())) {
+        for (GraphJson.GraphEdge edge : edges) {
+            if (!nodeIds.contains(edge.getSource())) {
                 issues.add(new ValidationIssue(
-                        "edges[from=" + edge.getFrom() + "]",
-                        "连线起点引用了不存在的节点 ID: " + edge.getFrom(),
-                        "请检查 from 字段，确保它指向 nodes 中已定义的 id"));
+                        "edges[source=" + edge.getSource() + "]",
+                        "连线起点引用了不存在的节点 ID: " + edge.getSource(),
+                        "请检查 source 字段，确保它指向 nodes 中已定义的 id"));
             }
-            if (!nodeIds.contains(edge.getTo())) {
+            if (!nodeIds.contains(edge.getTarget())) {
                 issues.add(new ValidationIssue(
-                        "edges[to=" + edge.getTo() + "]",
-                        "连线终点引用了不存在的节点 ID: " + edge.getTo(),
-                        "请检查 to 字段，确保它指向 nodes 中已定义的 id"));
+                        "edges[target=" + edge.getTarget() + "]",
+                        "连线终点引用了不存在的节点 ID: " + edge.getTarget(),
+                        "请检查 target 字段，确保它指向 nodes 中已定义的 id"));
             }
         }
 

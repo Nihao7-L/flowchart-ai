@@ -1,6 +1,6 @@
 package io.github.nihaoljx.flowchart.service;
 
-import io.github.nihaoljx.flowchart.model.FlowchartData;
+import io.github.nihaoljx.flowchart.model.GraphJson;
 import io.github.nihaoljx.flowchart.model.MindmapData;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -24,19 +24,19 @@ class DiagramServiceTest {
     private DiagramService diagramService;
 
     /** 辅助方法：快速构造 node */
-    private FlowchartData.Node node(String id, String type, String label) {
-        FlowchartData.Node n = new FlowchartData.Node();
+    private GraphJson.GraphNode node(String id, String type, String label) {
+        GraphJson.GraphNode n = new GraphJson.GraphNode();
         n.setId(id);
         n.setType(type);
         n.setLabel(label);
         return n;
     }
 
-    /** 辅助方法：快速构造 edge */
-    private FlowchartData.Edge edge(String from, String to, String label) {
-        FlowchartData.Edge e = new FlowchartData.Edge();
-        e.setFrom(from);
-        e.setTo(to);
+    /** 辅助方法：快速构造 edge（任务43：from/to → source/target） */
+    private GraphJson.GraphEdge edge(String source, String target, String label) {
+        GraphJson.GraphEdge e = new GraphJson.GraphEdge();
+        e.setSource(source);
+        e.setTarget(target);
         e.setLabel(label);
         return e;
     }
@@ -68,7 +68,7 @@ class DiagramServiceTest {
     @DisplayName("流程图：登录流程应包含 start 和 stop")
     void testFlowchartContainsStartAndStop() {
         // Given：构造登录流程数据（开始 → 输入 → 验证 → 是:进入首页 → 结束 / 否:提示错误 → 回到输入）
-        FlowchartData data = new FlowchartData();
+        GraphJson data = new GraphJson();
         data.setTitle("用户登录流程");
         data.setNodes(List.of(
                 node("1", "start", "开始"),
@@ -103,7 +103,7 @@ class DiagramServiceTest {
     @DisplayName("流程图：验证通过? 已带问号时不重复加")
     void testDecisionLabelAlreadyHasQuestionMark() {
         // Given：decision 的 label 已经以 ? 结尾
-        FlowchartData data = new FlowchartData();
+        GraphJson data = new GraphJson();
         data.setTitle("简单判断");
         data.setNodes(List.of(
                 node("1", "start", "开始"),
@@ -130,7 +130,7 @@ class DiagramServiceTest {
     @DisplayName("流程图：循环回到已访问节点应输出 note")
     void testCycleDetectionOutputsNote() {
         // Given：构造一个循环——B 回到 A
-        FlowchartData data = new FlowchartData();
+        GraphJson data = new GraphJson();
         data.setTitle("循环测试");
         data.setNodes(List.of(
                 node("1", "start", "开始"),
@@ -204,7 +204,7 @@ class DiagramServiceTest {
     @DisplayName("架构图：组件用方括号，依赖用 -->")
     void testArchitectureBracketsAndArrows() {
         // Given：Web前端 → 订单服务 → MySQL
-        FlowchartData data = new FlowchartData();
+        GraphJson data = new GraphJson();
         data.setTitle("电商架构");
         data.setNodes(List.of(
                 node("1", "process", "Web前端"),
@@ -231,7 +231,7 @@ class DiagramServiceTest {
     @DisplayName("架构图：边引用不存在的节点时应跳过（防御逻辑）")
     void testArchitectureSkipInvalidEdge() {
         // Given：边引用了一个不存在的节点 ID
-        FlowchartData data = new FlowchartData();
+        GraphJson data = new GraphJson();
         data.setTitle("含无效边");
         data.setNodes(List.of(
                 node("1", "process", "组件A"),

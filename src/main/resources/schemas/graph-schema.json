@@ -1,0 +1,75 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "图标题，一句话概括"
+    },
+    "nodes": {
+      "type": "array",
+      "description": "节点列表，覆盖流程/架构/思维导图的所有节点",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "节点唯一 ID，字符串，不要与已有 id 冲突"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["start", "process", "decision", "end", "component", "mindmap"],
+            "description": "节点类型：flowchart 用 start/process/decision/end；architecture 用 component；mindmap 用 mindmap"
+          },
+          "label": {
+            "type": "string",
+            "description": "节点显示文字"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "x": { "type": "number" },
+                  "y": { "type": "number" }
+                },
+                "additionalProperties": false
+              },
+              { "type": "null" }
+            ],
+            "description": "可选：节点坐标。通常不需要给，不给时由前端自动布局"
+          }
+        },
+        "required": ["id", "type", "label"],
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "description": "连线列表；source 是起点，target 是终点",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "起始节点 ID，必须是 nodes 中存在的 id"
+          },
+          "target": {
+            "type": "string",
+            "description": "目标节点 ID，必须是 nodes 中存在的 id"
+          },
+          "label": {
+            "anyOf": [
+              { "type": "string" },
+              { "type": "null" }
+            ],
+            "description": "连线说明，如：是/否/调用/依赖；没有可填 null"
+          }
+        },
+        "required": ["source", "target", "label"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["title", "nodes", "edges"],
+  "additionalProperties": false
+}

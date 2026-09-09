@@ -7,6 +7,7 @@ import io.github.nihaoljx.flowchart.service.UsageService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -54,6 +55,18 @@ public class CachingLlmProvider implements LlmProvider {
     @Override
     public String chatStructured(String prompt, String schemaJson) throws Exception {
         return withCache(prompt, schemaJson, () -> delegate.chatStructured(prompt, schemaJson));
+    }
+
+    @Override
+    public String chatWithTools(List<Map<String, Object>> messages, String toolsJson) throws Exception {
+        // tool calling 不进缓存：结果依赖模型实时决策，messages 结构复杂不便做 key
+        return delegate.chatWithTools(messages, toolsJson);
+    }
+
+    @Override
+    public String chatStructuredStream(String prompt, String schemaJson) throws Exception {
+        // 任务39+：流式用于实时展示"思考过程"，不进缓存（缓存会瞬回，失去逐字滚动的效果）
+        return delegate.chatStructuredStream(prompt, schemaJson);
     }
 
     private String withCache(String prompt, String schema, CacheAction action) throws Exception {

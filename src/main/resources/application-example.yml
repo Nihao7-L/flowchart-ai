@@ -43,6 +43,13 @@ llm:
     host: 127.0.0.1
     port: 7890
 
+  embedding:                    # 任务38 RAG 检索增强（硅基流动免费 BAAI/bge-m3）
+    base-url: https://api.siliconflow.cn/v1/embeddings
+    api-key: sk-换成你的硅基流动Key        # 占位，复制后替换；免费额度即可
+    model: BAAI/bge-m3          # 1024 维，硅基流动免费
+    chunk-size: 300             # 文档切片大小（字）
+    top-k: 3                    # 生成时检索返回几段
+
 # 旧式单份配置（向后兼容）：不写 providers 时，用下面这三行也能跑单个模型
 # llm:
 #   base-url: https://api.moonshot.cn/v1/chat/completions

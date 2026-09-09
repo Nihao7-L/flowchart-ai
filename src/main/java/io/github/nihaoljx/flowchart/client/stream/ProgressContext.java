@@ -32,11 +32,22 @@ public final class ProgressContext {
         SINK.remove();
     }
 
+    /** 当前请求是否已关闭（客户端断开/超时/已完成）——供流式读取循环检查，用于中断生成 */
+    public static boolean isClosed() {
+        ProgressSink sink = SINK.get();
+        return sink != null && sink.isClosed();
+    }
+
     /** 发布一个事件：有出水口就推，没有就当没发生（no-op） */
     public static void publish(ProgressEvent event) {
         ProgressSink sink = SINK.get();
         if (sink != null) {
-            sink.emit(event);
+            try {
+                sink.emit(event);
+            } catch (Exception ignore) {
+                // 进度事件是"尽力而为"的附属信息：流已关闭（done/error 之后）还迟到的事件直接丢弃，
+                // 绝不允许它把主流程或错误处理炸掉（IllegalStateException: emitter already completed）
+            }
         }
     }
 

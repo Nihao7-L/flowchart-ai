@@ -11,7 +11,13 @@ public record GenerateRequest(
         @Schema(description = "图表类型：flowchart / mindmap / architecture", example = "flowchart")
         String type,
 
-        @Schema(description = "渲染格式：svg / png", example = "svg")
-        String format
+        @Schema(description = "渲染格式：svg / png / mermaid", example = "svg")
+        String format,
+
+        @Schema(description = "是否启用 RAG 检索增强（需先 /api/upload 上传文档）", example = "false")
+        Boolean useRag,
+
+        @Schema(description = "是否启用 Tool Calling 路由（由 LLM 自己决定调工具：读文件/联网/查知识库/跑代码）", example = "false")
+        Boolean useTool
 ) {
 }

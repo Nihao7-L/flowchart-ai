@@ -1,0 +1,61 @@
+# 任务52：CI 工作流（提交即编译测试）
+# 每次 push 或 PR 到 main 分支时，自动编译后端 + 前端，确保代码可构建
+
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  backend:
+    name: 后端编译
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: Compile with Maven
+        run: mvn -B compile
+
+      - name: Run Tests
+        run: mvn -B test
+
+  frontend:
+    name: 前端编译
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: flowchart-frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: flowchart-frontend
+        run: npm ci
+
+      - name: TypeScript check
+        working-directory: flowchart-frontend
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: flowchart-frontend
+        run: npm run build

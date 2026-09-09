@@ -12,4 +12,11 @@ package io.github.nihaoljx.flowchart.client.stream;
 @FunctionalInterface
 public interface ProgressSink {
     void emit(ProgressEvent event);
+
+    /**
+     * 当前请求是否已关闭（客户端断开 / 超时 / 已完成）。
+     * 供流式读取循环（OpenAiCompatibleProvider.streamOnce）在每帧之间检查，用于中断生成、停止继续读流。
+     * 默认返回 false（老接口 /api/generate 等非 SSE 场景没有"断开"概念）。
+     */
+    default boolean isClosed() { return false; }
 }

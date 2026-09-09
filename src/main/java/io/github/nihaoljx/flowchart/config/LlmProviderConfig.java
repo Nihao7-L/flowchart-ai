@@ -1,7 +1,9 @@
 package io.github.nihaoljx.flowchart.config;
 
 import io.github.nihaoljx.flowchart.client.*;
+import io.github.nihaoljx.flowchart.service.RagService;
 import io.github.nihaoljx.flowchart.service.UsageService;
+import io.github.nihaoljx.flowchart.service.VectorStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -41,6 +43,30 @@ public class LlmProviderConfig {
         long ttlMillis = Duration.ofMinutes(props.getCacheTtlMinutes()).toMillis();
         return new CachingLlmProvider(fallback, usage, ttlMillis);
 
+    }
+
+    /** 任务38：RAG 内存向量库（单例，整个 JVM 共享一份） */
+    @Bean
+    public VectorStore vectorStore() {
+        return new VectorStore();
+    }
+
+    /** 任务38：Embedding 客户端（硅基流动 BAAI/bge-m3，免费） */
+    @Bean
+    public EmbeddingClient embeddingClient(LlmProperties props) {
+        LlmProperties.Embedding e = props.getEmbedding();
+        String baseUrl = (e.getBaseUrl() == null || e.getBaseUrl().isBlank())
+                ? "https://api.siliconflow.cn/v1/embeddings"
+                : e.getBaseUrl();
+        String model = (e.getModel() == null || e.getModel().isBlank()) ? "BAAI/bge-m3" : e.getModel();
+        return new EmbeddingClient(baseUrl, e.getApiKey(), model);
+    }
+
+    /** 任务38：RAG 服务（串起 Embedding + 向量库） */
+    @Bean
+    public RagService ragService(EmbeddingClient embeddingClient, VectorStore vectorStore, LlmProperties props) {
+        LlmProperties.Embedding e = props.getEmbedding();
+        return new RagService(embeddingClient, vectorStore, e.getChunkSize(), e.getTopK());
     }
 
     /** 把 yml 里"只写了部分字段"的 ProviderConfig 补全默认值 */

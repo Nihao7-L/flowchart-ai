@@ -1,6 +1,6 @@
 package io.github.nihaoljx.flowchart.service;
 
-import io.github.nihaoljx.flowchart.model.FlowchartData;
+import io.github.nihaoljx.flowchart.model.GraphJson;
 import io.github.nihaoljx.flowchart.model.MindmapData;
 import net.sourceforge.plantuml.FileFormat;
 import net.sourceforge.plantuml.FileFormatOption;
@@ -89,22 +89,22 @@ public class DiagramService {
      * [订单服务] --> [MySQL数据库] : SQL
      * @enduml
      *
-     * 注意：架构图复用 FlowchartData 类（nodes + edges 天然适合表达组件依赖），
-     *       但只关心 label 和 from/to，不关心节点的 type。
+     * 注意：架构图复用 GraphJson（nodes + edges 天然适合表达组件依赖），
+     *       但只关心 label 和 source/target，不关心节点的 type。
      */
-    public String buildArchitecture(FlowchartData data) {
-        // 建 nodeMap：id → Node，方便根据边里的 from/to 查组件名
-        Map<String, FlowchartData.Node> nodeMap = new HashMap<>();
-        for (FlowchartData.Node node : data.getNodes()) {
+    public String buildArchitecture(GraphJson data) {
+        // 建 nodeMap：id → Node，方便根据边里的 source/target 查组件名
+        Map<String, GraphJson.GraphNode> nodeMap = new HashMap<>();
+        for (GraphJson.GraphNode node : data.getNodes()) {
             nodeMap.put(node.getId(), node);
         }
 
         StringBuilder sb = new StringBuilder("@startuml\n");
 
         // 遍历每条边，输出一条依赖关系
-        for (FlowchartData.Edge edge : data.getEdges()) {
-            FlowchartData.Node from = nodeMap.get(edge.getFrom());
-            FlowchartData.Node to = nodeMap.get(edge.getTo());
+        for (GraphJson.GraphEdge edge : data.getEdges()) {
+            GraphJson.GraphNode from = nodeMap.get(edge.getSource());
+            GraphJson.GraphNode to = nodeMap.get(edge.getTarget());
             if (from == null || to == null) {
                 continue;  // 防御：边引用了不存在的节点，跳过（ParserService 已校验过，这里只是双保险）
             }
@@ -123,27 +123,33 @@ public class DiagramService {
     /**
      * JSON 数据 → PlantUML 语法（入口方法）
      */
-    public String buildPlantUml(FlowchartData data) {        // ① 建 nodeMap：id → Node
-        Map<String, FlowchartData.Node> nodeMap = new HashMap<>();
-        for (FlowchartData.Node node : data.getNodes()) {
+    public String buildPlantUml(GraphJson data) {        // ① 建 nodeMap：id → Node
+        Map<String, GraphJson.GraphNode> nodeMap = new HashMap<>();
+        for (GraphJson.GraphNode node : data.getNodes()) {
             nodeMap.put(node.getId(), node);
         }
 
-        // ② 建 edgeMap：from节点id → 它的出边列表
-        Map<String, List<FlowchartData.Edge>> edgeMap = new HashMap<>();
-        for (FlowchartData.Edge edge : data.getEdges()) {
+        // ② 建 edgeMap：起始节点id → 它的出边列表
+        Map<String, List<GraphJson.GraphEdge>> edgeMap = new HashMap<>();
+        for (GraphJson.GraphEdge edge : data.getEdges()) {
             edgeMap
-                    .computeIfAbsent(edge.getFrom(), k -> new ArrayList<>())
+                    .computeIfAbsent(edge.getSource(), k -> new ArrayList<>())
                     .add(edge);
         }
 
         // ③ 找 start 节点
-        FlowchartData.Node startNode = null;
-        for (FlowchartData.Node node : data.getNodes()) {
+        GraphJson.GraphNode startNode = null;
+        for (GraphJson.GraphNode node : data.getNodes()) {
             if ("start".equals(node.getType())) {
                 startNode = node;
                 break;
             }
+        }
+
+        // 任务45 兜底：Refine 走宽松校验，允许流程图没有 start 节点（如用户指令把起点删了）。
+        // 没有 start 无法按活动图递归，退化为"按边罗列"的通用渲染（与架构图一致），避免 NPE。
+        if (startNode == null) {
+            return buildArchitecture(data);
         }
 
         // ④ 开始递归
@@ -161,9 +167,9 @@ public class DiagramService {
      * @param sb      输出的 StringBuilder
      * @param visited 已访问的节点 ID（防死循环）
      */
-    private void traverse(FlowchartData.Node node,
-                          Map<String, FlowchartData.Node> nodeMap,
-                          Map<String, List<FlowchartData.Edge>> edgeMap,
+    private void traverse(GraphJson.GraphNode node,
+                          Map<String, GraphJson.GraphNode> nodeMap,
+                          Map<String, List<GraphJson.GraphEdge>> edgeMap,
                           StringBuilder sb,
                           Set<String> visited) {
 
@@ -197,12 +203,12 @@ public class DiagramService {
 
             case "decision":
                 // decision 节点最复杂，有两条出边
-                List<FlowchartData.Edge> edges = edgeMap.get(node.getId());
+                List<GraphJson.GraphEdge> edges = edgeMap.get(node.getId());
 
                 // 找"是"分支和"否"分支
-                FlowchartData.Edge yesEdge = null;
-                FlowchartData.Edge noEdge = null;
-                for (FlowchartData.Edge e : edges) {
+                GraphJson.GraphEdge yesEdge = null;
+                GraphJson.GraphEdge noEdge = null;
+                for (GraphJson.GraphEdge e : edges) {
                     if ("是".equals(e.getLabel())) yesEdge = e;
                     if ("否".equals(e.getLabel())) noEdge = e;
                 }
@@ -215,13 +221,13 @@ public class DiagramService {
                 sb.append("if (").append(label).append(") then (是)\n");
                 // 递归处理"是"分支
                 if (yesEdge != null) {
-                    traverse(nodeMap.get(yesEdge.getTo()), nodeMap, edgeMap, sb, visited);
+                    traverse(nodeMap.get(yesEdge.getTarget()), nodeMap, edgeMap, sb, visited);
                 }
 
                 sb.append("else (否)\n");
                 // 递归处理"否"分支
                 if (noEdge != null) {
-                    traverse(nodeMap.get(noEdge.getTo()), nodeMap, edgeMap, sb, visited);
+                    traverse(nodeMap.get(noEdge.getTarget()), nodeMap, edgeMap, sb, visited);
                 }
 
                 sb.append("endif\n");
@@ -229,9 +235,9 @@ public class DiagramService {
                 return;
         }
         // ===== 非 decision、非 end 节点：顺着唯一出边继续 =====
-        List<FlowchartData.Edge> edges = edgeMap.get(node.getId());
+        List<GraphJson.GraphEdge> edges = edgeMap.get(node.getId());
         if (edges != null && !edges.isEmpty()) {
-            FlowchartData.Node nextNode = nodeMap.get(edges.get(0).getTo());
+            GraphJson.GraphNode nextNode = nodeMap.get(edges.get(0).getTarget());
             traverse(nextNode, nodeMap, edgeMap, sb, visited);
         }
     }

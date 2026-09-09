@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FlowAI - AI 流程图生成器</title>
-    <!-- CSS 拆出去，HTML 只管结构；?v=4 版本戳强制浏览器重新拉取，避免缓存旧样式 -->
-    <link rel="stylesheet" href="style.css?v=4">
+    <!-- CSS 拆出去，HTML 只管结构；?v=10 版本戳强制浏览器重新拉取，避免缓存旧样式 -->
+    <link rel="stylesheet" href="style.css?v=24">
     <!-- Mermaid：浏览器端图表渲染库（任务37，CDN 引入，随用随加载，不进打包） -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 </head>
@@ -18,7 +18,7 @@
     <aside class="sidebar">
         <div class="brand">
             <span>⚡</span>
-            <div>FlowAI <span>流程图</span></div>
+            <div><span class="brand-name">FlowAI</span><span class="brand-sub">流程图</span></div>
         </div>
 
         <nav class="nav-section">
@@ -48,7 +48,7 @@
     </aside>
 
     <!-- ===== 主区域：右侧全部工作区 ===== -->
-    <main class="main">
+    <main class="main" :class="{ 'search-open': searchPanelOpen }">
 
         <!-- 顶栏：标题 + 图表类型 -->
         <div class="top-bar">
@@ -74,7 +74,7 @@
             </div>
         </div>
 
-        <!-- 画布区：显示图形（在输入框上面，占满剩余空间） -->
+        <!-- 画布区：只显示图形，保持100%干净 -->
         <div class="canvas-area">
 
             <!-- 空状态：没有结果、没有错误、且未在生成时显示 -->
@@ -85,6 +85,16 @@
 
             <!-- 错误提示 -->
             <div class="error-msg" v-if="errorMessage">{{ errorMessage }}</div>
+
+            <!-- LLM 原始回复折叠区：校验失败时展示"AI 实际说了什么"，帮用户理解模型为什么没画图 -->
+            <div class="ai-summary-fold" v-if="aiSummary">
+                <div class="ai-summary-header" @click="aiSummaryExpanded = !aiSummaryExpanded" :title="aiSummaryExpanded ? '点击收起' : '点击展开'">
+                    <span class="ai-summary-icon">💬</span>
+                    <span class="ai-summary-label">查看 AI 实际说了什么</span>
+                    <span class="ai-summary-arrow">{{ aiSummaryExpanded ? '收起 ⌃' : '展开 ⌄' }}</span>
+                </div>
+                <div class="ai-summary-body" v-if="aiSummaryExpanded">{{ aiSummary }}</div>
+            </div>
 
             <!-- SVG 视口：有结果时显示，支持滚轮缩放 + 拖拽 -->
             <div class="svg-viewport" v-if="hasResult"
@@ -98,80 +108,158 @@
                 <div class="svg-wrapper"
                      :style="{ transform: svgTransform }"
                      v-html="svgContent"></div>
-            </div>
 
-            <!-- 画布工具栏（浮在画布右上角） -->
-            <div class="canvas-toolbar" v-if="hasResult">
-                <div class="zoom-controls">
-                    <button class="tool-btn" @click="zoomIn">➕</button>
-                    <button class="tool-btn" @click="zoomOut">➖</button>
-                    <button class="tool-btn" @click="resetZoom">⟲</button>
-                    <span class="zoom-label">{{ Math.round(scale * 100) }}%</span>
-                </div>
-                <div class="download-group">
-                    <!-- Mermaid 模式：只给「⬇️ MMD」下载源码；其他模式（SVG/PNG）才给 SVG/PNG 下载 -->
-                    <template v-if="format === 'mermaid'">
-                        <button class="tool-btn btn-mmd" @click="downloadFile('mmd')">⬇️ MMD</button>
-                    </template>
-                    <template v-else>
-                        <button class="tool-btn btn-svg" @click="downloadFile('svg')">⬇️ SVG</button>
-                        <button class="tool-btn btn-png" @click="downloadFile('png')">⬇️ PNG</button>
-                    </template>
+                <!-- 画布工具栏（浮在 SVG 视口内，避免被右侧 RAG 面板遮挡） -->
+                <div class="canvas-toolbar">
+                    <div class="zoom-controls">
+                        <button class="tool-btn" @click="zoomIn">➕</button>
+                        <button class="tool-btn" @click="zoomOut">➖</button>
+                        <button class="tool-btn" @click="resetZoom">⟲</button>
+                        <span class="zoom-label">{{ Math.round(scale * 100) }}%</span>
+                    </div>
+                    <div class="download-group">
+                        <!-- Mermaid 模式：只给「⬇️ MMD」下载源码；其他模式（SVG/PNG）才给 SVG/PNG 下载 -->
+                        <template v-if="format === 'mermaid'">
+                            <button class="tool-btn btn-mmd" @click="downloadFile('mmd')">⬇️ MMD</button>
+                        </template>
+                        <template v-else>
+                            <button class="tool-btn btn-svg" @click="downloadFile('svg')">⬇️ SVG</button>
+                            <button class="tool-btn btn-png" @click="downloadFile('png')">⬇️ PNG</button>
+                        </template>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- 输入区（底部固定，像聊天框）：流程图区只显示图，进度信息收进输入框内部 -->
+        <!-- 实时状态区（画布下方、输入区上方）：思考流 + 工具标签，完整展示可滚动 -->
+        <div class="gen-status" ref="thinkingRef" v-if="loading || thinkingSteps.length > 0 || toolCalls.length > 0">
+            <!-- 工具调用标签（紧凑一行，web_search 点击可展开右侧搜索结果，模仿 Kimi「N 个结果 ▾」） -->
+            <div class="gen-tools" v-if="toolCalls.length > 0">
+                <div class="gen-tool" v-for="tc in toolCalls"
+                     :key="tc.callKey || tc.toolKey" :class="tc.status" :data-toolkey="tc.toolKey"
+                     @click="toggleSearch(tc)"
+                     :title="tc.toolKey === 'web_search' && tc.resultCount > 0 ? (searchPanelOpen && activeSearchKey === tc.callKey ? '点击收起' : '点击展开该搜索的结果') : ''">
+                    <span class="gen-tool-icon" :class="tc.iconClass">{{ tc.icon }}</span>
+                    <span class="gen-tool-name">{{ tc.label }}</span>
+                    <span class="gen-tool-count" v-if="tc.toolKey === 'web_search' && tc.resultCount > 0">
+                        {{ tc.resultCount }} 个结果 {{ (searchPanelOpen && activeSearchKey === tc.callKey) ? '▴' : '▾' }}
+                    </span>
+                    <span class="gen-tool-dot" :class="tc.status"></span>
+                </div>
+            </div>
+            <!-- 思考/任务执行过程（Kimi 风格可折叠卡片：完成后自动收缩，点击展开看完整内容） -->
+            <div class="gen-thinking" v-if="thinkingSteps.length > 0 || streamingThinking">
+                <div class="gen-thinking-header" @click="thinkingOpen = !thinkingOpen" :title="thinkingOpen ? '点击收起' : '点击展开'">
+                    <span class="gen-thinking-icon">🧠</span>
+                    <span class="gen-thinking-heading">
+                        <span class="pulse-dot" v-if="loading"></span>{{ loading ? '思考中…' : (thinkingOpen ? '思考过程' : '思考已完成') }}
+                    </span>
+                    <span class="collapse-arrow">{{ thinkingOpen ? '⌃' : '⌄' }}</span>
+                </div>
+                <div class="gen-thinking-body" ref="thinkingBodyRef" v-if="thinkingOpen">
+                    <!-- 离散的"任务执行步骤"（构建 prompt / 调工具 / 命中结果等） -->
+                    <div class="gen-thinking-row" v-for="(step, i) in thinkingSteps" :key="'step-' + i">
+                        <span class="gen-thinking-dot"></span>
+                        <span class="gen-thinking-text">{{ step }}</span>
+                    </div>
+                    <!-- 实时追加的模型推理流（带闪烁光标，逐字显示） -->
+                    <div class="gen-thinking-stream" v-if="streamingThinking">
+                        <span class="gen-thinking-dot"></span>
+                        <span class="gen-thinking-text stream">{{ streamingThinking }}<span class="stream-cursor" v-if="loading"></span></span>
+                    </div>
+                </div>
+            </div>
+            <!-- 生成中提示 -->
+            <div class="gen-loading" v-if="loading && thinkingSteps.length === 0">
+                <span class="gen-loading-dot"></span>
+                <span>AI 正在思考…</span>
+            </div>
+        </div>
+
+        <!-- 输入区（底部固定，极简设计） -->
         <div class="input-area">
+            <!-- 知识库引用面板：放在输入区右侧 -->
+            <div class="rag-panel rag-sidebar" v-if="ragHits && ragHits.length">
+                <div class="rag-panel-header">📚 知识库引用（RAG 已增强）</div>
+                <div class="rag-hit" v-for="(hit, i) in ragHits" :key="i">
+                    <div class="rag-hit-meta">
+                        <span class="rag-hit-source">{{ hit.source }}</span>
+                        <span class="rag-hit-score">相似度 {{ (hit.score * 100).toFixed(1) }}%</span>
+                    </div>
+                    <pre class="rag-hit-content">{{ hit.content.length > 240 ? hit.content.slice(0, 240) + '…' : hit.content }}</pre>
+                </div>
+            </div>
+
             <div class="input-card">
-                <div class="input-toolbar">
+                <!-- RAG 降级提示 -->
+                <div class="rag-degraded" v-if="ragDegraded">
+                    ⚠️ 知识库检索失败，已降级为不使用知识库继续生成
+                </div>
+
+                <!-- 示例标签（只在无输入时显示） -->
+                <div class="input-toolbar" v-if="!textInput">
                     <span class="mini-tag" @click="fillExample('登录')">🔐 登录流程</span>
                     <span class="mini-tag" @click="fillExample('审批')">📋 审批流程</span>
                     <span class="mini-tag" @click="fillExample('电商')">🧠 电商组成</span>
                     <span class="mini-tag" @click="fillExample('系统架构')">🏗️ 系统架构</span>
                 </div>
-                <!-- v-model：双向绑定，输入框内容 ↔ textInput 变量 -->
-                <!-- @keydown.ctrl.enter：Ctrl+Enter 快捷发送 -->
-                <!-- :placeholder：占位符按图表类型动态切换 -->
-                <textarea v-model="textInput"
-                    @keydown.ctrl.enter="generate"
-                    :placeholder="placeholderText"></textarea>
 
-                <!-- 紧凑状态条：当前调用模型 + token + 简要日志，生成中/生成后显示 -->
-                <div class="progress-panel" v-show="loading || tokenReady">
-                    <div class="progress-header">
-                        <span class="status-pill">
-                            当前调用 <b>{{ currentProvider || '—' }}</b>
-                            <span v-if="currentProvider && currentProvider !== selectedModel" class="pill-note">
-                                （实际调用 {{ currentProvider }}，与你选的 {{ selectedModel }} 不同）
-                            </span>
-                            <span class="pill-sep">·</span>
-                            消耗 <b>{{ tokenReady ? tokenInfo.totalTokens : '…' }}</b> token
-                            <span v-if="tokenReady && tokenInfo.totalTokens > 0" class="token-mini">
-                                (prompt {{ tokenInfo.promptTokens }} / completion {{ tokenInfo.completionTokens }})
-                            </span>
-                        </span>
-                    </div>
-                    <div class="progress-tip">
-                        首次生成较慢；若命中缓存则直接返回，不再调用 LLM。
-                    </div>
-                    <div class="progress-logs">
-                        <div v-for="(log, i) in progressLogs" :key="i"
-                             class="progress-log" :class="'log-' + log.type">
-                            <span class="log-dot"></span>{{ log.message }}
-                        </div>
+                <!-- 输入框 + 发送按钮（内联） -->
+                <div class="input-box">
+                    <textarea v-model="textInput"
+                        ref="inputRef"
+                        @keydown.ctrl.enter="generate"
+                        @input="autosize"
+                        :placeholder="placeholderText"
+                        rows="1"></textarea>
+                    <div class="input-actions">
+                        <button class="input-icon-btn send" :class="{ stop: loading }"
+                            @click="loading ? stopGenerate() : generate()"
+                            :title="loading ? '停止生成' : buttonText">
+                            {{ loading ? '■' : '➤' }}
+                        </button>
                     </div>
                 </div>
 
-                <div class="input-footer">
+                <!-- 工具开关 + 模型选择（紧凑一行） -->
+                <div class="input-tools">
+                    <div class="tool-toggle" :class="{ active: useRag }" @click="useRag = !useRag">
+                        <span class="tool-toggle-icon">📚</span> 知识库
+                    </div>
+                    <div class="tool-toggle" :class="{ active: useTool }" @click="useTool = !useTool">
+                        <span class="tool-toggle-icon">🛠️</span> 工具
+                    </div>
                     <select class="model-select" v-model="selectedModel" @change="onModelChange" autocomplete="off">
-                        <option value="mimo">mimo（主）</option>
-                        <option value="kimi">kimi（备用入口，需配置才生效）</option>
+                        <option value="mimo">mimo</option>
+                        <option value="kimi">kimi</option>
                     </select>
-                    <button class="send-btn" @click="generate" :disabled="loading">
-                        <span>{{ loading ? '⏳' : '⚡' }}</span>
-                        {{ loading ? '生成中...' : buttonText }}
-                    </button>
+                    <!-- 紧凑 token 信息（生成后显示） -->
+                    <span class="token-compact" v-if="tokenReady && tokenInfo.totalTokens > 0">
+                        {{ tokenInfo.totalTokens }} token
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 搜索结果面板（任务39 UI 改版：模仿 Kimi 风格） -->
+        <div class="search-panel" :class="{ open: searchPanelOpen }">
+            <div class="search-panel-header">
+                <span>🔍</span>
+                <span class="search-panel-title">搜索结果</span>
+                <span class="search-panel-subtitle" v-if="currentSearchInput">{{ currentSearchInput }}</span>
+                <span class="search-panel-count">{{ currentSearchResults.length }} 条</span>
+                <button class="search-panel-close" @click="searchPanelOpen = false">✕</button>
+            </div>
+            <div class="search-results">
+                <div class="search-result-item" v-for="(r, i) in currentSearchResults" :key="i">
+                    <div class="search-result-source">
+                        <div class="search-result-favicon">{{ r.site[0] }}</div>
+                        <span class="search-result-site">{{ r.site }}</span>
+                        <span class="search-result-date">{{ r.date }}</span>
+                    </div>
+                    <a class="search-result-title" :href="r.url" target="_blank" rel="noopener">{{ r.title }}</a>
+                    <div class="search-result-snippet">{{ r.snippet }}</div>
+                    <div class="search-result-score" v-if="r.score">相关度 {{ r.score }}%</div>
                 </div>
             </div>
         </div>
@@ -185,7 +273,7 @@
 
 <!-- Vue 3 CDN（global build，不用 npm） -->
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-<!-- JS 逻辑拆出去；?v=4 版本戳防止浏览器继续用缓存的旧 app.js -->
-<script src="app.js?v=4"></script>
+<!-- JS 逻辑拆出去；?v=10 版本戳防止浏览器继续用缓存的旧 app.js -->
+<script src="app.js?v=24"></script>
 </body>
 </html>

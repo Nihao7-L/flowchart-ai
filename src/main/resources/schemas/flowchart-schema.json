@@ -22,6 +22,20 @@
           "label": {
             "type": "string",
             "description": "节点显示文字，简洁，不超过 20 字"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "x": { "type": "number" },
+                  "y": { "type": "number" }
+                },
+                "additionalProperties": false
+              },
+              { "type": "null" }
+            ],
+            "description": "可选：节点坐标建议（画布像素）。通常不需要给，不给时由前端自动布局"
           }
         },
         "required": ["id", "type", "label"],
@@ -33,11 +47,11 @@
       "items": {
         "type": "object",
         "properties": {
-          "from": {
+          "source": {
             "type": "string",
             "description": "起始节点 ID，必须是 nodes 中存在的 id"
           },
-          "to": {
+          "target": {
             "type": "string",
             "description": "目标节点 ID，必须是 nodes 中存在的 id"
           },
@@ -49,7 +63,7 @@
             "description": "连线标签，如：是/否/成功后；没有可填 null"
           }
         },
-        "required": ["from", "to", "label"],
+        "required": ["source", "target", "label"],
         "additionalProperties": false
       }
     }

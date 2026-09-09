@@ -1,5 +1,6 @@
 package io.github.nihaoljx.flowchart.client;
 
+import io.github.nihaoljx.flowchart.client.stream.ClientDisconnectedException;
 import io.github.nihaoljx.flowchart.client.stream.ProgressContext;
 import io.github.nihaoljx.flowchart.client.stream.ProgressEvent;
 import io.github.nihaoljx.flowchart.client.stream.RoutingContext;
@@ -57,6 +58,17 @@ public class FallbackLlmProvider implements LlmProvider {
     }
 
     @Override
+    public String chatWithTools(List<Map<String, Object>> messages, String toolsJson) throws Exception {
+        return withFallback(p -> p.chatWithTools(messages, toolsJson));
+    }
+
+    @Override
+    public String chatStructuredStream(String prompt, String schemaJson) throws Exception {
+        // 任务39+：流式穿主备链——主模型流式失败就切备用重新流（连接层失败时重开流，中途失败则早停）
+        return withFallback(p -> p.chatStructuredStream(prompt, schemaJson));
+    }
+
+    @Override
     public boolean isConfigured() {
         return providers.stream().anyMatch(LlmProvider::isConfigured);
     }
@@ -89,6 +101,9 @@ public class FallbackLlmProvider implements LlmProvider {
             }
             try {
                 return action.apply(p);
+            } catch (ClientDisconnectedException e) {
+                // 任务40：用户主动停止 / 客户端断开——不是"模型失败"，绝不能切备用继续生成，直接上抛
+                throw e;
             } catch (Exception e) {
                 last = e;
                 // 任务37：记一条"某模型失败"

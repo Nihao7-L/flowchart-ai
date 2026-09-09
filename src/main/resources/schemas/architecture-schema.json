@@ -7,7 +7,7 @@
     },
     "nodes": {
       "type": "array",
-      "description": "组件列表，4~10 个，覆盖前端、后端、数据库、中间件、外部系统等",
+      "description": "组件列表，4~15 个，覆盖前端、后端、数据库、中间件、外部系统等",
       "items": {
         "type": "object",
         "properties": {
@@ -23,6 +23,20 @@
           "label": {
             "type": "string",
             "description": "组件名称，如：Web前端、订单服务、MySQL数据库、Redis缓存"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "x": { "type": "number" },
+                  "y": { "type": "number" }
+                },
+                "additionalProperties": false
+              },
+              { "type": "null" }
+            ],
+            "description": "可选：节点坐标建议（画布像素）。通常不需要给，不给时由前端自动布局"
           }
         },
         "required": ["id", "type", "label"],
@@ -31,15 +45,15 @@
     },
     "edges": {
       "type": "array",
-      "description": "组件间依赖/调用关系，4~12 条；from 是调用方，to 是被调用方",
+      "description": "组件间依赖/调用关系，4~15 条；source 是调用方，target 是被调用方",
       "items": {
         "type": "object",
         "properties": {
-          "from": {
+          "source": {
             "type": "string",
             "description": "起始组件 ID，必须是 nodes 中存在的 id"
           },
-          "to": {
+          "target": {
             "type": "string",
             "description": "目标组件 ID，必须是 nodes 中存在的 id"
           },
@@ -51,7 +65,7 @@
             "description": "连接说明，如：调用/依赖/读写；没有可填 null"
           }
         },
-        "required": ["from", "to", "label"],
+        "required": ["source", "target", "label"],
         "additionalProperties": false
       }
     }

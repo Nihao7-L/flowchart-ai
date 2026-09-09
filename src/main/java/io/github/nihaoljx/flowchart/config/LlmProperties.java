@@ -34,6 +34,9 @@ public class LlmProperties {
     private String model;
     private int timeoutSeconds = 60;
 
+    /** RAG 检索增强用的 Embedding 配置（任务38新增） */
+    private Embedding embedding = new Embedding();
+
     /** 顶层共享的重试配置（工厂自动填进每个 Provider） */
     private Retry retry = new Retry();
 
@@ -67,6 +70,34 @@ public class LlmProperties {
         public void setPort(int v) { this.port = v; }
     }
 
+    /**
+     * RAG 检索增强用的 Embedding 配置（任务38新增）
+     * 走 OpenAI 兼容 /v1/embeddings 接口，默认用硅基流动免费 BAAI/bge-m3。
+     */
+    public static class Embedding {
+        /** embeddings 接口地址，默认硅基流动 */
+        private String baseUrl;
+        /** 硅基流动 API Key（免费额度即可） */
+        private String apiKey;
+        /** 模型名，默认 BAAI/bge-m3（1024 维，免费） */
+        private String model = "BAAI/bge-m3";
+        /** 切片大小（字），默认 300 */
+        private int chunkSize = 300;
+        /** 检索返回片段数，默认 3 */
+        private int topK = 3;
+
+        public String getBaseUrl() { return baseUrl; }
+        public void setBaseUrl(String v) { this.baseUrl = v; }
+        public String getApiKey() { return apiKey; }
+        public void setApiKey(String v) { this.apiKey = v; }
+        public String getModel() { return model; }
+        public void setModel(String v) { this.model = v; }
+        public int getChunkSize() { return chunkSize; }
+        public void setChunkSize(int v) { this.chunkSize = v; }
+        public int getTopK() { return topK; }
+        public void setTopK(int v) { this.topK = v; }
+    }
+
     // ===== getters / setters =====
     public List<ProviderConfig> getProviders() { return providers; }
     public void setProviders(List<ProviderConfig> v) { this.providers = v; }
@@ -86,4 +117,7 @@ public class LlmProperties {
     public void setProxy(Proxy v) { this.proxy = v; }
     public Map<String, Double> getPricing() { return pricing; }
     public void setPricing(Map<String, Double> v) { this.pricing = v; }
+
+    public Embedding getEmbedding() { return embedding; }
+    public void setEmbedding(Embedding v) { this.embedding = v; }
 }
