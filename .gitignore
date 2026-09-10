@@ -36,6 +36,8 @@ build/
 # 项目自定义
 *.log
 application-local.yml
+# 含明文 MiMo key，禁止提交/推送（本地保留即可，不要 push）
+src/main/resources/application.yml
 
 # 环境变量文件（含密钥，禁止提交到 git）
 .env
@@ -44,3 +46,8 @@ application-local.yml
 
 # WorkBuddy 项目记忆数据（非源码，禁止提交）
 .workbuddy/
+
+# 个人参考资料（AI Agent 调研笔记等），非项目源码，禁止入库
+docs/AI*.md
+# 项目规划文档（本地维护，不入库）
+docs/阶段总结与规划.md
