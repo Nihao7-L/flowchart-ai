@@ -71,4 +71,34 @@ Agent 在 `docs/exec-plans/active/vX-N.md` 写出六项：
 - [ ] `activeLog.md` 有带证据的一行
 - [ ] 计划文件已移入 `completed/`
 - [ ] `docs/架构规划-v2.md` 对应项已勾
+- [ ] `features.md` 状态列已更新
 - [ ] `git status` 里没有 `application.yml`
+
+## 五、active / completed / activeLog = 状态机 + 外置记忆
+
+**状态机**：每个计划文件顶部必须有一行状态，取值只有四种——
+
+```
+> 状态：待审 | 进行中 | 阻塞 | 完成
+```
+
+- `active/` 放正在跑的任务：**一个任务一个文件**，文件名 `vX-N-短名.md`
+- 完成后 `git mv` 到 `completed/`，在文件顶部加一行完成结论（**原计划内容不改**，那是给未来复盘看的）
+- `activeLog.md` **只追加，不修改历史行**，格式：`MM-DD HH:mm vX-N 做了什么 → 证据`
+
+**多 Agent 并行时**：各自写自己的计划文件，互不覆盖；activeLog 追加式写入天然不冲突；谁收尾谁负责移文件与勾账。
+会话被压缩或换新会话后，恢复上下文只需读 `activeLog.md` 最后几行 + `active/` 里的状态行。
+
+## 六、新知识该写进哪份（每份只回答一类问题）
+
+| 新知识 | 写进 |
+|---|---|
+| 项目阶段、定位、已定决策变了 | `project.md` |
+| 包边界、调用关系、数据流 | `architecture.md` |
+| 功能增删、功能状态变化 | `features.md` |
+| 命令、环境坑、操作禁令 | `engineering.md` |
+| 流程、话术、编排规程 | `workflow.md` |
+| 路线图任务（编号、验收口径） | `docs/架构规划-v2.md` |
+| 产品里 Agent 的缺陷 | `docs/exec-plans/tech-debt-tracker.md` |
+
+**不属于以上任何一类的知识，先别写**——少即是多，每多一句废话就多一分理解偏差。

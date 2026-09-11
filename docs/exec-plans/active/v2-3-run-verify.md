@@ -1,6 +1,6 @@
-# v2-3 run-verify.ps1 —— 待用户确认后执行
+# v2-3 run-verify.ps1
 
-> 状态：**待审**（等你点头才动代码）
+> 状态：待审
 > 计划先落盘是 workflow 第 ② 拍，这一拍的作用是让你审 Plan 而不是审 diff。
 
 ## 目标
@@ -12,6 +12,10 @@
 - 允许新增：`run-verify.ps1`（仓库根）
 - 允许修改：`.gitignore`（忽略 `run-verify.log`）、`docs/agents/engineering.md`（第四节补实际用法）
 - **不允许**改任何业务代码（`src/main/java/**` 本次一行不动）
+
+## 分层边界
+
+只落在"工具/脚本层"与"知识层"：不触碰 `controller/ service/ llm/ graph/` 任何一层，不改变任何调用关系（见 `architecture.md` 第一节）。
 
 ## 前置
 
