@@ -49,5 +49,9 @@ src/main/resources/application.yml
 
 # 个人参考资料（AI Agent 调研笔记等），非项目源码，禁止入库
 docs/AI*.md
-# 项目规划文档（本地维护，不入库）
+# 项目台账（流水记录，本地维护，不入库）
 docs/阶段总结与规划.md
+
+# 验证脚本产物（临时）
+run-verify.log
+compile-*.txt
