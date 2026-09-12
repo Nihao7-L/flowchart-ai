@@ -70,7 +70,7 @@
   - 背景：需要"手绘白板 + AI 改图"双通道，React Flow 偏结构化流程图。
   - 选项：React Flow（结构化强、手绘弱）/ Excalidraw（手绘自然、可嵌组件）/ 自绘 Canvas。
   - 决定：Excalidraw 嵌入 + 双通道。理由：贴合人类手绘直觉，且 `convertToExcalidrawElements` 能把 IR 渲染出来。
-  - 代价：需处理 `convert` 重生成 id、NaN 视口等坑（见 `engineering.md` 技术约束）；结构化编辑弱于 React Flow。
+  - 代价：需处理 `convert` 重生成 id、NaN 视口等坑（见 `constraint.md` 技术约束）；结构化编辑弱于 React Flow。
 
 - **ADR-2 模型（IR）后端持有，而非前端持有**
   - 背景：双通道下"谁是唯一真相源"直接决定数据流。
@@ -89,7 +89,7 @@
 
 - **安全**：明文 LLM key 留 `application.yml` 不入库（gitignore 兜底）；Agent 禁改 env/系统设置。当前无鉴权（单用户本地）。
 - **性能**：目标并发会话数待压测；单次出图延迟 ≈ LLM 推理 + ≤3 轮校验；**当前无量化 P99/QPS 数据（待 infra 阶段埋点）**。
-- **可观测性**：阶段 7 建 Trace/metrics/审计；当前靠 exec-plans 外置记忆（activeLog/tech-debt）做人工可观测。
+- **可观测性**：阶段 7 建 Trace/metrics/审计；当前靠 `state/activeLog/` 做人工可观测。
 - **成本**：token 月额度受外部 API 限制；长会话/大图需预算与降级（小模型兜底）。
 
 ## 五、风险与演进
@@ -97,7 +97,7 @@
 - **代码仍停留在旧架构**：真实 `DiagramController` 仍是 `/api/generate` → LLM → PlantUML → SVG，与本文目标架构（`/api/chat` + agent/tools/session/IR）脱节，待按本文重建（路线图 v2-8 起）。
 - **单进程扩展上限**：当前无水平扩展，多用户需重做部署视图。
 - **无压测/无评测集**：性能与"自反馈"闭环缺量化基线（见 `workflow.md` 自反馈机制）。
-- **下一步**：按 `../架构规划-v2.md` 推进 v2-3（验证）→ v2-8（核心链路）→ … → v2-27（可观测）。
+- **下一步**：按 `plans/masterPlan/` 下模块计划推进 M0（底座）→ M1（核心链路）→ … → M7（可观测）。
 
 ## 六、架构不变式（改代码不得破坏）
 
@@ -111,7 +111,12 @@
 
 ## 七、开发视图附录：本机编译/验证
 
-- 后端编译用 **java 直启 Maven**（Git Bash 的 `mvn` 坏、PowerShell 管道调 `mvn.cmd` 报错）：
+- 后端编译用 **java 直启 Maven**（Maven 3.9.5 本身完好，不用 `mvn` 的原因见下条）：
   `& "C:\Users\22719\.jdks\ms-17.0.17\bin\java.exe" -classpath "D:\maven-home\apache-maven-3.9.5-bin\apache-maven-3.9.5\boot\plexus-classworlds-2.7.0.jar" "-Dclassworlds.conf=D:\maven-home\apache-maven-3.9.5-bin\apache-maven-3.9.5\bin\m2.conf" "-Dmaven.home=D:\maven-home\apache-maven-3.9.5-bin\apache-maven-3.9.5" "-Dmaven.multiModuleProjectDirectory=F:\ProgramData\IDEA\flowchart" org.codehaus.plexus.classworlds.launcher.Launcher -B -f "F:\ProgramData\IDEA\flowchart\pom.xml" compile`
   （退出码 0 = 编译通过；换 `test` 即跑单测）
+- 为什么不用 `mvn`：**不是 Maven 装坏了，是 Git Bash 会话禁用了 MSYS 路径转换**。环境中 `MSYS_NO_PATHCONV=1` 与 `MSYS2_ARG_CONV_EXCL=*` 会阻止 Git Bash 把 `/d/...` 翻译为 `D:\...`；而 Maven 的 Unix 启动脚本 `bin/mvn`（第 109、199 行）算出的 classpath 正是 `/d/...` 形式，喂给 Windows 的 java 后报 `ClassNotFoundException: org.codehaus.plexus.classworlds.launcher.Launcher`。验证：`unset MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL` 后 `mvn -v` 立刻正常（Maven 3.9.5 / Java 17.0.17 / 退出码 0）。这两个变量**仅存在于 Agent 沙箱终端进程**，用户级与机器级均未设置，用户本机终端不受影响。
+- 第二个原因：PowerShell 调用 `mvn.cmd` 取不到退出码，门禁无法据此判断成败。
+- 根治方案（未做）：引入 Maven Wrapper（`mvnw` / `mvnw.cmd`）——项目自带启动器，不依赖本机 Maven 与 shell 路径翻译，团队与 CI 行为一致。
 - 一键验证：`powershell -File run-verify.ps1`（末行 `VERIFY PASS`、退出码 0）。
+- `run-verify.ps1` 的两个 PowerShell 注意事项：① 脚本**必须带 UTF-8 BOM**，否则 PowerShell 5.1 按本地编码解析，中文注释乱码会报"字符串缺少终止符"；② `Invoke-Maven` 内须先用 `Out-Host` 消费 java 输出再 `return $LASTEXITCODE`，否则函数把 stdout 一并当返回值，退出码判断恒为真（BUILD SUCCESS 也会误判 FAIL）。
+- 前端门禁：`run-verify.ps1` 用 `-FrontendInstallMode ci|install` 选安装方式——**本地默认 `install`**（增量、不清空 `node_modules`、秒级），CI 传 `ci`（严格按 lockfile）。选 `ci` 时注意：它会先清空 `node_modules`，若残留 vite / esbuild 进程（开发服务器未彻底退出）会握着文件锁导致 `ENOTEMPTY`（-4048），跑之前先确认无 `esbuild.exe` 残留。

@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE module PUBLIC
+        "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+        "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  ChartFlow Checkstyle 规则集（最小集）
+
+  设计原则：只拦"确定是问题"的，不拦风格偏好。
+  - 规则集是否"接上即绿"**必须真跑 `checkstyle:check` 验证**，不得用自写正则/脚本预扫代替。
+    教训（2026-09-12）：曾用自写预扫得出"接上即绿"，实际真跑报 29 条——预扫漏掉全部
+    24 处单行访问器，只报了 2 处。预扫只能用来估量，不能用来下结论。
+  - 首次真跑实测（2026-09-12）：29 条 = LeftCurly 24 + NeedBraces 2 + MissingSwitchDefault 1
+    + AvoidStarImport 2，全部在 src/main，**测试源码零违规**。处置见文件末尾清单。
+  - 故意不开/放宽的规则见文件末尾清单，每条都有理由与启用条件。
+
+  维护约定：
+  - 想加规则时，先真跑一次 `checkstyle:check` 看会命中多少条；会刷出很多就先修代码再加规则，
+    或按文件末尾的写法明确暂缓 + 写清启用条件。绝不允许"加规则 → 门禁常红 → 大家无视"。
+  - 放宽单条规则时，必须在本文件里写清楚为什么放宽、代价是什么、怎么收回。
+-->
+
+<module name="Checker">
+    <property name="charset" value="UTF-8"/>
+    <property name="severity" value="error"/>
+    <property name="fileExtensions" value="java"/>
+
+    <!-- ==================== 文件级 ==================== -->
+    <module name="NewlineAtEndOfFile"/>
+    <module name="FileTabCharacter"/>
+    <module name="FileLength">
+        <property name="max" value="2000"/>
+    </module>
+    <!-- 行尾空格。用 [ \t]+ 而不是 \s+，否则 CRLF 行尾的 \r 会被误判成行尾空白 -->
+    <module name="RegexpSingleline">
+        <property name="format" value="[ \t]+$"/>
+        <property name="message" value="行尾不得有多余空格"/>
+    </module>
+    <module name="LineLength">
+        <property name="max" value="120"/>
+    </module>
+
+    <module name="TreeWalker">
+        <!-- ==================== 顶层结构 ==================== -->
+        <module name="PackageDeclaration"/>
+        <module name="OuterTypeFilename"/>
+        <module name="OneTopLevelClass"/>
+
+        <!-- ==================== import ==================== -->
+        <module name="UnusedImports"/>
+        <module name="RedundantImport"/>
+        <module name="IllegalImport"/>
+
+        <!-- ==================== 大括号与块 ==================== -->
+        <!--
+            放宽：tokens 剔除 METHOD_DEF / CTOR_DEF —— 允许单行访问器
+            （如 `public String getTitle() { return title; }`）。
+            LeftCurly 只有 ignoreEnums / option / tokens 三个属性，没有"放过单行块"的开关，
+            坚持启用就必须把 24 个访问器拆成三行（纯格式改动，收益低于成本）。
+            代价：方法/构造器的大括号位置不再检查；类型块、if/for/while/try 等仍在检查范围内。
+            收回方式：把 METHOD_DEF, CTOR_DEF 加回 tokens，并先真跑确认代码已合规。
+
+            下面这份清单 = checkstyle 10.12.4 的 LeftCurly 默认 tokens（24 个）减去那两项，
+            取自 jar 内元数据 com/puppycrawl/tools/checkstyle/meta/checks/blocks/LeftCurlyCheck.xml。
+            注意版本差异：SWITCH_RULE 直到 10.15 才加入，在 10.12.4 写它会直接报
+            "unknown TokenTypes value"（已实测踩过），升级 checkstyle 版本时再重新核对本清单。
+        -->
+        <module name="LeftCurly">
+            <property name="tokens" value="ANNOTATION_DEF, CLASS_DEF, ENUM_CONSTANT_DEF, ENUM_DEF, INTERFACE_DEF, LAMBDA, LITERAL_CASE, LITERAL_CATCH, LITERAL_DEFAULT, LITERAL_DO, LITERAL_ELSE, LITERAL_FINALLY, LITERAL_FOR, LITERAL_IF, LITERAL_SWITCH, LITERAL_SYNCHRONIZED, LITERAL_TRY, LITERAL_WHILE, OBJBLOCK, STATIC_INIT, RECORD_DEF, COMPACT_CTOR_DEF"/>
+        </module>
+        <module name="RightCurly"/>
+        <module name="EmptyStatement"/>
+        <module name="EmptyCatchBlock"/>
+
+        <!-- ==================== 常见陷阱（静态可判定的真 bug 苗子）==================== -->
+        <module name="EqualsHashCode"/>
+        <module name="StringLiteralEquality"/>
+        <module name="SimplifyBooleanExpression"/>
+        <module name="SimplifyBooleanReturn"/>
+        <module name="UpperEll"/>
+        <module name="DefaultComesLast"/>
+        <module name="FallThrough"/>
+        <module name="NoFinalizer"/>
+        <module name="IllegalCatch">
+            <property name="illegalClassNames" value="java.lang.Throwable, java.lang.Error"/>
+        </module>
+        <module name="ArrayTypeStyle"/>
+        <module name="ModifierOrder"/>
+        <module name="RedundantModifier"/>
+
+        <!-- ==================== 空白 ==================== -->
+        <module name="WhitespaceAfter">
+            <property name="tokens" value="COMMA, SEMI"/>
+        </module>
+        <module name="NoWhitespaceBefore">
+            <property name="tokens" value="SEMI, POST_INC, POST_DEC"/>
+        </module>
+        <module name="GenericWhitespace"/>
+
+        <!-- ==================== 命名 ==================== -->
+        <module name="TypeName"/>
+        <module name="MethodName"/>
+        <module name="MemberName"/>
+        <module name="ConstantName"/>
+        <module name="StaticVariableName"/>
+        <module name="ParameterName"/>
+        <module name="LocalVariableName"/>
+        <module name="PackageName"/>
+    </module>
+</module>
+
+<!--
+  未启用（有意，不是遗漏）：
+
+  NeedBraces / AvoidStarImport / MissingSwitchDefault（暂缓，等 M1 后一并开）
+    首次真跑命中 5 处，全在 src/main 的业务包：
+      - DiagramService.java:206-207  `if (x) yesEdge = e;` 单行 if 无大括号（NeedBraces ×2）
+      - DiagramService.java:185      `switch (node.getType())` 无 default（MissingSwitchDefault ×1）
+      - DiagramService.java:12       `import java.util.*;`（AvoidStarImport ×1）
+      - DiagramController.java:18    `import org.springframework.web.bind.annotation.*;`（AvoidStarImport ×1）
+    为什么暂缓：修它们要动这 4 个位置所在的 service / controller 文件，而 M0 计划边界写明
+    「禁止改动业务包功能实现（不动 controller/service/llm/graph 等）」；且当前代码将被 M1 大幅重建，
+    为一处 `default: break;` 与格式化改动去动即将重写的文件不划算。
+    启用条件：M1 重建 controller/service（`/api/generate` → `/api/chat`）后，新代码一次写合规，
+    届时删掉本段、把三条规则移入上面的启用区（并在同一次提交里真跑一次确认零违规）。
+    注：启用 AvoidStarImport 时必须配 allowStaticMemberImports=true，
+    否则测试文件里 `import static ...Assertions.*;`（惯例写法）会误报。
+
+  Indentation
+    误报率最高的规则（匿名类、连续参数、switch 缩进、文本块），且需要人工逐条
+    确认才能调准。等本机可以稳定实跑 checkstyle 之后再单独一轮加，不在本轮冒险。
+
+  Javadoc*（JavadocType / JavadocMethod / JavadocVariable）
+    当前代码几乎没有 Javadoc，接上会一次刷出上百条 —— 那是"补文档"这个独立任务，
+    不该混进"接口规范"任务。等真要补文档时再一起开。
+
+  MagicNumber / MultipleStringLiterals
+    噪声大：常量数字 2000（字数上限）、3（最大轮次）等会被反复报，收益低于打扰成本。
+
+  FinalParameters / DesignForExtension / VisibilityModifier / HiddenField / RequireThis
+    属于团队风格偏好而非缺陷，未与用户约定，不擅自强加。
+
+  CyclomaticComplexity / NPathComplexity
+    等 M1（agent 主循环、校验循环）代码长出来，看到真实复杂度分布再定阈值，
+    现在定是拍脑袋。
+-->

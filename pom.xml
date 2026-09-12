@@ -75,6 +75,38 @@
                     </execution>
                 </executions>
             </plugin>
+            <!--
+                v2-7：Java 侧静态检查（相当于后端的 ESLint）。
+                规则集在项目根 checkstyle.xml，故意做成"最小集"，接上是干净的（零误报）。
+                不绑定生命周期阶段：由 run-verify.ps1 第 3 步显式调用 checkstyle:check，
+                避免每次 mvn test 都多跑一遍、拖慢本地开发循环。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-checkstyle-plugin</artifactId>
+                <version>3.3.1</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>com.puppycrawl.tools</groupId>
+                        <artifactId>checkstyle</artifactId>
+                        <version>10.12.4</version>
+                    </dependency>
+                </dependencies>
+                <configuration>
+                    <configLocation>${project.basedir}/checkstyle.xml</configLocation>
+                    <includeTestSourceDirectory>true</includeTestSourceDirectory>
+                    <consoleOutput>true</consoleOutput>
+                    <!--
+                        此处元素名必须是 inputEncoding（mojo 的字段名）。写成 <encoding> 会被
+                        IDEA 按插件描述符校验判为"此处不允许使用元素"——encoding 只是该参数的
+                        用户属性名，等价于命令行 -Dencoding=...，不能当配置元素用。
+                        参数默认值即 ${project.build.sourceEncoding}，这里显式写出，不依赖继承。
+                    -->
+                    <inputEncoding>UTF-8</inputEncoding>
+                    <violationSeverity>error</violationSeverity>
+                    <failOnViolation>true</failOnViolation>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 

@@ -1,17 +1,19 @@
-# FlowAI - AI 流程图生成器
+# FlowAI - AI 图表生成器
 
-用自然语言描述业务或想法，AI 自动生成 **流程图 / 思维导图 / 架构图**，并渲染为 SVG / PNG 直接下载。
+> 用自然语言描述业务或想法，AI 在 **Excalidraw 双通道白板** 上生成并持续编辑 **流程图 / 思维导图 / 架构图**。
 
-> 教学型项目：从零搭建一个「文字 → LLM → 图表」的 Spring Boot 应用，覆盖 Prompt 工程、LLM 网关抽象、多图表解析、单元测试、容器化与 API 文档。
+> ⚠️ **Status（2026-09-11）**：本文档描述的是**目标架构**。当前仓库内可运行的代码仍是早期版本（`POST /api/generate` → 一次性返回 SVG/PlantUML，前端为 SVG 展示页）。后端 agent / 双通道白板 / 后端持有 model 正在按 `docs/架构规划-v2.md` 重建，尚未合入 `main`。
 
-## ✨ 特性
+## ✨ 特性（目标）
 
-- 🤖 **AI 驱动**：基于 LLM（OpenAI 兼容协议，默认接入 Moonshot/Kimi），文字一键成图
-- 📊 **三种图表**：流程图（flowchart）、思维导图（mindmap）、架构图（architecture），前端一键切换
-- 🖼️ **多格式导出**：SVG 矢量 / PNG 位图，浏览器直接下载
+- 🤖 **聊天驱动出图**：用自然语言对话逐步生成、修改图表，而非一次性文本转图
+- 🎨 **Excalidraw 双通道白板**：手绘画布 + AI 聊天命令改同一份图；人类拖拽与 AI 编辑互不覆盖
+- 🧠 **后端持有图状态（IR）**：图的语义与坐标唯一真相源在后端 session（Redis 优先），前端只持渲染镜像
+- 🔁 **增量 / 全量双协议**：对话里的小改返回增量 `ops`，"换一个复杂的"返回全量 `spec`
+- 📤 **多格式导出**：支持导出 SVG / Mermaid（作为导出能力，主画布是 Excalidraw）
 - 📖 **API 文档**：集成 springdoc-openapi，启动即获交互式 Swagger 文档
-- 🐳 **容器化部署**：多阶段 Dockerfile + docker-compose，一行命令上云
-- ✅ **测试覆盖**：23 个 JUnit 5 单元测试，覆盖解析 / 构建 / 模板核心逻辑
+- 🐳 **容器化部署**：多阶段 Dockerfile + docker-compose
+- ✅ **测试覆盖**：23 个 JUnit 5 单元测试（解析 / 构建 / 模板核心逻辑）
 
 ## 技术栈
 
@@ -19,68 +21,55 @@
 |----|------|
 | 后端 | Spring Boot 3.2 + Java 17 |
 | AI | LLM（OpenAI 兼容协议，默认 Moonshot/Kimi `kimi-k2.7-code-highspeed`） |
-| 渲染 | PlantUML → SVG / PNG |
-| 前端 | 原生 HTML / CSS / JS（零框架） |
+| 图状态 | IR（语义 + 坐标），后端 session 持有（Redis 优先，内存降级） |
+| 画布 | `@excalidraw/excalidraw` 双通道白板（React 18 + Vite + TS + Zustand 外壳） |
+| 导出 | SVG / Mermaid（图状态序列化后导出，非主画布） |
 | 文档 | springdoc-openapi（Swagger UI） |
 | 部署 | Docker / docker-compose |
 
-## 架构
+## 架构（目标）
 
 ```
-用户输入文字
+用户聊天消息 {message, ctx}
+   ↓  POST /api/chat（SSE 流式）
+controller  ── 参数校验
    ↓
-PromptService  ── 按 type 选择模板，拼出结构化 Prompt
-   ↓
-LlmProvider    ── 调 LLM（OpenAI 兼容端点），返回文本
-   ↓
-ParserService  ── 解析 JSON 为 FlowchartData / MindmapData
-   ↓
-DiagramService ── JSON → PlantUML 源码 → 渲染 SVG / PNG
-   ↓
-前端展示 + 下载
+agent       ── 从 session 取当前 model（IR）；组装 prompt + 模型 + 意图
+   ↓          LLM 推理（复杂任务走 ReAct + Diagram Tools 自研 MCP 改后端 model）
+graph       ── 校验（field/reason/hint），不通过带 issues 再调（≤3 轮）
+   ↓          落库 session
+前端        ── 收到 ops（增量）/ spec（全量）→ apply 到本地镜像 → layout → convert → 重绘
+人类拖拽    ── onChange → PATCH /api/model/positions 坐标回写后端（与 AI 改图汇到同一份 model）
 ```
 
 `LlmProvider` 是统一接口，`OpenAiCompatibleProvider` 是其实现（带 usage 日志）。
 后续可在此基础上叠加：固定规则路由、限流、Token 预算、Fallback、重试、成本审计（装饰器模式）。
+agent / tools / session / rag / infra 等包按 `docs/架构规划-v2.md` 生长。
 
-## 项目结构
+## 项目结构（目标）
 
 ```
 src/main/java/io/github/nihaoljx/flowchart/
-├── FlowchartApplication.java        # 启动入口
-├── client/
-│   ├── LlmProvider.java             # LLM 接口（统一抽象）
-│   └── OpenAiCompatibleProvider.java# OpenAI 兼容实现（含 usage 日志）
-├── controller/
-│   └── DiagramController.java       # REST 接口（/api/generate 等）
-├── model/
-│   ├── FlowchartData.java           # 流程图数据模型（节点+边）
-│   ├── MindmapData.java             # 思维导图数据模型（递归树）
-│   ├── Result.java                  # 统一响应格式
-│   ├── GenerateRequest.java         # 生成请求 DTO（record）
-│   └── DownloadRequest.java         # 下载请求 DTO（record）
-├── service/
-│   ├── PromptService.java           # Prompt 模板（多类型缓存）
-│   ├── ParserService.java           # JSON 解析 + 校验
-│   └── DiagramService.java          # PlantUML 转换 + SVG/PNG 渲染
-└── config/
-    └── OpenApiConfig.java           # Swagger 文档元信息
-
-src/main/resources/
-├── application.yml                  # 配置（API Key 走环境变量）
-├── static/index.html, app.js       # 前端页面
-└── prompts/                        # 各图表类型的 Prompt 模板
+├── controller/    REST + SSE 接口层（/api/chat 等，只做参数校验与编排）
+├── service/       生成编排：Prompt 组装 → LLM 调用 → 解析 → 校验 → 修正循环
+├── llm/           LLM 接入层：Provider 抽象、Gateway 网关、路由降级
+├── graph/         图模型与校验：GraphJson、GraphValidator、布局、Mermaid/SVG 导出（导出能力，主画布是 Excalidraw）
+├── rag/           检索增强（阶段 2 建）
+├── tools/         工具注册与执行（阶段 3 建）
+├── agent/         Agent 规划与执行：真 ReAct 循环（阶段 4 建）
+├── session/       会话与记忆：Store 抽象 + Redis 实现 + 内存降级（阶段 5 建）
+└── infra/         可观测：调用链 Trace、指标、审计日志（阶段 7 建）
+flowchart-frontend/              # 阶段 0 v2-6 重建：React 18 + Vite + TS + Excalidraw 双通道
 ```
+
+> 注：当前仓库内 `src/main/java/.../controller/DiagramController.java` 仍是早期 `POST /api/generate`（返回 SVG/PlantUML）版本，将在阶段 1+ 按上述目标重构。早期结构见 git tag `archive/v0.3-full-tasks`。
 
 ## 快速开始
 
 ### 1. 配置 API Key（用环境变量，不要写进代码）
 
 ```powershell
-# 永久写入系统环境变量（需重开终端生效）
 setx LLM_API_KEY sk-你的真实key
-
-# 验证
 echo $env:LLM_API_KEY
 ```
 
@@ -101,6 +90,8 @@ java -jar target/flowchart-0.0.1-SNAPSHOT.jar
 
 浏览器访问 **http://localhost:8080**
 
+> 当前可运行前端为早期 SVG 展示页；目标 Excalidraw 双通道白板在 `flowchart-frontend/`（重建中）。
+
 ## API 接口
 
 启动后访问 **http://localhost:8080/swagger-ui.html** 查看交互式文档并可在线调试。
@@ -108,36 +99,24 @@ java -jar target/flowchart-0.0.1-SNAPSHOT.jar
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET  | `/api/health` | 健康检查（容器探活） |
-| POST | `/api/generate` | 生成图表（文字 → SVG + PlantUML） |
-| POST | `/api/download` | 下载图表（PlantUML → SVG/PNG 文件） |
+| POST | `/api/chat` | **（目标）** 聊天改图：SSE 流式返回思考 / 工具 / 校验事件 + 最终 ops/spec |
+| POST | `/api/generate` | **（deprecated）** 早期一次性生成：文字 → SVG + PlantUML |
+| POST | `/api/download` | 下载图表（PlantUML/IR → SVG/PNG 文件） |
 
-**`/api/generate` 请求体**：
-
-```json
-{
-  "text": "用户输入账号密码→系统验证→进入首页",
-  "type": "flowchart",
-  "format": "svg"
-}
-```
-
-- `type`：`flowchart` / `mindmap` / `architecture`
-- `format`：`svg` / `png`
-
-**响应**（节选）：
+**`/api/chat` 请求体（目标）**：
 
 ```json
 {
-  "code": 0,
-  "data": {
-    "svg": "<svg ...>",
-    "plantUml": "@startuml\n...",
-    "type": "flowchart"
-  }
+  "message": "加一个审核节点，连到支付之后",
+  "ctx": { "sessionId": "xxx" }
 }
 ```
+
+**响应**：SSE 事件流，末段携带 `ops`（增量）或 `spec`（全量 IR，无坐标），前端据此重绘。
 
 ## 图表示例
+
+（以下为早期 SVG/PNG 阶段示例，目标阶段改为 Excalidraw 白板上交互生成）
 
 ### 流程图（flowchart）
 
@@ -192,13 +171,8 @@ stop
 适用于「部署到服务器 / 云」场景，本机开发不需要 Docker。
 
 ```cmd
-# 构建并启动
 docker compose up --build -d
-
-# 查看日志
 docker compose logs -f
-
-# 停止
 docker compose down
 ```
 
@@ -219,13 +193,12 @@ mvn test
 A：环境变量没传进运行进程。用 IDEA 启动时，需在 Run Configuration 的 Environment variables 里加 `LLM_API_KEY=...`，或彻底重启 IDEA 让其继承新系统变量。
 
 **Q：Swagger 页面打不开 / `import io.swagger` 报红？**
-A：确认 `springdoc-openapi-starter-webmvc-ui` 写在 `<dependencies>` 而非 `<dependencyManagement>`（后者只管版本、不引入 jar）。改完在 IDEA 点 **Reload All Maven Projects**。
+A：确认 `springdoc-openapi-starter-webmvc-ui` 写在 `<dependencies>` 而非 `<dependencyManagement>`。改完在 IDEA 点 **Reload All Maven Projects**。
 
 **Q：本项目用 springfox 还是 springdoc？**
 A：用 **springdoc-openapi**。Spring Boot 3 升级到 Jakarta 命名空间，老的 springfox 不兼容会启动失败。
 
-## 路线图 / 学习延伸
+## 路线图
 
-- LLM Gateway 六层：固定路由 / 限流 / Token 预算 / Fallback / 重试 / 成本审计
-- 接 RAG：让 AI 基于私有知识库生成图表
-- 接 Agent：多步推理自动产出复杂架构
+- 阶段 0 工程底座 → 1 核心链路 → 2 RAG → 3 Tool Calling → 4 ReAct Agent → 5 会话 → 6 前端改版（Excalidraw 双通道）→ 7 可观测治理
+- 详细任务见 `docs/架构规划-v2.md`；约束见 `docs/agents/`。
