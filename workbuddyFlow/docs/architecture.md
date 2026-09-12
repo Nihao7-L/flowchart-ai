@@ -1,0 +1,117 @@
+# architecture.md — 架构设计
+
+> 只回答一个问题：**系统由哪几块组成、怎么连、为什么这么做、哪里会坏。**
+> 读它的时机：新增文件、新增依赖、改动调用关系之前。
+
+## 一、架构总览（C4 上下文层：只画可独立部署单元）
+
+```
+[浏览器: Excalidraw 双通道白板]
+      │  HTTPS + JSON  （同步 REST / 异步 SSE 流式）
+      ▼
+[Spring Boot 单进程: ChartFlow 后端]
+      │  HTTPS + LLM API  （同步请求 / 流式补全）
+      ▼
+[外部 LLM 提供方 (云端 API)]
+```
+
+- 单元①浏览器白板：可独立加载，持 IR 渲染镜像。
+- 单元②Spring Boot：可独立启动，持有 IR 唯一真相源（session）。
+- 单元③外部 LLM：第三方，异步/流式，不可控。
+- 连线：浏览器↔后端为同步 REST + 异步 SSE（聊天改图走 SSE 流式）；后端↔LLM 为同步调用 + 流式补全。
+
+## 二、视图展开
+
+### 2.1 运行时视图（一次"聊天改图"请求）
+```
+浏览器 onChange / 聊天
+  → POST /api/chat (SSE)
+  → controller 校验
+  → service.agent 编排：从 session 取 model(IR)
+  → 组装 system prompt + model + 意图
+  → llm 推理；复杂走 ReAct：Thought → Action(tools) → Observation 回喂
+  → tools (Diagram Tools=自研 MCP) 直改后端内存 model
+  → graph 校验 (field/reason/hint)；不通过带 issues 再调 ≤3 轮
+  → 落库 session (Redis 优先)
+  → SSE 回传：思考/工具/校验事件 + 结果
+       · 增量 → ops (add/connect/update/delete)
+       · 整图 → spec (全量 IR 无坐标)
+  → 前端 apply ops / 用 spec 替换镜像 → layout → convert → updateScene 重绘
+人类拖拽：onChange → syncPositions → PATCH /api/model/positions 回写后端 model
+```
+
+### 2.2 数据视图（唯一真相源）
+- IR（图状态：节点+边，无坐标）唯一真相源 = **后端 session**（Redis 优先，降级内存）。
+- 前端只持**渲染镜像**；AI 改图与人手拖拽都汇到同一份后端 model，互不覆盖。
+- 坐标与手绘样式由前端 `layout`/`convert` 在渲染时补全，不进入 IR。
+
+### 2.3 部署视图
+- 单进程 Spring Boot + 浏览器；Redis 可选（不可用时降级内存）。
+- 当前单用户本地；无容器编排、无多实例。网络化/多租户为未来演进。
+
+### 2.4 开发视图（包边界，跨包调用只允许箭头方向）
+| 包 | 职责 | 允许调用 |
+|---|---|---|
+| `controller/` | REST+SSE，只做校验与编排 | `service/` |
+| `service/` | 生成编排：Prompt→LLM→解析→校验→修正 | `llm/ graph/ rag/ tools/ session/` |
+| `llm/` | Provider 抽象 + 网关 | — |
+| `graph/` | 图模型、校验、布局、SVG/Mermaid 导出 | — |
+| `rag/` | 检索增强（阶段2） | `llm/` |
+| `tools/` | 工具注册与执行（阶段3） | `rag/ llm/` |
+| `agent/` | ReAct 规划与执行（阶段4） | `tools/ llm/ graph/` |
+| `session/` | 会话与记忆（阶段5） | — |
+| `infra/` | Trace/指标/审计（阶段7） | — |
+
+规矩：同层不互调；下层不知上层；新增跨包依赖先改此表。
+
+## 三、关键决策与取舍（ADR）
+
+- **ADR-1 前端画布选 Excalidraw 而非 React Flow**
+  - 背景：需要"手绘白板 + AI 改图"双通道，React Flow 偏结构化流程图。
+  - 选项：React Flow（结构化强、手绘弱）/ Excalidraw（手绘自然、可嵌组件）/ 自绘 Canvas。
+  - 决定：Excalidraw 嵌入 + 双通道。理由：贴合人类手绘直觉，且 `convertToExcalidrawElements` 能把 IR 渲染出来。
+  - 代价：需处理 `convert` 重生成 id、NaN 视口等坑（见 `engineering.md` 技术约束）；结构化编辑弱于 React Flow。
+
+- **ADR-2 模型（IR）后端持有，而非前端持有**
+  - 背景：双通道下"谁是唯一真相源"直接决定数据流。
+  - 选项：前端持有 / 后端持有 / LLM 直连前端。
+  - 决定：后端 session 为唯一真相源，前端只持渲染镜像。理由：利于多端/协作/审计，消除"生成段"与"双通道段"抢模型归属的矛盾。
+  - 代价：每次人类拖拽要 `PATCH /api/model/positions` 回写；实时性靠 SSE 增量。
+
+- **ADR-3 LLM 调用收口到 llm/ 网关，禁止业务直连**
+  - 背景：多 Provider、需审计与降级。决定：全部 LLM 调用经 `llm/` 网关。代价：业务层失去灵活性，换模型需走网关。
+
+- **ADR-4 LLM 只出 IR 语义（无坐标），不出 Excalidraw 元素 JSON**
+  - 背景：让 LLM 直接出像素级元素 JSON 易错且不可控。
+  - 决定：LLM/Agent 只出节点+边（IR）；坐标/样式由前端 `layout`/`convert` 兜底。代价：需独立布局层，复杂图布局质量依赖 elkjs/dagre。
+
+## 四、横切关注点
+
+- **安全**：明文 LLM key 留 `application.yml` 不入库（gitignore 兜底）；Agent 禁改 env/系统设置。当前无鉴权（单用户本地）。
+- **性能**：目标并发会话数待压测；单次出图延迟 ≈ LLM 推理 + ≤3 轮校验；**当前无量化 P99/QPS 数据（待 infra 阶段埋点）**。
+- **可观测性**：阶段 7 建 Trace/metrics/审计；当前靠 exec-plans 外置记忆（activeLog/tech-debt）做人工可观测。
+- **成本**：token 月额度受外部 API 限制；长会话/大图需预算与降级（小模型兜底）。
+
+## 五、风险与演进
+
+- **代码仍停留在旧架构**：真实 `DiagramController` 仍是 `/api/generate` → LLM → PlantUML → SVG，与本文目标架构（`/api/chat` + agent/tools/session/IR）脱节，待按本文重建（路线图 v2-8 起）。
+- **单进程扩展上限**：当前无水平扩展，多用户需重做部署视图。
+- **无压测/无评测集**：性能与"自反馈"闭环缺量化基线（见 `workflow.md` 自反馈机制）。
+- **下一步**：按 `../架构规划-v2.md` 推进 v2-3（验证）→ v2-8（核心链路）→ … → v2-27（可观测）。
+
+## 六、架构不变式（改代码不得破坏）
+
+1. 所有 LLM 调用经 `llm/` 网关收口。
+2. 出图走结构化 JSON 契约 + 校验循环，禁裸文本直出。
+3. 校验问题带 field/reason/hint，不只报数量。
+4. Agent 每步 Observation 必须回喂 LLM 再决策。
+5. 新增跨包依赖先更新 2.4 包表；文档与代码不一致先改文档。
+6. LLM/Agent 只出 IR 语义，坐标/样式前端兜底，禁 LLM 直出 Excalidraw 元素 JSON。
+7. IR 唯一真相源在后端 session，前端只持渲染镜像；AI 改图与人类拖拽汇同一份 model，禁前端自认权威。
+
+## 七、开发视图附录：本机编译/验证
+
+- 后端编译用 **java 直启 Maven**（Git Bash 的 `mvn` 坏、PowerShell 管道调 `mvn.cmd` 报错）：
+  `& "C:\Users\22719\.jdks\ms-17.0.17\bin\java.exe" -classpath "D:\maven-home\apache-maven-3.9.5-bin\apache-maven-3.9.5\boot\plexus-classworlds-2.7.0.jar" "-Dclassworlds.conf=D:\maven-home\apache-maven-3.9.5-bin\apache-maven-3.9.5\bin\m2.conf" "-Dmaven.home=D:\maven-home\apache-maven-3.9.5-bin\apache-maven-3.9.5" "-Dmaven.multiModuleProjectDirectory=F:\ProgramData\IDEA\flowchart" org.codehaus.plexus.classworlds.launcher.Launcher -B -f "F:\ProgramData\IDEA\flowchart\pom.xml" compile`
+  （退出码 0 = 编译通过；换 `test` 即跑单测）
+- 一键验证：`powershell -File run-verify.ps1`（末行 `VERIFY PASS`、退出码 0）。
