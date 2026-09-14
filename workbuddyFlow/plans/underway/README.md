@@ -6,4 +6,4 @@
 - 进行中计划 = 模块总计划里某个 v2-N 子计划的**工作台副本**（文件名建议 `v2-N-<短名>.md`，模板见 `TEMP.md`），在 underway 里被推进。结构与模块计划模板一致（目标 / 边界 / 分层边界 / 前置 / 步骤 / 验收口径 / 覆盖测试数据）。
 - **可同时存在多个**（不同模块的 v2-N 可并行推进）。
 - 成为当前唯一焦点时：移入 `../state/active/`（见 `active/README.md`，同一时刻只 1 个）。
-- 完成：状态行改 `完成` → 移 `../state/completed/`，并在 `../state/activeLog/<日期>.md` 追加带证据记录。
+- 完成：状态行改 `完成` → 移 `../state/completed/underway/`（归档保留来源层，见 `../state/completed/README.md`），并在 `../state/activeLog/<日期>.md` 追加带证据记录。

@@ -11,12 +11,12 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 对齐代码分支 `reframing`@`70813bb`（第一阶段基线） |
+| 文档版本 | 对齐代码分支 `reframing`@`67cacc9`（M0 工程底座完成） |
 | 文档状态 | 评审中（目标架构已定稿，真实代码待重建） |
 | 作者 | 用户 22719（产品/架构决策）+ AI 协作撰写 |
 | 评审人 | 待用户评审 |
 | 最后更新 | 2026-09-12 |
-| 仓库地址 | 本地 `F:\ProgramData\IDEA\flowchart`（git，`reframing` 分支；remote 待确认） |
+| 仓库地址 | 本地 `F:\ProgramData\IDEA\flowchart`（git，`reframing` 分支）；远端 `github.com/Nihao7-L/flowchart-ai`（public，已接入 GitHub Actions CI） |
 | 设计稿 | `frontend/` 脚手架（阶段 6，09-12 落地空壳；渲染原型仍为 PoC HTML，见第七节） |
 | 需求/路线图 | `plans/masterPlan/`（按核心模块拆分的模块计划，v2-N 出处） |
 
@@ -35,6 +35,7 @@
 | 2026-09-12 | reframing@70813bb | 后端单测扩面（v2-4 完成）：新增 `controller` / `client` / `model` 三个测试类（MockMvc 契约 15 + LLM 客户端本地桩 10 + 数据模型 9），全量 24 → **58** 个测试全绿、BUILD SUCCESS、退出码 0；零新依赖（未改 `pom.xml`）、未动业务包主源码；另做变异验证（错误码 400→401 测试变红、还原后 sha256 一致）证明测试真在守契约 | 22719 + AI |
 | 2026-09-12 | reframing@70813bb | 接入 checkstyle（v2-7，进行中）：新增项目根 `checkstyle.xml`（最小规则集 39 条，末尾附「未启用清单」逐条写理由）；`pom.xml` 挂 `maven-checkstyle-plugin 3.3.1`（显式指定 checkstyle 10.12.4 以支持 Java 17 语法，**不绑生命周期**），使门禁第 3 步从"永远跳过"变为真生效；`NeedBraces` / `AvoidStarImport` 因现有 4 处命中落在 `controller`/`service`、受 M0 边界「禁止改动业务包功能实现」约束而暂缓（理由与启用条件写入规则集注释）；离线 `clean test` 回归 58 测试全绿且无下载动作 | 22719 + AI |
 | 2026-09-12 | reframing@70813bb | checkstyle 真跑验证与闭环（**v2-7 完成**）：门禁第 3 步首次真跑报 25 条、临时全开后实测 **29 条**违规（24 `LeftCurly` 单行 getter/setter + 2 `NeedBraces` + 1 `MissingSwitchDefault` + 2 `AvoidStarImport`；**测试源码零违规**）；按「`LeftCurly` 放宽（tokens 剔除 `METHOD_DEF`/`CTOR_DEF`，允许单行访问器）+ 以上三条暂缓（启用条件：M1 重建 service/controller 后）」处置为 0 违规，**全程零源码改动**，规则集实际启用 **38 条**；复跑 `You have 0 Checkstyle violations.` + `BUILD SUCCESS` + 退出码 0；变异验证（临时加 187 列行 → `LineLength` FAIL、退出码 1，删除后恢复绿无残留）；`clean test` 仍 58 测试全绿；另修两处配置错误（`<encoding>` → `<inputEncoding>`、tokens 去掉 10.12.4 尚不存在的 `SWITCH_RULE`）。规则集头部原"接上是干净的"断言已证伪并改为"以真跑 `checkstyle:check` 为准" | 22719 + AI |
+| 2026-09-12 | reframing@67cacc9 | **M0 工程底座全闭合（v2-5 完成）**：重建 GitHub Actions 云端门禁——`reframing`/`main` 两分支原本都没有 `.github` 目录，属**重建**而非修正；`ci.yml` 两个并行 job（backend / frontend）三步与 `run-verify.ps1` 一一对应，唯一有意差异是 CI 用 `npm ci` 严格按 lockfile，`setup-node` / `setup-java` 开依赖缓存；同时给 `run-verify.ps1` 补前端 `lint` 使两边对齐。push 后 run #2 全绿（43s：后端 39s / 前端 17s，两 job step 级全 success，58 测试 + 0 违规）。另发现并闭合一处「首跑必红」阻塞：`frontend/`、`checkstyle.xml`、`src/test` 等 36 个文件从未入库，已随 `67cacc9` 补入 | 22719 + AI |
 
 ## 四、当前阶段与状态（2026-09-11）
 

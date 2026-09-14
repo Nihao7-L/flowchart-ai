@@ -40,4 +40,4 @@
 | 异常 | ... | ... |
 
 ## 完成后
-移入 `state/completed/`、更新 `plans/masterPlan/` 对应模块计划状态行、`state/activeLog/<YYYY-MM-DD>.md` 追加一行带证据记录（命令 + 输出 / 退出码）。
+移入 `state/completed/masterPlan/`（保留原始内容，只加一行完成结论）、`state/activeLog/<YYYY-MM-DD>.md` 追加一行带证据记录（命令 + 输出 / 退出码）。

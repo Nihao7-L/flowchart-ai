@@ -2,7 +2,7 @@
 
 > 用法：当 `plans/masterPlan/` 里某个 v2-N 子计划进入"进行中"，复制本模板到 `plans/underway/v2-N-<短名>.md`，顶部状态行置「进行中」。
 > 它是模块总计划里那个 v2-N 的**工作台副本**，结构沿用模块计划模板（目标 / 边界 / 分层边界 / 前置 / 步骤 / 验收口径 / 覆盖测试数据）。
-> 成为当前唯一焦点时：移入 `state/active/`（同一时刻只 1 个）；完成：移 `state/completed/`。
+> 成为当前唯一焦点时：移入 `state/active/`（同一时刻只 1 个）；完成：移 `state/completed/underway/`。
 
 ## 元信息
 - 任务编号：v2-N（与 `plans/masterPlan/` 对应子计划一致）
@@ -41,7 +41,7 @@
 
 ## 完成后
 - 状态行改「完成」；
-- 移入 `state/completed/`；
+- 移入 `state/completed/underway/`；
 - 更新 `plans/masterPlan/` 对应模块计划里该 v2-N 子计划的状态行；
 - `state/activeLog/<YYYY-MM-DD>.md` 追加一行带证据记录（命令 + 输出 / 退出码）；
 - 若曾进入 `state/active/`，先移出再归档。

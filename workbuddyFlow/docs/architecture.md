@@ -120,3 +120,22 @@
 - 一键验证：`powershell -File run-verify.ps1`（末行 `VERIFY PASS`、退出码 0）。
 - `run-verify.ps1` 的两个 PowerShell 注意事项：① 脚本**必须带 UTF-8 BOM**，否则 PowerShell 5.1 按本地编码解析，中文注释乱码会报"字符串缺少终止符"；② `Invoke-Maven` 内须先用 `Out-Host` 消费 java 输出再 `return $LASTEXITCODE`，否则函数把 stdout 一并当返回值，退出码判断恒为真（BUILD SUCCESS 也会误判 FAIL）。
 - 前端门禁：`run-verify.ps1` 用 `-FrontendInstallMode ci|install` 选安装方式——**本地默认 `install`**（增量、不清空 `node_modules`、秒级），CI 传 `ci`（严格按 lockfile）。选 `ci` 时注意：它会先清空 `node_modules`，若残留 vite / esbuild 进程（开发服务器未彻底退出）会握着文件锁导致 `ENOTEMPTY`（-4048），跑之前先确认无 `esbuild.exe` 残留。
+
+### 7.1 云端执行器：`.github/workflows/ci.yml`
+
+- 定位：与 `run-verify.ps1` 是**同一套三步门禁的两个执行器**（本地 PowerShell / 云端 Ubuntu）。**改任一处必须同步另一处**，否则会出现"本地绿、云端红"。
+
+| `ci.yml` 的 job / 步骤 | 对应 `run-verify.ps1` |
+|---|---|
+| job `backend` → `mvn -B clean test` | [1/3] `mvn clean test` |
+| job `backend` → `mvn -B checkstyle:check` | [3/3] `mvn checkstyle:check` |
+| job `frontend` → `npm ci` + `npm run build` + `npm run lint` | [2/3] npm 安装 + `build` + `lint` |
+
+- 两个 job **并行**（后端 / 前端互不依赖）；触发：`push`（所有分支）+ `pull_request`（指向 `main`）；配 `concurrency.cancel-in-progress`，同一分支连续提交时自动取消上一次未跑完的运行。
+- 唯一有意差异：CI 用 `npm ci`（严格按 `package-lock.json` 复现），本地默认 `npm install`（增量、秒级）——这正是 `-FrontendInstallMode` 开关存在的理由。
+- action 版本取 2026 年现行主版本：`actions/checkout@v7`、`actions/setup-java@v6`、`actions/setup-node@v7`（**`setup-java` 的 v1~v4 已被官方弃用**，旧配置里的 `@v4` 不能照抄）；`setup-java` / `setup-node` 均开启依赖缓存（缓存 key 由 `pom.xml` / `package-lock.json` 哈希决定）。
+- ⚠️ 与上一条相反：CI 跑在**原生 Ubuntu bash**，不存在 MSYS 路径转换问题，`mvn` 可直接调用。
+- 实测（2026-09-12，run #2，`reframing`@`67cacc9`）：总 43s；后端 job 39s（安装 JDK 0s → `clean test` 25s → `checkstyle` 8s）、前端 job 17s（`npm ci` 5s → `build` 2s → `lint` 1s），两 job step 级全 success，`Tests run: 58` / `You have 0 violations.`。
+- 排障可达性：运行的**状态与耗时**可匿名读（`api.github.com/repos/{owner}/{repo}/actions/runs`、`/runs/{id}/jobs`，含 step 级状态与时间戳）；但**日志正文需登录**（`/actions/jobs/{id}/logs` 匿名返回 `403 Must have admin rights`），查失败原因须在登录态浏览器里看。
+- 已知缺口（未处理）：`src/main/resources/application.yml` 被 `.gitignore` 排除（含明文 key），**云端仓库没有这个文件**。当前 58 个测试全是纯逻辑测试 + `standaloneSetup`，不起 Spring 容器，故无碍；将来引入 `@SpringBootTest` 一类需要启动上下文的测试时，CI 会因读不到配置而失败——届时需注入 dummy 环境变量或补一份 test 专用配置。
+
