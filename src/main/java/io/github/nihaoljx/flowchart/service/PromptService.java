@@ -6,8 +6,8 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Prompt 组装服务
@@ -39,12 +39,13 @@ public class PromptService {
 
     /**
      * 缓存：type → 模板内容
-     * 每个模板只读一次，后面复用
-     * 线程安全：HashMap 理论上并发会出问题，但这里是个人项目、请求量低，
-     *           而且最坏情况只是"重复读一次文件"，无害。
-     *           （面试加分点：生产环境应该用 ConcurrentHashMap 或双检锁）
+     *
+     * 并发：缓存是懒加载的——首个请求到达时才写入，而 Spring MVC 的请求处理本身是多线程的。
+     *      所以这里必须是 ConcurrentHashMap：HashMap 的并发 put 可能破坏内部结构（链表成环），
+     *      之后 get 会陷入死循环，且该故障只在并发下暴露、本地单线程测不出来。
+     *      computeIfAbsent 在 ConcurrentHashMap 上是原子操作，同一模板不会被并发加载两次。
      */
-    private final Map<String, String> templateCache = new HashMap<>();
+    private final Map<String, String> templateCache = new ConcurrentHashMap<>();
 
     /**
      * 加载模板文件到内存（懒加载：第一次用到某类型时才读）

@@ -1,7 +1,8 @@
-# 模块计划 · Agent 真 ReAct（阶段4）
+# 模块计划 · Agent 真 ReAct（S4 会规划）
 
 > 状态：规划中
 > 关联架构：`architecture.md` 2.4 包表（`agent` 允许调 `tools` / `llm` / `graph`）、ADR-4、不变式 4
+> 所属阶段：**S4 会规划**（与 M6b② 同阶段交付；执行序见 `plans/masterPlan/roadmap.md`）
 > 覆盖任务：v2-18 ~ v2-20
 
 ## 元信息
@@ -21,8 +22,8 @@
 落在 `agent/`；编排 `tools` / `llm` / `graph`。不触碰 `session`（M5）与前端（M6）。原因：Agent 是"大脑"，编排既有能力，不改底层。
 
 ## 前置
-- M3 工具体系可用（v2-15~17）
-- M1 校验闭环可用
+- M3 工具体系可用（v2-15~17，S3）
+- M1 校验闭环可用（S1）
 
 ## 步骤
 1. v2-18 Thought→Action→Observation 循环骨架：每步结果必须回喂 LLM 决策下一步

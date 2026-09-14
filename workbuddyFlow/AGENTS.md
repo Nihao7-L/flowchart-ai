@@ -16,6 +16,7 @@ ChartFlow：Spring Boot + 大模型（LLM）的 AI 图表生成器（流程图/�
 | 架构设计：组成、连接、决策、风险 | `docs/architecture.md` |
 | 自反馈机制：怎么知道做得好并修正 | `docs/workflow.md` |
 | 模块总计划（按核心模块拆分，v2-N 出处） | `plans/masterPlan/` |
+| 执行顺序：先做哪个阶段、做到哪步算"看得见" | `plans/masterPlan/roadmap.md` |
 | 进行中计划（来自模块总计划里的 v2-N，可多个） | `plans/underway/` |
 | 一键验证脚本（提交前必跑） | `run-verify.ps1`（与本文件同目录） |
 | 当前唯一活跃项（来自 underway，同一时刻仅 1 个） | `state/active/` |

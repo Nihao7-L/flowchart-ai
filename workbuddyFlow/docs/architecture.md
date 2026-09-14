@@ -55,14 +55,16 @@
 | `controller/` | REST+SSE，只做校验与编排 | `service/` |
 | `service/` | 生成编排：Prompt→LLM→解析→校验→修正 | `llm/ graph/ rag/ tools/ session/` |
 | `llm/` | Provider 抽象 + 网关 | — |
-| `graph/` | 图模型、校验、布局、SVG/Mermaid 导出 | — |
-| `rag/` | 检索增强（阶段2） | `llm/` |
-| `tools/` | 工具注册与执行（阶段3） | `rag/ llm/` |
-| `agent/` | ReAct 规划与执行（阶段4） | `tools/ llm/ graph/` |
-| `session/` | 会话与记忆（阶段5） | — |
-| `infra/` | Trace/指标/审计（阶段7） | — |
+| `graph/` | 图模型、校验、布局（后端不出图：渲染与坐标由前端 Excalidraw 兜底，见 ADR-4） | — |
+| `rag/` | 检索增强（**S2**） | `llm/` |
+| `tools/` | 工具注册与执行（**S3**） | `rag/ llm/` |
+| `agent/` | ReAct 规划与执行（**S4**） | `tools/ llm/ graph/` |
+| `session/` | 会话与记忆（**内存版 S1 / Redis 版 S5**） | — |
+| `infra/` | Trace/指标/审计（**S6**） | — |
 
 规矩：同层不互调；下层不知上层；新增跨包依赖先改此表。
+
+> 括号里的 `S0~S6` 是**执行顺序**，与模块编号 `M0~M7` 是两套体系：**编号是身份、S 是时间**，定义见 `plans/masterPlan/roadmap.md`。
 
 ## 三、关键决策与取舍（ADR）
 
@@ -77,6 +79,7 @@
   - 选项：前端持有 / 后端持有 / LLM 直连前端。
   - 决定：后端 session 为唯一真相源，前端只持渲染镜像。理由：利于多端/协作/审计，消除"生成段"与"双通道段"抢模型归属的矛盾。
   - 代价：每次人类拖拽要 `PATCH /api/model/positions` 回写；实时性靠 SSE 增量。
+  - 落地顺序：**内存实现随 S1（M1）交付**，Redis 持久化在 S5（M5）补上——这样 S3 验证"人拖拽与 AI 改图写同一份 model"时无需等持久化就绪。
 
 - **ADR-3 LLM 调用收口到 llm/ 网关，禁止业务直连**
   - 背景：多 Provider、需审计与降级。决定：全部 LLM 调用经 `llm/` 网关。代价：业务层失去灵活性，换模型需走网关。
@@ -94,10 +97,10 @@
 
 ## 五、风险与演进
 
-- **代码仍停留在旧架构**：真实 `DiagramController` 仍是 `/api/generate` → LLM → PlantUML → SVG，与本文目标架构（`/api/chat` + agent/tools/session/IR）脱节，待按本文重建（路线图 v2-8 起）。
+- **旧链路已清算（2026-09-14）**：早期 `/api/generate` → PlantUML → SVG 那条链路（含 `DiagramService`、`plantuml` 依赖、`static/` 旧 UI、`/api/download` 及两个旧请求 record）已全部删除，后端 API 现存仅 `GET /api/health`。目标链路（`/api/chat` + agent/tools/session/IR）由 M1（v2-8 起）重建，详见 `plans/underway/m1-pre-cleanup.md`。
 - **单进程扩展上限**：当前无水平扩展，多用户需重做部署视图。
 - **无压测/无评测集**：性能与"自反馈"闭环缺量化基线（见 `workflow.md` 自反馈机制）。
-- **下一步**：按 `plans/masterPlan/` 下模块计划推进 M0（底座）→ M1（核心链路）→ … → M7（可观测）。
+- **下一步**：按执行序推进 —— S0 底座（已完成）→ **S1 看得见（M1 + M6a）** → S2 更准（M2）→ S3 能改（M3 + M6b①）→ S4 会规划（M4 + M6b②）→ S5 不丢（M5）→ S6 可追踪（M7）。**编号与顺序是两套体系**，见 `plans/masterPlan/roadmap.md`。
 
 ## 六、架构不变式（改代码不得破坏）
 

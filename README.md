@@ -2,7 +2,7 @@
 
 > 用自然语言描述业务或想法，AI 在 **Excalidraw 双通道白板** 上生成并持续编辑 **流程图 / 思维导图 / 架构图**。
 
-> ⚠️ **Status（2026-09-11）**：本文档描述的是**目标架构**。当前仓库内可运行的代码仍是早期版本（`POST /api/generate` → 一次性返回 SVG/PlantUML，前端为 SVG 展示页）。后端 agent / 双通道白板 / 后端持有 model 正在按 `docs/架构规划-v2.md` 重建，尚未合入 `main`。
+> ⚠️ **Status（2026-09-14）**：本文档描述的是**目标架构**。早期链路（`POST /api/generate` → SVG/PlantUML、`POST /api/download`、`static/` 旧 UI）已于 M1 前置清算中**全部删除**，后端 API 现存仅 `GET /api/health`；目标链路（`POST /api/chat` + agent/tools/session/IR）自 M1 起重建。工程底座（M0）已闭合，进度与约束见 `workbuddyFlow/`。
 
 ## ✨ 特性（目标）
 
@@ -10,10 +10,9 @@
 - 🎨 **Excalidraw 双通道白板**：手绘画布 + AI 聊天命令改同一份图；人类拖拽与 AI 编辑互不覆盖
 - 🧠 **后端持有图状态（IR）**：图的语义与坐标唯一真相源在后端 session（Redis 优先），前端只持渲染镜像
 - 🔁 **增量 / 全量双协议**：对话里的小改返回增量 `ops`，"换一个复杂的"返回全量 `spec`
-- 📤 **多格式导出**：支持导出 SVG / Mermaid（作为导出能力，主画布是 Excalidraw）
 - 📖 **API 文档**：集成 springdoc-openapi，启动即获交互式 Swagger 文档
 - 🐳 **容器化部署**：多阶段 Dockerfile + docker-compose
-- ✅ **测试覆盖**：23 个 JUnit 5 单元测试（解析 / 构建 / 模板核心逻辑）
+- ✅ **测试覆盖**：36 个 JUnit 5 单元测试（解析 / 校验 / 模板 / 响应契约）
 
 ## 技术栈
 
@@ -23,7 +22,6 @@
 | AI | LLM（OpenAI 兼容协议，默认 Moonshot/Kimi `kimi-k2.7-code-highspeed`） |
 | 图状态 | IR（语义 + 坐标），后端 session 持有（Redis 优先，内存降级） |
 | 画布 | `@excalidraw/excalidraw` 双通道白板（React 18 + Vite + TS + Zustand 外壳） |
-| 导出 | SVG / Mermaid（图状态序列化后导出，非主画布） |
 | 文档 | springdoc-openapi（Swagger UI） |
 | 部署 | Docker / docker-compose |
 
@@ -53,16 +51,16 @@ src/main/java/io/github/nihaoljx/flowchart/
 ├── controller/    REST + SSE 接口层（/api/chat 等，只做参数校验与编排）
 ├── service/       生成编排：Prompt 组装 → LLM 调用 → 解析 → 校验 → 修正循环
 ├── llm/           LLM 接入层：Provider 抽象、Gateway 网关、路由降级
-├── graph/         图模型与校验：GraphJson、GraphValidator、布局、Mermaid/SVG 导出（导出能力，主画布是 Excalidraw）
+├── graph/         图模型与校验：GraphJson、GraphValidator、布局（后端不出图，渲染与坐标由前端兜底）
 ├── rag/           检索增强（阶段 2 建）
 ├── tools/         工具注册与执行（阶段 3 建）
 ├── agent/         Agent 规划与执行：真 ReAct 循环（阶段 4 建）
 ├── session/       会话与记忆：Store 抽象 + Redis 实现 + 内存降级（阶段 5 建）
 └── infra/         可观测：调用链 Trace、指标、审计日志（阶段 7 建）
-flowchart-frontend/              # 阶段 0 v2-6 重建：React 18 + Vite + TS + Excalidraw 双通道
+frontend/                       # 阶段 0 v2-6 已建：React 18 + Vite + TS（Excalidraw 双通道待阶段 6 接入）
 ```
 
-> 注：当前仓库内 `src/main/java/.../controller/DiagramController.java` 仍是早期 `POST /api/generate`（返回 SVG/PlantUML）版本，将在阶段 1+ 按上述目标重构。早期结构见 git tag `archive/v0.3-full-tasks`。
+> 注：`DiagramController` 已清算为只剩 `GET /api/health`——早期 `/api/generate`（SVG/PlantUML）链路连同 `DiagramService`、`plantuml` 依赖、`static/` 旧 UI 于 2026-09-14 一并删除；目标 `/api/chat` 由阶段 1（v2-8 起）补入。早期结构见 git tag `archive/v0.3-full-tasks`。
 
 ## 快速开始
 
@@ -88,9 +86,11 @@ java -jar target/flowchart-0.0.1-SNAPSHOT.jar
 
 ### 3. 打开
 
-浏览器访问 **http://localhost:8080**
+后端目前只提供健康检查，无前端页面（早期静态页已删除）。用 Swagger UI 调试接口：
 
-> 当前可运行前端为早期 SVG 展示页；目标 Excalidraw 双通道白板在 `flowchart-frontend/`（重建中）。
+**http://localhost:8080/swagger-ui.html**
+
+> 目标 Excalidraw 双通道白板在 `frontend/`（脚手架已就绪，待阶段 6 接入）。
 
 ## API 接口
 
@@ -98,10 +98,11 @@ java -jar target/flowchart-0.0.1-SNAPSHOT.jar
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET  | `/api/health` | 健康检查（容器探活） |
-| POST | `/api/chat` | **（目标）** 聊天改图：SSE 流式返回思考 / 工具 / 校验事件 + 最终 ops/spec |
-| POST | `/api/generate` | **（deprecated）** 早期一次性生成：文字 → SVG + PlantUML |
-| POST | `/api/download` | 下载图表（PlantUML/IR → SVG/PNG 文件） |
+| GET  | `/api/health` | 健康检查（容器探活）— **当前唯一已实现的端点** |
+| POST | `/api/chat` | **（目标）** 聊天改图：SSE 流式返回思考 / 工具 / 校验事件 + 最终 ops/spec — 阶段 1（v2-11）补入 |
+
+> 早期端点 `POST /api/generate`（文字 → SVG + PlantUML）与 `POST /api/download` 已于 2026-09-14 清算删除，
+> 且不会恢复：目标架构下后端不渲染图片（见 `workbuddyFlow/docs/architecture.md` ADR-4）。
 
 **`/api/chat` 请求体（目标）**：
 
@@ -116,7 +117,8 @@ java -jar target/flowchart-0.0.1-SNAPSHOT.jar
 
 ## 图表示例
 
-（以下为早期 SVG/PNG 阶段示例，目标阶段改为 Excalidraw 白板上交互生成）
+（以下 PlantUML 代码块是**早期链路的历史示例**，用来说明当时的能力；后端已不再渲染 PlantUML/SVG。
+目标阶段改为在 Excalidraw 白板上交互生成。）
 
 ### 流程图（flowchart）
 
@@ -185,7 +187,17 @@ API Key 通过环境变量传入（docker-compose 已配置读取宿主机 `LLM_
 mvn test
 ```
 
-覆盖 `DiagramService`（7）、`ParserService`（11）、`PromptService`（5）共 23 个单元测试，均为纯逻辑测试，不依赖 Spring / 网络。
+当前 36 个 JUnit 5 单元测试，均为纯逻辑测试，不依赖 Spring 容器与网络：
+
+| 测试类 | 数量 | 覆盖 |
+|---|---|---|
+| `ParserServiceTest` | 12 | JSON → 对象解析与业务校验（start/end 唯一、decision 两条出边、边引用存在） |
+| `OpenAiCompatibleProviderTest` | 10 | LLM HTTP 调用：请求拼装、OpenAI 兼容响应解析、401 / 缺字段 / 非法 JSON |
+| `PromptServiceTest` | 5 | 模板加载与占位符替换 |
+| `ModelContractTest` | 6 | `Result` 响应外壳、`MindmapData` 递归兜底 |
+| `DiagramControllerTest` | 3 | `/api/health` 契约 + 旧端点下线防回归 |
+
+提交前建议跑完整门禁（与 CI 同一套三步）：`workbuddyFlow\run-verify.ps1`。
 
 ## 常见问题
 
@@ -201,4 +213,4 @@ A：用 **springdoc-openapi**。Spring Boot 3 升级到 Jakarta 命名空间，�
 ## 路线图
 
 - 阶段 0 工程底座 → 1 核心链路 → 2 RAG → 3 Tool Calling → 4 ReAct Agent → 5 会话 → 6 前端改版（Excalidraw 双通道）→ 7 可观测治理
-- 详细任务见 `docs/架构规划-v2.md`；约束见 `docs/agents/`。
+- 详细任务见 `workbuddyFlow/plans/masterPlan/`；约束与架构见 `workbuddyFlow/docs/`。

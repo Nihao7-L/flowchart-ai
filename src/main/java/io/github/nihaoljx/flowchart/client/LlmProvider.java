@@ -3,13 +3,10 @@ package io.github.nihaoljx.flowchart.client;
 /**
  * LLM 提供商统一接口
  *
- * 面试考点：依赖倒转原则（DIP）——业务代码依赖抽象接口，不依赖具体实现
- * 不管底层是 Kimi、DeepSeek 还是 Gemini，对外都是同一个 chat() 方法
+ * 设计约束：业务代码依赖抽象接口、不依赖具体实现（依赖倒置，见 architecture.md ADR-3）。
+ * 不管底层是 Kimi、DeepSeek 还是 Gemini，对外都是同一个 chat() 方法。
  *
- * 参考文档里的对应概念：
- * - 这就是 "Provider Adapter 统一封装" 的最简版
- * - chat() 返回提取后的纯文本，不是原始 JSON
- *   这样 ParserService 不用关心是哪个 LLM 返回的
+ * chat() 返回提取后的纯文本，不是原始 JSON——调用方因此不必关心是哪家 LLM 的响应格式。
  */
 public interface LlmProvider {
 

@@ -6,7 +6,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -15,7 +14,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 数据模型契约测试（IR 与 API 外壳）
  *
- * 测试范围：Result 统一响应结构、请求 record 的字段语义、MindmapData 的递归兜底
+ * 测试范围：Result 统一响应外壳、MindmapData 的递归兜底
+ *
+ * 注：请求 record（GenerateRequest / DownloadRequest）已随 M1 前置代码清算删除，
+ * 对应的字段契约测试一并移除；M1 引入 /api/chat 的新请求体后在此补回。
  *
  * 覆盖的失败模式：前端依赖的响应字段改名/改语义；LLM 漏返回 children 时 NPE
  */
@@ -52,41 +54,6 @@ class ModelContractTest {
         assertEquals(400, r.getCode());
         assertEquals("请输入流程描述", r.getMessage());
         assertNull(r.getData());
-    }
-
-    // ==================== 请求 record ====================
-
-    @Test
-    @DisplayName("GenerateRequest：三个字段按顺序可取，且允许为 null")
-    void generateRequestAccessors() {
-        GenerateRequest req = new GenerateRequest("甲到乙", "flowchart", "svg");
-        assertEquals("甲到乙", req.text());
-        assertEquals("flowchart", req.type());
-        assertEquals("svg", req.format());
-
-        GenerateRequest empty = new GenerateRequest(null, null, null);
-        assertNull(empty.text());
-        assertNull(empty.type());
-        assertNull(empty.format());
-    }
-
-    @Test
-    @DisplayName("GenerateRequest：record 的相等性按字段值比较")
-    void generateRequestEquality() {
-        assertEquals(new GenerateRequest("a", "flowchart", "svg"),
-                new GenerateRequest("a", "flowchart", "svg"));
-        assertNotEquals(new GenerateRequest("a", "flowchart", "svg"),
-                new GenerateRequest("a", "mindmap", "svg"));
-    }
-
-    @Test
-    @DisplayName("DownloadRequest：字段可取，format 允许为 null（由 controller 兜默认值）")
-    void downloadRequestAccessors() {
-        DownloadRequest req = new DownloadRequest("@startuml\n@enduml", "png");
-        assertEquals("@startuml\n@enduml", req.plantUml());
-        assertEquals("png", req.format());
-
-        assertNull(new DownloadRequest("x", null).format());
     }
 
     // ==================== MindmapData 递归兜底 ====================

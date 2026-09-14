@@ -1,7 +1,8 @@
-# 模块计划 · Tool Calling（阶段3）
+# 模块计划 · Tool Calling（S3 能改）
 
 > 状态：规划中
 > 关联架构：`architecture.md` 2.4 包表（`tools` 允许调 `rag` / `llm`）、ADR-4
+> 所属阶段：**S3 能改**（与 M6b① 同阶段交付；执行序见 `plans/masterPlan/roadmap.md`）
 > 覆盖任务：v2-15 ~ v2-17
 
 ## 元信息
@@ -18,10 +19,10 @@
 - 禁止改动：前端渲染（M6）、会话层（M5）
 
 ## 分层边界
-落在 `tools/`；向下调 `rag` / `llm`，被 `agent` 在阶段4 调用。原因：工具是 Agent 的执行手脚，先独立做好再被编排。
+落在 `tools/`；向下调 `rag` / `llm`，被 `agent` 在 S4 调用。原因：工具是 Agent 的执行手脚，先独立做好再被编排。
 
 ## 前置
-- M1 出图链路可用
+- M1 出图链路可用（S1 已闭合）
 - `llm/` 支持 function calling / tool calling
 
 ## 步骤

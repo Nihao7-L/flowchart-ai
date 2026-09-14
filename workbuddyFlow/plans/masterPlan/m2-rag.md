@@ -1,7 +1,8 @@
-# 模块计划 · RAG 检索增强（阶段2）
+# 模块计划 · RAG 检索增强（S2 更准）
 
 > 状态：规划中
 > 关联架构：`architecture.md` 2.4 包表（`rag` 允许调 `llm`）
+> 所属阶段：**S2 更准**（执行序见 `plans/masterPlan/roadmap.md`）
 > 覆盖任务：v2-12 ~ v2-14
 
 ## 元信息
@@ -21,6 +22,7 @@
 落在 `rag/`；只向下调 `llm/`（EmbeddingClient 走网关）。不触碰 `graph` / `agent`。原因：RAG 是生成前的"素材准备"，与校验/Agent 解耦。
 
 ## 前置
+- S1 已闭合（M1 出图链路 + M6a 渲染镜像层），出图效果可肉眼验证
 - M1 v2-8 / v2-9 契约与校验可用
 - `llm/` 网关已收口（ADR-3）
 
