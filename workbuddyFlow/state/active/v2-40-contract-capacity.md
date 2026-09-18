@@ -90,13 +90,27 @@
 
 **仍留给 P2 的**：`group` 只用于**排版分区**，尚未编译成渲染层的 `groupIds`（渲染层的成组选中/整体拖动）。P2 做"关系语义"时一并补，或按需单开一个小项。
 
-### P2 — 关系语义（让"边"能表达含义）
+### P2 — 关系语义（让"边"能表达含义）—— ✅ **已完成（2026-09-19）**
 
 - 契约：`arrow.relation`（枚举：`flow` / `call` / `data` / `async` / `dependency` / `one-to-one` /
   `one-to-many` / `many-to-many` / `inherit` / `block`）
 - 编译表（规范）：`flow`→实线三角；`async`→虚线开三角；`data`→点线；
   `one-to-many`→`crowfoot_many`；`block`→`bar` 起点；`inherit`→`triangle_outline`
 - 验收：ER 图能画出基数；时序图能区分同步/异步
+
+**落地记录（2026-09-19）**
+
+| 项 | 落点 | 证据 |
+|---|---|---|
+| 契约新增 `relation` 枚举 | `scene.schema.json` 的 `arrow.properties`（第 3 道闸门：契约侧） | schema 解析通过 |
+| 校验器闸门 | `GraphValidator` 新增 `RELATIONS` 常量 + `validateArrow` 内 `checkOptionalEnum(relation)`（第 3 道闸门：校验侧） | `GraphValidatorTest#legalRelationPasses` / `#illegalRelationFails` |
+| 语义→视觉编译 | `ScenePlanner` 新增 `RelationStyle` 记录 + `RELATION_STYLE` 映射表 + 包级 `compileRelations`（新建路径调用，编辑模式不动坐标） | `RelationCompileTest` 11 例全过（各 relation 映射 / 无 relation 零副作用 / 非法忽略 / 非 arrow 跳过） |
+| 提示词语义说明 | `PromptService` 作图规则加 `relation` 取值说明（第 4 道闸门：提示侧；枚举值因 schema 嵌入已自动出现，此处补语义） | `PromptServiceTest` 未回归 |
+| 零回归保护 | `compileRelations` 仅在"新建且确有 relation"时改写 `effectiveJson`，无 relation 场景 `effectiveJson == json` → 与改造前逐字节一致 | `ScenePlannerTest#smallSceneIsUntouched` / `#editModeIsUntouched` 仍过 |
+
+**与计划文本的一致**：编译表与 P2 原计划逐字对应（`flow`/`call`→实线三角、`async`→虚线开三角、`data`→点线、`one-to-many`→鸦脚、`block`→`bar`、`inherit`→空心三角）；新增 `dependency`（虚线）、`one-to-one`/`many-to-many`（双向鸦脚）补齐 ER 全集。
+
+**扩字段口诀再记一次**：`relation` 同时改了**契约 + 校验器枚举 + 编译表 + 提示词**四处（与 P0 的"契约+白名单+校验器"同构），漏任一都会"判非法 / 编译不出 / LLM 不用"。
 
 ### P3 — 图型语法（"选图型"这一环）
 

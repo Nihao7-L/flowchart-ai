@@ -85,6 +85,12 @@ public class PromptService {
                 + "`line` 仅用于装饰性分隔线（不连接图形）。\n");
         sb.append("- 箭头仅在连到非图形（空白 / frame 边框）时才用 `points` 自定义路径；"
                 + "两条线交叉需要绕行时，可以把箭头拆成两条。\n");
+        sb.append("- 连线可用可选字段 `relation` 标注业务语义（契约里已有枚举值）："
+                + "`flow`/`call`（实线+末端三角，同步调用）、`async`（虚线+开三角，异步调用）、"
+                + "`data`（点线，数据流）、`dependency`（虚线，依赖）、"
+                + "ER 基数 `one-to-one`/`one-to-many`/`many-to-many`（鸦脚端点）、"
+                + "`inherit`（实线+空心三角，继承）、`block`（起点横杠，阻塞）。"
+                + "后端会据此自动设线型与端点形状，你不必自己写 `strokeStyle`/`startArrowhead`。\n");
         sb.append("- 坐标 x / y 只是**种子值**（单位 px，给近似值即可）："
                 + "后端会按图的拓扑重新排布，你不需要精确对齐、也不必操心元素重叠，"
                 + "把精力放在结构与文字上。\n");

@@ -48,6 +48,8 @@ FlowAI 需要支持**"手绘白板 + AI 改图"双通道协作**：
 
 **选择 Excalidraw**：贴合手绘直觉，`convertToExcalidrawElements` 能渲染 IR。
 
+> ⚠️ **frame 裁剪（渲染层已知坑，2026-09-18 修复）**：`convertToExcalidrawElements` 会按「绑定元素归属哪个 frame」**自动给元素反填 `frameId`**，把跨区箭头收编成某 frame 的子元素；而 frame **会裁剪框外的子元素**——于是连接不同区域的连线，落在所属 frame 边界外的那段被整段吃掉（用户原话「线被截断 / 整段消失」）。现由 `frontend/src/lib/sceneAdapter.ts` 的 `detachCrossFrameArrows`（接入 `finishConversion`）兜底：**两端绑定元素归属不同 frame** 的箭头清掉 `frameId` 变自由元素（不再被裁），框内箭头保留 `frameId` 仍随框移动。
+
 ### 1.3 前后端交互图
 
 ```
@@ -165,6 +167,14 @@ export const isModelElement = (el: { customData?: unknown }): boolean => {
 | **frame** | id, type, x, y, width, height |
 | **freedraw** | id, type, x, y, points |
 
+> **v2-40（S1a「契约容量」）扩展的可选字段**（全部可选，旧场景 JSON 原样可渲染，新增字段不填时退化为旧行为）：
+> - shape 新增：`strokeStyle`（原仅 arrow/line 支持）、`roundness`、`link`、`fillStyle: zigzag`
+> - arrow 新增：`startArrowhead` / `endArrowhead`（12 种端点，含数据库鸦脚 `crowfoot_many`）、`link`
+> - text 新增：`verticalAlign`、`autoResize`、`link`
+> - 层次：`shape.group`（模块名，自由文本，由后端编译为 `groupIds` 与 frame 成员）、`frame.children`（成员列表，由后端 `ScenePlanner` 计算、**不在契约里手填**）
+>
+> 详见 `state/active/v2-40-contract-capacity.md`。
+
 ### 2.5 IR 存储架构
 
 ```
@@ -233,6 +243,24 @@ export const isModelElement = (el: { customData?: unknown }): boolean => {
 +-----------------+
 | llmProvider     |  llmProvider.chat(prompt, timeout)
 | .chat()         |
++--------+--------+
+         |
+         V
++-----------------+
+| sceneBinder     |  bind(): 吸附归一化，两点箭头升级为绑定式
+| .bind()         |
++--------+--------+
+         |
+         V
++-----------------+
+| sceneDeduper    |  dedup(): 去重（与用户手绘/自身重复线）
+| .dedup()        |
++--------+--------+
+         |
+         V
++-----------------+
+| scenePlanner    |  arrange(): 排版(分模块) + 布局(算坐标)
+| .arrange()      |  （内部调 sceneLayout；小图/编辑模式透传）
 +--------+--------+
          |
          V
@@ -364,8 +392,9 @@ LLM 调用耗时 30-300 秒，必须避免阻塞 Spring MVC 请求处理线程�
 - **结构**：elements 数组存在
 - **id**：唯一、格式正确
 - **type**：在允许范围内
-- **箭头**：start+end 或 points，不能自环
-- **业务**：改图保真检查
+- **箭头**：start+end 或 points，不能自环（D3：`start.id == end.id` 判非法）
+- **业务**：改图保真检查（`SceneDrift`，仅编辑模式第一轮触发：保留 id 但整图重排坐标会被判为「整图重排」）
+- **可选枚举**（v2-40 起）：`fillStyle` / `verticalAlign` / `startArrowhead` / `endArrowhead` 必须在硬编码集合内；LLM 用了集合外的值 → 整轮被判非法、白耗一整轮重试（约 130 秒）
 
 ### 5.3 Issue 结构
 
@@ -386,6 +415,21 @@ LLM 调用耗时 30-300 秒，必须避免阻塞 Spring MVC 请求处理线程�
 |                                                             |
 |  +-------------+                                           |
 |  |  LLM 生成   |  llmProvider.chat(prompt, timeout)        |
+|  +------+------+                                           |
+|         |                                                   |
+|         V                                                   |
+|  +-------------+                                           |
+|  | 绑定归一化  |  sceneBinder.bind(): 两点箭头→绑定式        |
+|  +------+------+                                           |
+|         |                                                   |
+|         V                                                   |
+|  +-------------+                                           |
+|  |  去重       |  sceneDeduper.dedup(): 丢重复线             |
+|  +------+------+                                           |
+|         |                                                   |
+|         V                                                   |
+|  +-------------+                                           |
+|  |  排版+布局  |  scenePlanner.arrange()→sceneLayout         |
 |  +------+------+                                           |
 |         |                                                   |
 |         V                                                   |
@@ -425,9 +469,11 @@ LLM 调用耗时 30-300 秒，必须避免阻塞 Spring MVC 请求处理线程�
 
 | 轮次 | 处理方式 |
 |------|----------|
-| 第 1 轮 | 正常生成，校验失败则构建修正 prompt |
+| 第 1 轮 | 正常生成，校验失败则构建修正 prompt（`buildFixPrompt(userText, issues, previousJson)`） |
 | 第 2 轮 | 使用修正 prompt 重新生成，校验失败则继续修正 |
-| 第 3 轮 | 最后一轮，校验失败则发送历史结果或错误 |
+| 第 3 轮 | 最后一轮修正轮；若仍校验失败 → `sendError("已重试 3 轮仍不通过: <issue 明细>")` 并结束 |
+
+> **语义变更（2026-09-17）**：原「第 3 轮失败则发送历史结果或错误」的**存档分支已整体删除**。现改为**「通过即发、失败才继续」**（`GenerationService` 注释原话）：只有 `graphValidator.validate()` 报出 `issue` 才会进入下一轮，没 issue 就立刻 `saveModel + result + complete` 返回。第 3 轮仍失败不再发旧图，而是把 issue 明细随 error 事件上报。
 
 ## 七、缓存管理（SessionStore）
 

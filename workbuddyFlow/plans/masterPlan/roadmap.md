@@ -168,7 +168,7 @@
 **底层缺口（不是步骤，是底座）：契约容量**
 - **2026-09-18 用户判断**：「画不了复杂的图形……`scene.schema.json` 太过于局限、太过于死板，就算现在再怎么测试都没用」。**实测成立**：Excalidraw 0.18.1 支持 12 种箭头端点（含数据库鸦脚）、多层 `groupIds`、可嵌套 `frame`、`roundness`、图形虚线、`verticalAlign`、`link`、多段折线，**契约一项都没传过去**（契约只有 6 类可用元素、约 30 个字段）。
 - **连锁后果**：测试集 9 条题里 **8 条要求「嵌套」**，而契约的嵌套表达能力≈0（`frame` 无归属、无 `groupIds`）→ 图只能画成扁平一堆框。
-- **处置**：能力矩阵与图型语法落 `docs/diagram-grammar.md`；模块计划 **`plans/masterPlan/m9-contract-capacity.md`（2026-09-18 拍板新开）**；活跃项 `state/active/v2-40-contract-capacity.md`；对应新阶段 **S1a**（见第二节表格）。**S1a 先行于 S1b**（排版需要 `group` 语义作输入）。
+- **处置**：能力矩阵与图型语法落 `docs/diagram-grammar.md`；模块计划 **`plans/masterPlan/m9-contract-capacity.md`（2026-09-18 拍板新开）**；活跃项 `state/active/v2-40-contract-capacity.md`；对应新阶段 **S1a**（见第二节表格）。**S1a 先行于 S1b**（排版需要 `group` 语义作输入）。**当前进度（2026-09-19）：P0 / P1 / P2 均已落地（契约容量 + 层次归属 + 关系语义），门禁 166 用例 0 失败；下一步 P3 图型语法。**
 - **同时修正一处**：`frame.children` 被适配层补空数组，导致框与内容**归属断裂**（实测成员 `frameId` 恒为 null）—— 详见 `docs/constraint.md` 技术约束与 `docs/diagram-grammar.md` 第 4.1 节。
 - **2026-09-18 用户拍板（5 项）**：
 

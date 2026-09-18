@@ -118,7 +118,8 @@
         "startArrowhead": { "$ref": "#/definitions/arrowhead" },
         "endArrowhead": { "$ref": "#/definitions/arrowhead" },
         "link": { "$ref": "#/definitions/link" },
-        "opacity": { "type": "integer", "minimum": 0, "maximum": 100 }
+        "opacity": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "relation": { "enum": ["flow", "call", "data", "async", "dependency", "one-to-one", "one-to-many", "many-to-many", "inherit", "block"] }
       },
       "oneOf": [
         { "required": ["start", "end"] },

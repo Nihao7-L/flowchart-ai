@@ -68,6 +68,37 @@ class GraphValidatorTest {
     }
 
     @Test
+    void legalRelationPasses() {
+        String json = """
+                {
+                  "elements": [
+                    {"id": "n1", "type": "rectangle", "x": 0, "y": 0, "width": 10, "height": 10},
+                    {"id": "n2", "type": "rectangle", "x": 0, "y": 0, "width": 10, "height": 10},
+                    {"id": "e1", "type": "arrow", "start": {"id": "n1"}, "end": {"id": "n2"}, "relation": "one-to-many"}
+                  ]
+                }
+                """;
+        assertTrue(validator.validate(json).isEmpty(),
+                "合法 relation 应放行");
+    }
+
+    @Test
+    void illegalRelationFails() {
+        String json = """
+                {
+                  "elements": [
+                    {"id": "n1", "type": "rectangle", "x": 0, "y": 0, "width": 10, "height": 10},
+                    {"id": "n2", "type": "rectangle", "x": 0, "y": 0, "width": 10, "height": 10},
+                    {"id": "e1", "type": "arrow", "start": {"id": "n1"}, "end": {"id": "n2"}, "relation": "telepathy"}
+                  ]
+                }
+                """;
+        List<ValidationIssue> issues = validator.validate(json);
+        assertFalse(issues.isEmpty(),
+                "非法 relation 必须判非法（否则 LLM 用了它、整轮被判非法白耗重试）");
+    }
+
+    @Test
     void arrowMustHaveStartEndOrPoints() {
         String json = """
                 {

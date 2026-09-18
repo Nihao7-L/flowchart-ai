@@ -74,6 +74,33 @@ public class ScenePlanner {
     /** 图形数超过它才做分区（**唯一真相源**：PromptService 的提示词与契约描述都引用它） */
     public static final int MODULE_THRESHOLD = 12;
 
+    /**
+     * 关系语义 → 视觉样式（v2-40 P2）。
+     *
+     * <p>LLM 用 {@code relation} 表达连线的业务含义，后端据此推导线型
+     * （strokeStyle）与端点形状（startArrowhead / endArrowhead），免去 LLM
+     * 自己拼 Excalidraw 细节。与 schema 的 {@code arrow.relation} 枚举、
+     * GraphValidator 的 {@code RELATIONS} 三处同义——扩值必须四处同改。
+     */
+    private record RelationStyle(
+            String strokeStyle, String startArrowhead, String endArrowhead) {}
+
+    private static final Map<String, RelationStyle> RELATION_STYLE;
+    static {
+        Map<String, RelationStyle> m = new LinkedHashMap<>();
+        m.put("flow",          new RelationStyle("solid", null, "triangle"));
+        m.put("call",          new RelationStyle("solid", null, "triangle"));
+        m.put("data",          new RelationStyle("dotted", null, null));
+        m.put("async",         new RelationStyle("dashed", null, "triangle_outline"));
+        m.put("dependency",    new RelationStyle("dashed", null, null));
+        m.put("one-to-one",    new RelationStyle(null, "crowfoot_one", "crowfoot_one"));
+        m.put("one-to-many",   new RelationStyle(null, "crowfoot_one", "crowfoot_many"));
+        m.put("many-to-many",  new RelationStyle(null, "crowfoot_many", "crowfoot_many"));
+        m.put("inherit",       new RelationStyle("solid", null, "triangle_outline"));
+        m.put("block",         new RelationStyle(null, "bar", null));
+        RELATION_STYLE = Map.copyOf(m);
+    }
+
     /** 一个模块至少要有几个图形（兜底聚类用；1 个图形的"模块"没有意义） */
     private static final int MIN_CLUSTER_SIZE = 2;
 
@@ -119,11 +146,17 @@ public class ScenePlanner {
             elementsNode.forEach(elements::add);
 
             boolean editMode = fixedIds != null && !fixedIds.isEmpty();
+            // 仅新建路径编译 relation → 视觉样式（编辑模式不动既有坐标，
+            // 避免与 SceneDrift 打架）。compileRelations 只增不删，返回是否改动。
+            String effectiveJson = json;
+            if (!editMode && compileRelations(elements)) {
+                effectiveJson = objectMapper.writeValueAsString(root);
+            }
             boolean dirtyChildren = hasChildren(elements);
             Partition partition = partition(elements);
 
             if (editMode || !partition.active()) {
-                String laid = engine.layout(json, fixedIds);
+                String laid = engine.layout(effectiveJson, fixedIds);
                 // 零回归路径：只要画布里没有"LLM 越权填的 children"，
                 // 就把引擎的输出原样返回 —— 一个字节都不碰
                 return dirtyChildren ? stripChildren(laid) : laid;
@@ -143,6 +176,48 @@ public class ScenePlanner {
             LOG.warn("单层布局也失败（{}），原样返回场景", e.getMessage());
             return json;
         }
+    }
+
+    // ==================== relation 编译（v2-40 P2） ====================
+
+    /**
+     * 把 {@code relation} 语义编译成 Excalidraw 视觉样式（strokeStyle / 端点形状）。
+     *
+     * <p>只在<b>新建路径</b>调用（见 {@link #arrange}），编辑模式不碰既有坐标。
+     * 只增不删：仅当 relation 命中已知映射时才写对应字段，绝不影响其它属性，
+     * 因此无 relation 的箭头输出与改造前逐字节一致（零回归）。
+     *
+     * <p>包级可见是为了让 {@code RelationCompileTest} 直接单测，不必走整条布局链路。
+     *
+     * @return 是否真的改动了某个元素
+     */
+    static boolean compileRelations(List<JsonNode> elements) {
+        boolean changed = false;
+        for (JsonNode elem : elements) {
+            if (!"arrow".equals(elem.path("type").asText(""))) {
+                continue;
+            }
+            JsonNode rel = elem.get("relation");
+            if (rel == null || !rel.isTextual()) {
+                continue;
+            }
+            RelationStyle style = RELATION_STYLE.get(rel.asText());
+            if (style == null) {
+                continue;
+            }
+            ObjectNode arrow = (ObjectNode) elem;
+            if (style.strokeStyle() != null) {
+                arrow.put("strokeStyle", style.strokeStyle());
+            }
+            if (style.startArrowhead() != null) {
+                arrow.put("startArrowhead", style.startArrowhead());
+            }
+            if (style.endArrowhead() != null) {
+                arrow.put("endArrowhead", style.endArrowhead());
+            }
+            changed = true;
+        }
+        return changed;
     }
 
     // ==================== 结构规划 ====================

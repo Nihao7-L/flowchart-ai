@@ -71,6 +71,11 @@ public class GraphValidator {
             "triangle", "triangle_outline", "diamond", "diamond_outline",
             "crowfoot_one", "crowfoot_many", "crowfoot_one_or_many");
 
+    /** 契约允许的连线关系语义（v2-40 P2）。与 ScenePlanner 的 {@code RELATION_STYLE}、schema 的 {@code arrow.relation} 三处同义 */
+    private static final Set<String> RELATIONS = Set.of(
+            "flow", "call", "data", "async", "dependency",
+            "one-to-one", "one-to-many", "many-to-many", "inherit", "block");
+
     /** 契约允许的字体族（1=手绘 2=Helvetica 3=等宽） */
     private static final Set<Integer> FONT_FAMILIES =
             Set.of(1, 2, 3);
@@ -285,6 +290,8 @@ public class GraphValidator {
                 elem, path, "startArrowhead", ARROWHEADS, issues);
         checkOptionalEnum(
                 elem, path, "endArrowhead", ARROWHEADS, issues);
+        checkOptionalEnum(
+                elem, path, "relation", RELATIONS, issues);
         checkOptionalNonNegative(
                 elem, path, "strokeWidth", issues);
         checkOptionalPercent(elem, path, "opacity", issues);
