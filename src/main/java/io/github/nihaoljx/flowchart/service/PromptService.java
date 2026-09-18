@@ -3,6 +3,7 @@ package io.github.nihaoljx.flowchart.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.nihaoljx.flowchart.graph.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.ValidationIssue;
 import io.github.nihaoljx.flowchart.session.SessionStore;
 import org.slf4j.Logger;
@@ -87,6 +88,24 @@ public class PromptService {
         sb.append("- 坐标 x / y 只是**种子值**（单位 px，给近似值即可）："
                 + "后端会按图的拓扑重新排布，你不需要精确对齐、也不必操心元素重叠，"
                 + "把精力放在结构与文字上。\n");
+        sb.append("- **模块分组（v2-39：图形多时必须做）**：先想清楚这张图由哪几个"
+                + "**业务模块**组成，再给每个图形写 `group`（模块名，用业务词，"
+                + "如「订单域」「支付」「库存」）。\n");
+        sb.append("  - 图形（rectangle / ellipse / diamond）超过 ")
+                .append(ScenePlanner.MODULE_THRESHOLD)
+                .append(" 个时**必须**分组：2~5 个模块、每个模块至少 2 个图形；\n");
+        sb.append("  - 图形不超过 ")
+                .append(ScenePlanner.MODULE_THRESHOLD)
+                .append(" 个时**不要写 `group`**（小图不需要分区）；\n");
+        sb.append("  - `group` 默认写成字符串（如 `\"订单域\"`）；确实有两层结构时才写成"
+                + "数组，**从内到外**（如 `[\"下单\", \"订单域\"]`）。\n");
+        sb.append("- 后端按 `group` 分区排版：同模块的图形排在一起、模块之间留出通道，"
+                + "跨模块连线的文字才落得下、整张图才不会摊成一根长条。\n");
+        sb.append("- 若为某个模块画了 `frame` 框，**框的 `name` 必须与模块名逐字相同**"
+                + "（后端按名字把框认领给模块，并重算框的位置与大小）；"
+                + "名字对不上，框会留在你给的坐标、与重排后的内容错位。"
+                + "**不要给 `frame` 填 `children`**（成员由后端算出，你填的会被丢弃）。"
+                + "用户没要求用框分区时也不要画框。\n");
         sb.append("- **单张图的元素总数控制在 40 个以内**（图形 + 连线 + 文字）："
                 + "元素越多出图越慢。需求规模更大时，先给出分步纲要并请用户确认，"
                 + "再按指示分批生成，不要一次硬吐几十个元素。\n");

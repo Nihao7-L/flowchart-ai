@@ -52,6 +52,10 @@ export const isFullyBoundArrow = (el: {
  * 后端 schema 是 additionalProperties:false，直接展开 `{...el}` 语义上也安全；
  * 但显式白名单的好处是：契约新增字段时这里会立刻提醒"前端还没跟上"，
  * 而不是把未知字段悄悄喂给 Excalidraw。
+ *
+ * ⚠️ 刻意**不含** `group`：那是后端的语义层字段（模块名），排版用它分区，
+ * 渲染器既不认识它、也不需要它 —— 语义层与渲染层分开正是 v2-40 的架构
+ * （"语义编译"）。白名单守卫用例里对它做了显式豁免。
  */
 const SKELETON_KEYS = [
   'type', 'id', 'x', 'y', 'width', 'height', 'angle',
@@ -60,7 +64,7 @@ const SKELETON_KEYS = [
   'link', 'opacity',
   'points', 'start', 'end', 'startArrowhead', 'endArrowhead',
   'text', 'fontSize', 'fontFamily', 'textAlign', 'verticalAlign',
-  'autoResize', 'name',
+  'autoResize', 'name', 'children',
 ] as const;
 
 /**
@@ -85,22 +89,22 @@ export const toSkeleton = (el: SceneElement): Record<string, unknown> => {
 /**
  * 契约 → 转换器入参的适配补丁。
  *
- * ⚠️ 补丁一：`frame` 缺 `children`。
- * scene.schema.json 的 frame 分支（additionalProperties:false）**没有** `children`，
- * 而 `convertToExcalidrawElements` 对 frame 强制访问 `children.forEach(...)`，
- * 拿到 undefined 即抛 `TypeError: Cannot read properties of undefined (reading 'forEach')`。
+ * ⚠️ 补丁一：`frame.children` —— **2026-09-18 已是"透传 + 兜底"，不再是"补空数组"**。
+ *
+ * 背景：`convertToExcalidrawElements` 对 frame 强制访问 `children.forEach(...)`，
+ * 拿到 undefined 即抛 `TypeError: Cannot read properties of undefined (reading 'forEach')`，
  * 后果与 text 漏字段一样：**整批元素转换失败，画布全空**。
  * 实测（2026-09-16，探针矩阵）：frame 无 children → THROW；children:[] → PASS。
  *
- * ⚠️ **2026-09-18 修正**：`children` 的性质判断变了 —— 它**不是**"渲染器
- * 实现细节、无语义"，而是「框 ↔ 内容」归属的**唯一**途径（对照实测：传
- * 成员 id 列表时，成员元素的 `frameId` 被反填为 frame 的 id；传 `[]` 时
- * 成员 `frameId` 恒为 `null`，框与内容在数据模型里毫无关系 ——
- * 拖框带不走内容、删框也带不走内容）。
+ * 但 `children` **不是**"渲染器实现细节、无语义"（2026-09-18 对照实测推翻）——
+ * 它是「框 ↔ 内容」归属的**唯一**途径：传成员 id 列表时，成员元素的 `frameId`
+ * 被反填为 frame 的 id；传 `[]` 时成员 `frameId` 恒为 `null`，框与内容在数据
+ * 模型里毫无关系（拖框带不走内容、删框也带不走内容）。
  *
- * 「不让 LLM 填」这个动机不变（它填不准、填错会连带影响整批转换），
- * 但落法要改成：**由后端按分组与几何算出成员列表、这里填进去**（v2-40 P1）。
- * 在 P1 落地前本补丁维持 `[]`，以免行为在本阶段发生漂移；回归锁在
+ * 所以落法是（v2-40 P1 已落地）：**后端 `ScenePlanner` 按分组与几何算出成员
+ * 列表写进契约**，「不让 LLM 填」的动机不变（它填不准、填错会连带影响整批
+ * 转换）。这里负责两件事：不是数组就补 `[]`（防整批转换失败）、滤掉指向
+ * 不存在元素的 id（防 LLM 越权填的脏数据）。回归锁在
  * `frontend/tools/scene-smoke.mjs` 的 frame 用例里。
  *
  * ⚠️ 补丁二：**x / y 必须是有限数字**（这是"画布空白"的真凶）。
@@ -131,7 +135,16 @@ const normalize = (
   }
 
   if (out.type === 'frame') {
-    out.children = [];
+    // 成员表由**后端**算出（v2-40 P1，见上方"补丁一"）：
+    //   1. 不是数组就补空数组 —— 转换器对 frame 强制 `children.forEach`，
+    //      undefined 会让整批转换抛错、画布全空；
+    //   2. 滤掉指向不存在元素（或指向自己）的 id —— LLM 越权填的成员不可信，
+    //      而引用不存在的 id 同样会让转换失败。
+    const raw = Array.isArray(out.children) ? out.children : [];
+    out.children = raw.filter(
+      (id): id is string =>
+        typeof id === 'string' && id !== out.id && byId.has(id),
+    );
   }
 
   if (out.type === 'arrow') {
@@ -641,13 +654,81 @@ export const healCorruptedArrows = (
   return withLabels;
 };
 
+/**
+ * 补丁三：**frame 的几何以后端为准**（2026-09-18 修的真缺陷）。
+ *
+ * Excalidraw 的转换器把 frame 的 x / y / width / height 当「可选输入」：
+ * 缺哪一项就用它自己从成员算出来的值补（`data/transform.ts`：
+ * `const frameY = frame?.y || minY;`，其中 `minY` 是成员包围盒上沿再减
+ * 一个 `PADDING = 10`）。坑就在这个 `||` —— **0 是 falsy**：
+ * 后端明明发了 y = 0（最上面一排模块，完全合法的布局结果），转换器却当成
+ * 「没给」，改用 `成员 minY(80) - 10 = 70` → 框从 0 掉到 70：既不在 20px
+ * 网格上，也和它本该框住的节点错位。2026-09-18 真实 LLM 电池实测到的
+ * 「3 个 frame 只有 2 个落在网格上」就是这一条（复放后端产物确认 y = 0）。
+ *
+ * 后端的 frame 几何是**算出来的**（模块包围盒 + 内边距，见 ScenePlanner），
+ * 不是猜的 —— 所以转换之后按契约原值恢复，把后端当唯一真相源。
+ * 只认「契约里给了有限数字」的那几项，其余仍用转换器算的值。
+ */
+const restoreFrameGeometry = (
+  els: ConvertedElement[],
+  byId: Map<string, Record<string, unknown>>,
+): ConvertedElement[] =>
+  els.map((el) => {
+    if (el.type !== 'frame') return el;
+    const src = byId.get(el.id);
+    if (!src) return el;
+    const pick = (key: string, fallback: number): number => {
+      const value = Number(src[key]);
+      return Number.isFinite(value) ? value : fallback;
+    };
+    return {
+      ...el,
+      x: pick('x', el.x),
+      y: pick('y', el.y),
+      width: pick('width', el.width),
+      height: pick('height', el.height),
+    } as ConvertedElement;
+  });
+
+/**
+ * 补丁四：跨 frame 的绑定箭头解除 frame 归属（2026-09-18 修的真缺陷）。
+ *
+ * 症状：连接「架构区 → 流程区 → 统计区 → 告警区」这类跨区箭头，渲染后
+ * 整段消失（用户原话"一部分不见了"）。
+ *
+ * 根因：Excalidraw 转换器会按"绑定元素属于哪个 frame"给箭头反填 `frameId`，
+ * 把箭头收编成该 frame 的子元素；而 frame 会裁剪子元素——箭头落在所属
+ * frame 边界之外的那段被整体吃掉。实测 3 条跨区连线被裁 64%~88%。
+ *
+ * 修复：凡是两端绑定元素不属于同一个 frame 的箭头，清掉 `frameId` 变回自由
+ * 元素（不再被裁剪）；框内箭头（两端同框）保持原 frameId，仍随 frame 移动。
+ */
+const detachCrossFrameArrows = (els: ConvertedElement[]): ConvertedElement[] => {
+  const frameOf = new Map<string, string | null>();
+  for (const e of els) {
+    frameOf.set(e.id, e.frameId ?? null);
+  }
+  return els.map((e) => {
+    if (e.type !== 'arrow') return e;
+    const sb = e.startBinding?.elementId;
+    const eb = e.endBinding?.elementId;
+    const sf = typeof sb === 'string' ? (frameOf.get(sb) ?? null) : null;
+    const ef = typeof eb === 'string' ? (frameOf.get(eb) ?? null) : null;
+    return sf !== ef ? ({ ...e, frameId: null } as ConvertedElement) : e;
+  });
+};
+
 /** 统一出口：打标记 + 尺寸兜底，保证任何路径产出的元素都能安全取景 */
 const finishConversion = (
   els: ConvertedElement[],
   dropped: string[],
+  byId: Map<string, Record<string, unknown>>,
   fatal?: string,
 ): SceneConversion => ({
-  elements: tagModel(ensureFiniteSize(els)),
+  elements: tagModel(
+    ensureFiniteSize(restoreFrameGeometry(detachCrossFrameArrows(els), byId)),
+  ),
   dropped,
   fatal,
 });
@@ -703,7 +784,7 @@ export const convertScene = (elements: SceneElement[]): SceneConversion => {
   }
 
   try {
-    return finishConversion(runConverter(skeletons), dropped);
+    return finishConversion(runConverter(skeletons), dropped, byId);
   } catch {
     // 整批失败：逐元素定位毒元素
     const survivors: Record<string, unknown>[] = [];
@@ -725,7 +806,7 @@ export const convertScene = (elements: SceneElement[]): SceneConversion => {
     }
 
     try {
-      return finishConversion(runConverter(survivors), dropped);
+      return finishConversion(runConverter(survivors), dropped, byId);
     } catch (e) {
       return { elements: [], dropped, fatal: errText(e) };
     }

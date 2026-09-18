@@ -52,6 +52,18 @@
       "type": "string",
       "description": "超链接：点击该元素时跳转的 URL（可选）。给视觉元素指回文档 / 需求来源时用。"
     },
+    "group": {
+      "description": "所属模块名（自由文本，如「订单域」「支付服务」）。语义层字段：后端据此做结构规划，把同模块的图形排在一起、并算出成员所属的画框。**只有图形较多的复杂图才需要填**（超过 12 个图形时，分成 2~5 个模块、每模块至少 2 个图形；该阈值与后端 `ScenePlanner.MODULE_THRESHOLD` 为同一处定义）；简单图一律不要填 —— 提示词里也写了这条规则，两处口径必须一致。模块下还有子模块时可写成数组，从内到外排列（如 [\"下单\",\"订单域\"]）。",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "maxItems": 3
+        }
+      ]
+    },
     "element": {
       "oneOf": [
         { "$ref": "#/definitions/shape" },
@@ -83,6 +95,7 @@
         "roughness": { "type": "number", "minimum": 0 },
         "roundness": { "$ref": "#/definitions/roundness" },
         "link": { "$ref": "#/definitions/link" },
+        "group": { "$ref": "#/definitions/group" },
         "opacity": { "type": "integer", "minimum": 0, "maximum": 100 }
       }
     },
@@ -154,7 +167,7 @@
     },
     "frame": {
       "type": "object",
-      "description": "分组画框。渲染器另需 children 数组（成员 id 列表），它**不是**实现细节：2026-09-18 对照实测证明 children 是「框 ↔ 内容」归属的唯一途径（填了成员 id，成员的 frameId 才会被反填）。落法：由**后端**按分组与几何算出成员列表、前端适配层填入；LLM 不要输出 children（2026-09-17 拍板的动机不变，见 constraint.md 技术约束）。",
+      "description": "分组画框。`children` 是「框 ↔ 内容」归属的唯一途径（2026-09-18 对照实测：填了成员 id，成员的 frameId 才会被反填；不填则成员的 frameId 恒为 null，拖框带不走内容）。落法：由**后端**按分组与几何算出成员列表、前端适配层填入；LLM 不要输出 children（2026-09-17 拍板的动机不变，见 constraint.md 技术约束）。LLM 只需给 `name`，并尽量让它与图形的 `group` 模块名一致 —— 排版会按名字把框对齐到对应模块。",
       "required": ["id", "type", "x", "y", "width", "height"],
       "additionalProperties": false,
       "properties": {
@@ -164,7 +177,12 @@
         "y": { "type": "number" },
         "width": { "type": "number", "exclusiveMinimum": 0 },
         "height": { "type": "number", "exclusiveMinimum": 0 },
-        "name": { "type": "string", "description": "画框标题，可空" },
+        "name": { "type": "string", "description": "画框标题，可空；与图形的 `group` 模块名一致时排版会把框对齐到该模块" },
+        "children": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+          "description": "框内成员的 id 列表（渲染层字段：由后端按分组与几何算出后填入，LLM 不要输出）"
+        },
         "link": { "$ref": "#/definitions/link" }
       }
     },

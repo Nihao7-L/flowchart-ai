@@ -1,6 +1,6 @@
 # v2-38 · 布局引擎可替换（自研 ↔ ELK）+ 量化基线
 
-> 状态：**已交付**（引擎实现 + 量化基线 + 默认引擎拍板均已完成；剩余门禁复核与文档同步）
+> 状态：**已完成（2026-09-18 归档）**（引擎实现 + 量化基线 + 默认引擎拍板 + 门禁复核全绿 + 文档同步）
 > 关联架构：`docs/architecture.md` ADR-2（几何唯一真相源在后端）、ADR-4（坐标由布局确定性算出）
 > 关联前置：v2-36（自研分层布局，已归档 `state/completed/underway/v2-36-layout.md`）
 > 触发来源：`plans/masterPlan/roadmap.md` 第六节"备份计划"（2026-09-18 用户改判后开工）
@@ -71,3 +71,7 @@ ELK 折行最"方"（1860x1760）但跨列长线变多。
 - `workbuddyFlow/tools/layout-bench/compare.html`（三方渲染对比，可直接打开）
 - `workbuddyFlow/tools/layout-bench/out/*.json`（三个方案的坐标快照）
 - 真实出图与同源症状记录：`state/activeLog/2026-09-18.md`
+- 复跑方式：`mvn -Dtest=LayoutBench test`（切引擎加 `-DargLine="-Dengine=elk"`）；类名不带 `Test` 结尾的命名约定以外场景见 `LayoutBench` 说明。
+
+> ⚠️ 2026-09-18 起，上面前两项（对比图与坐标快照）是**本地产物**，已从 git 索引移出并加入 `.gitignore` ——
+> 它们是"跑出来的结果"，不是源码。新克隆里没有这些文件，需要时用 `LayoutBench` 重新生成。

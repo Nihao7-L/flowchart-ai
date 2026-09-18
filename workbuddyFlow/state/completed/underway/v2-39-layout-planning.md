@@ -1,6 +1,10 @@
+> **已完成 2026-09-18。** 验收 1~9 全部达成：门禁全绿（后端 153 测试 / 0 失败 / 0 checkstyle 违规、前端三绿、冒烟 16/16、离线 E2E 6/6）；真实 LLM 电池题 2 的两项 FAIL 归零（图形重叠 2 → 0 对、`framesOnGrid` 2/3 → 3/3），frame 三项指标按**精确口径**为 **0 / 0 / 0**。证据与根因见 `../../activeLog/2026-09-18.md` 的「15:0x S1 收尾验收」段；模块总计划 `../../masterPlan/m8-layout-planning.md`（v2-41 走线仍待立）。
+
 # v2-39 · 排版（结构规划步骤）
 
-> 状态：**待审**（方案已起草，等用户确认后动码 —— workflow 第 ② 拍的硬性要求）
+> 状态：**已完成（2026-09-18 归档）** —— 代码交付 + E2E 6/6 + 真实 LLM 电池达标 + 门禁全绿
+> 2026-09-18 用户拍板「都按推荐来」：第 10 节的 4 项推荐全部采纳；第 7.1 节是实施记录
+> 模块归属：**`plans/masterPlan/m8-layout-planning.md`**（2026-09-18 拍板新开；M1 已归档不回改）
 > 关联架构：`docs/architecture.md` ADR-2（几何唯一真相源在后端）、ADR-4（坐标由布局确定性算出）
 > 关联前置：v2-36（分层布局，已归档）、v2-38（ELK 竖排为默认引擎，已交付）
 > 触发来源：`plans/masterPlan/roadmap.md` **第七节**（2026-09-18 用户提出 → 拍板"排版先行"）
@@ -104,12 +108,14 @@ LLM 一次吐出一份**扁平**的元素列表（N 个图形 + M 条边，无�
 
 **所以 frame 不是"有没有都行"的可选装饰，而是会主动把画面搞乱**：框和内容对不上、框与框互相压。LLM 只要按"用不同背景色区分模块 / 用虚线框包围子流程"这类要求输出了 frame，这个错位就是必然的。
 
-**修法（两条，选一，需拍板）**：
+**修法（两条，选一）** —— → ✅ **已拍板：取 A（2026-09-18 用户）**：
 
 - **A. frame 当容器参与布局**：把每个 frame 视为一个模块容器，节点按 `frameId`/几何归属进容器，容器随内容一起摆 —— 本质上就是 5.3 的"两级布局"，frame 的包围盒正好等于组的包围盒 + 内边距；
-- **B. 布局后重算 frame 几何**：布局不动 frame，但在写回坐标之前，按"几何上落在框内 / 已在框内的节点"重算每个 frame 的包围盒 —— 改动小，但分组依据仍是"LLM 种子坐标的巧合"，不可靠。
+- ~~B. 布局后重算 frame 几何~~：布局不动 frame，但在写回坐标之前，按"几何上落在框内 / 已在框内的节点"重算每个 frame 的包围盒 —— 改动小，但分组依据仍是"LLM 种子坐标的巧合"，不可靠。
 
-**建议 A**（B 依赖 LLM 种子坐标恰好分组正确，正是本次实测证明不可靠的东西）。A 与 5.3 天然合流：**模块的包围盒 = 它的 frame 几何**，一份计算两处用，不需要额外的"分组 → 画框"逻辑。
+**为何取 A**：B 依赖 LLM 种子坐标恰好分组正确，正是本次实测证明不可靠的东西。A 与 5.3 天然合流：**模块的包围盒 = 它的 frame 几何**，一份计算两处用，不需要额外的"分组 → 画框"逻辑。
+
+**落地口径（2026-09-18 实施时细化）**：只重算**能匹配到模块**的 frame（`name` 等于模块名；匹配不上则用"布局前中心落在框内"的图形作成员兜底），**不主动新建 frame** —— 用户没要求自动画框，硬加框会改变画面语义。
 
 ## 6. 前置
 
@@ -129,6 +135,39 @@ LLM 一次吐出一份**扁平**的元素列表（N 个图形 + M 条边，无�
 6. **建带模块的基准 fixture** + 扩展 `LayoutBench` 指标（增加"分区正确性""跨组标签落通道"两项）；
 7. **回归**：三个既有 E2E + 真实 LLM E2E（用 round1 同一句 prompt 复跑）；
 8. **门禁**：`run-verify.ps1` 等价三步全绿。
+
+### 7.1 实施记录（2026-09-18 落地，P1 + v2-39 合并交付）
+
+| 步骤 | 状态 | 落点 / 证据 |
+|---|---|---|
+| 1 契约加字段 | ✅ | `scene.schema.json`：`shape.group`（`oneOf` 字符串 / 数组 maxItems 3）+ `frame.children`（描述里写明"由后端算出、LLM 不要输出"）。别名同步进 `frontend/src/types.ts` |
+| 2 提示词加要求 | ✅ | `PromptService` 新增「模块分组」段（阈值引用 `ScenePlanner.MODULE_THRESHOLD`，**单一真相源**）+「frame 的 name 与模块名逐字相同」+「不要给 frame 填 children」。锁在 `PromptServiceTest#testModuleGroupingGuidance` |
+| 3 新增 `ScenePlanner` | ✅ | `graph/ScenePlanner.java`；三级降级 ① LLM 标注 → ② 兜底聚类 → ③ 不分组，全部单测覆盖 |
+| 4 两级布局 | ✅ | 组内复用现有 `ElkLayoutEngine`；组间**确定性网格打包**（列数按长宽比择优，目标 1.5）。**刻意不用 ELK compound graph** |
+| 4b frame 几何随模块走 | ✅ | 框几何 = 模块包围盒 + 内边距（`MODULE_PADDING=40` + 标题带 `FRAME_TITLE=40`）；`children` 由后端算；匹配不上的框原样不动 |
+| 5 链路接入 | ✅ | `GenerationService` 的 `sceneLayout.layout(json, ids)` → `scenePlanner.arrange(json, sceneLayout, ids)` |
+| 6 带模块 fixture + 指标 | ◐ | `layout-bench` 仍是 `login-flow.json` 扁平图；复杂图的回归由提示词电池覆盖，并在收尾期把指标**改成精确口径**（见 7.2）+ 新增离线确定性闸门 `probe_frame_audit.py` |
+| 7 回归（E2E + 真实 LLM） | ✅ | 离线 E2E **6/6 PASS**（`bash .playwright/run-e2e.sh`）；真实 LLM 电池题 2：图形重叠 **2 → 0 对**、`framesOnGrid` **2/3 → 3/3**、`frameOverlaps` **5 → 0**、`shapesInMultiFrames` **6 → 0**、**跑出所属框 0** |
+| 8 门禁 | ✅ | 后端 **153 测试 / 0 失败 / 0 checkstyle 违规**；前端 `tsc -b` / `eslint` / `vite build` 三绿；冒烟 **16/16**；E2E **6/6** |
+| 9 验收期缺陷修复 | ✅ | 见 7.2：① 容器被渲染端撑大 → 布局按渲染尺寸算并**回写宽高**；② Excalidraw 把 `y=0` 当未提供 → 适配层按契约恢复 frame 几何 |
+
+**顺带修掉的真缺陷**：`LayoutSpec.SIBLING_GAP` 写死 80px —— 只够 4 个汉字，5 字标签会横跨到邻居图形上。新增 `LayoutSpec.siblingGapFor(labels)` 与既有的 `mainGapFor` 对称放大，`ElkLayoutEngine` 的 `SPACING_NODE_NODE` 从常量改为吃这个参数。
+
+**本次补上的关键缺口（差点漏）**：步骤 2 原本没做 —— 契约加了 `group`、后端也读 `group`，但**提示词里没有一个字要求 LLM 写它**，等于整条路在源头断掉（排版层永不激活）。已补齐。
+
+**偏差说明（需用户知情）**：步骤 6 的 fixture 未建；兜底聚类加了一条计划外守卫 —— **场景里存在 `frame` 时不启用兜底**（兜底只能给出「模块1」这类无名模块，认领不了按名字匹配的框；硬排会把节点搬离 LLM 给的框，正好加重 5.4 的病症）。理由与替代路径写在 `ScenePlanner#inferGroups` 的 javadoc。
+
+### 7.2 验收期缺陷修复（2026-09-18 收尾跑电池时暴露，两个都是真缺陷）
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 电池 `shapeOverlaps` **2 对**（都在同一模块内，偏 80x10 / 60x60） | **容器被渲染端撑大**：Excalidraw 按 `computeContainerDimensionForBoundText` 把装不下文字的容器撑高（diamond `2*(h+10)`、ellipse `(h+10)/√2*2`、其余 `h+10`），而 `ElkLayoutEngine` 把 ELK 节点高度**写死 `NODE_HEIGHT=60`**、`writeBack` **只回写 x/y 不回写 w/h** —— 布局按 60 算层间距，渲染端把真高 170/220 的菱形撑出去 | `LayoutSpec.nodeSize(type,label,width)` 镜像渲染端公式（`wrap` + `maxTextWidth/Height` + `containerDimensionFor` + `ceilToGrid`）；`ElkLayoutEngine` 按该尺寸建节点**并回写 width/height**；`ScenePlanner.writeShapes` 同步回写 —— **尺寸从此是契约的一部分**，frame 几何也才按对尺寸算 |
+| 2 | 电池 `framesOnGrid` **2/3** | **`y=0` 被当「未提供」**：Excalidraw `transform.ts` 的 `const frameY = frame?.y || minY`（`minY` 再减 10）—— **0 是 falsy**，后端发给最上排模块的合法 `y=0` 被换成 70，框既出网格又与成员错位（`x=0` 同理） | `sceneAdapter.restoreFrameGeometry()`：转换**之后**对 frame 按契约原值恢复 x/y/width/height（只认契约给了有限数字的项），把后端帧几何立为唯一真相源 |
+
+- 新增 `LayoutSpecTest`（8 条）+ `ElkLayoutEngineTest` +2；冒烟 14 → **16/16**（新增「y=0 陷阱」「frame 几何契约优先」）。
+- 新增浏览器实证工具 `tools/e2e/probe_frontend_geom.py`（真实浏览器 + 假 `/api/chat`）：内置场景与**真实产物**均 PASSED。
+- **指标口径纠偏**：粗口径 `shapesOutsideFrames` 把「模块本来就没有画框」（本计划 5.4 落地口径明确允许：不主动新建 frame）与「跑出所属框」混着数。题 2 实测 `24 → 6`，那 6 个正是 `主流程` 模块（后端日志「32 个图形分入 4 个模块」，而 LLM 只给了 3 个 frame），**不是逃逸**。已给电池加精确口径（从契约取 `group` 对 `frame.name`）：`shapesEscapingOwnFrame` / `shapesOutsideNoFrameModule` / `shapesOutsideNoGroup`，并新增离线确定性闸门 `probe_frame_audit.py`（直接复用电池的指标 JS，保证不漂移）。
+- **`children` 机制终审**：`probe_frame_membership.py` A/B 对照 —— 给 `children` 则成员 `frameId` 反填 3/3、拖框 3/3 跟随；不给则 `frameId` 全 `null`、拖框 0/3。结论：`children` 是**转换期输入**，`frameId` 是**运行期表示**（转换器会把 `children` 剥掉）。
 
 ## 8. 验收口径
 
@@ -156,15 +195,31 @@ LLM 一次吐出一份**扁平**的元素列表（N 个图形 + M 条边，无�
 | **带 frame 的复杂图** | 题 2 同款（4 个嵌套/并列 frame + 42 图形） | frame 两两不重叠、无图形跑出所属 frame、无图形落进多个 frame（现状 5 / 24 / 6） |
 | 异常 | `group` 是空串 / 数字 / 超长文本 | 归一化或忽略，绝不抛异常中断生成 |
 
-## 10. 待用户确认（动码前必须拍板）
+## 10. 已拍板（2026-09-18 用户：**都按推荐来**）
 
-1. **模块划分由谁做**：建议 **① LLM 标注为主 + ② 后端聚类兜底**（省一次 LLM 调用；当前预算 420s 内多一轮调用风险高）。
-2. ~~**契约表达**：`shape.group?: string`（自由文本模块名）是否可接受；还是改用 `group` 指向 `frame.id`。~~
-   → ✅ **已拍板（2026-09-18，随 v2-40 一并答复）：采用自由文本**（`shape.group: "订单域"`）。
-   理由：LLM 少一步"先声明再引用"，`frame` 由后端按分组算出。
-3. **模块归属**：建议**新开 `m8-layout-planning.md`**（M1 已归档，按"模块整体完成才归档"的约定不宜回改）；也可归入既有模块。
-4. **阈值取值**：图形数 > 12 才分组，是否合适。
+| # | 问题 | 决定 | 理由 |
+|---|---|---|---|
+| 1 | 模块划分由谁做 | **① LLM 标注为主 + ② 后端聚类兜底 + ③ 不分组** | 省一次 LLM 调用；总预算 420s，实测一轮复杂图 100~150s，多一轮有撞墙风险 |
+| 2 | 契约表达 | **自由文本**（`shape.group: "订单域"`，可为字符串数组以支持嵌套） | LLM 少一步"先声明再引用"；`frame` 由后端按分组算出 |
+| 3 | 模块归属 | **新开 `m8-layout-planning.md`** | M1 已归档，按"模块整体完成才归档"的约定不宜回改；M8 是 roadmap 里原本给排版预留的号 |
+| 4 | 阈值取值 | **图形数 > 12 才分组** | 小图不该为不存在的复杂度买单，也避免把"加一个审批节点"这类图排变样 |
+| 5 | 5.4 的 frame 修法 | **取 A（frame 当容器参与布局）** | B 依赖"LLM 种子坐标恰好分组正确"，正是本次实测证明不可靠的东西；A 与 5.3 天然合流 |
+| 6 | 与 v2-40 P1 的关系 | **合并实现** | 两者共用同一套"分组 → 成员"计算：v2-40 要它写 `children`，v2-39 要它排几何 |
+
+**落地顺序**（用户指示「S1 尽快收尾」）：v2-40 P1（分组语义 + frame 成员）与 v2-39 一并动码，一次交付、一次门禁。
 
 ## 11. 完成后
 
 移入 `state/completed/underway/`（保留原始内容，只加一行完成结论）+ `state/activeLog/<YYYY-MM-DD>.md` 追加带证据记录（命令 + 输出 / 退出码）+ 同步 `roadmap.md` 第七节状态行。
+
+## 12. 收尾结论（2026-09-18 完成）
+
+| # | 待办 | 结果 |
+|---|---|---|
+| 1 | 前端 E2E 6 个用例 | ✅ **6/6 PASS** |
+| 2 | 真实 LLM 电池（验收 7 / 9） | ✅ 题 2 两项 FAIL 归零（图形重叠 2 → 0、frame 落网 2/3 → 3/3）；frame 三项指标：框两两重叠 5 → **0**、落进多框 6 → **0**、**跑出所属框 = 0**（粗口径 24 → 6，那 6 个是模块无框，见 7.2） |
+| 3 | 步骤 6 的带模块 fixture + `layout-bench` 指标扩展 | ◐ 未建 fixture；但把**提示词电池的 frame 指标改成精确口径**并新增离线确定性闸门 `probe_frame_audit.py`，端到端结论比 fixture 更直接 |
+
+- **门禁**：后端 153 测试 / 0 失败 / 0 checkstyle 违规；前端三绿；冒烟 16/16；E2E 6/6。
+- **验收 1~6、8 已由单测锁住**（小图 / 编辑模式 / 单模块零回归逐字节一致、模块互不重叠、长宽比 ∈ [0.5, 2]、确定性、网格吸附、frame 三方指标、异常宽容）—— `ScenePlannerTest` 17 条。
+- **顺带查出的两件事**（不属本计划，已登记 `state/activeLog/2026-09-18.md`）：① 电池「变慢」的真凶是**校验失败重试吃光预算**（单轮 300s、总 420s，r1 不过就必然撞墙）；② 校验失败的根因是 LLM 用**自环箭头**表达「循环回边」，而修正轮对该错误类无效（复放 3 份失败载荷，问题数精确复现 1/1/3）。

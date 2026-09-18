@@ -8,6 +8,7 @@ import io.github.nihaoljx.flowchart.graph.SceneBinder;
 import io.github.nihaoljx.flowchart.graph.SceneDeduper;
 import io.github.nihaoljx.flowchart.graph.SceneDrift;
 import io.github.nihaoljx.flowchart.graph.SceneLayout;
+import io.github.nihaoljx.flowchart.graph.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.ValidationIssue;
 import io.github.nihaoljx.flowchart.model.ChatEvent;
 import io.github.nihaoljx.flowchart.session.SessionStore;
@@ -93,7 +94,7 @@ class GenerationServiceTest {
                 promptService, llmProvider,
                 graphValidator, new SceneBinder(),
                 new SceneDeduper(), new SceneDrift(),
-                new SceneLayout(), sessionStore);
+                new SceneLayout(), new ScenePlanner(), sessionStore);
     }
 
     @Test

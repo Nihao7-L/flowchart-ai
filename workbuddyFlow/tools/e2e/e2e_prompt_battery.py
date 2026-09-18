@@ -45,6 +45,55 @@ OUT_DIR = os.path.join(HERE, "battery-out")
 CASE_TIMEOUT = 480.0
 
 HELPERS = r"""
+window.__contract = null;
+window.__sseFrames = 0;
+(function () {
+  var orig = window.fetch.bind(window);
+  var eat = function (chunk, carry) {
+    var parts = (carry + chunk).split(String.fromCharCode(10));
+    var keep = parts.pop();
+    for (var i = 0; i < parts.length; i++) {
+      var s = parts[i].trim();
+      if (s.indexOf('data:') !== 0) continue;
+      window.__sseFrames++;
+      try {
+        var o = JSON.parse(s.slice(5));
+        if (!o || o.type !== 'result' || !o.data) continue;
+        // 真后端发的是对象；E2E 桩（harness.PAGE_HELPERS）把 data 二次编码成
+        // JSON 字符串 -> 两种都要能吃，否则探针永远 contractSeen=false。
+        var d = o.data;
+        if (typeof d === 'string') {
+          try { d = JSON.parse(d); } catch (e2) { continue; }
+        }
+        if (d && d.elements) window.__contract = d;
+      } catch (e) {}
+    }
+    return keep;
+  };
+  window.fetch = function (url, opts) {
+    var p = orig(url, opts);
+    try {
+      if (String(url).indexOf('/api/chat') >= 0) {
+        p.then(function (res) {
+          // 必须**增量**读：SSE 流要等 complete 之后才关闭，用 res.text()
+          // 会把捕获时点推迟到流结束，指标读得早 -> 永远是 null（2026-09-18 实测踩到）。
+          var rd = res.clone().body.getReader();
+          var dec = new TextDecoder();
+          var carry = '';
+          var pump = function () {
+            rd.read().then(function (r) {
+              if (r.done) return;
+              carry = eat(dec.decode(r.value, {stream: true}), carry);
+              pump();
+            }, function () {});
+          };
+          pump();
+        }, function () {});
+      }
+    } catch (e) {}
+    return p;
+  };
+})();
 window.__r = {
   scene: function () { return window.__chartflow.getSceneElements(); },
   fit: function () {
@@ -168,12 +217,37 @@ window.__r = {
         }
       }
     }
+    // 精确口径（2026-09-18）。验收要的是"跑出**所属**框"= 有模块、有同名框、
+    // 却不在框里。而 `group` 是**语义层**字段，渲染层刻意剥掉了它
+    // （sceneAdapter.SKELETON_KEYS 不含 group）—— 所以必须从契约里取，
+    // 从渲染场景里取不到。三种"无框"要分开数，否则"模块本来就没框"
+    // （v2-39 落地口径明确允许：不主动新建 frame）会被误判成逃逸。
+    var groupOf = {};
+    var contract = window.__contract;
+    if (contract && contract.elements) {
+      contract.elements.forEach(function (e) {
+        if (e.group !== undefined && e.group !== null) groupOf[e.id] = e.group;
+      });
+    }
+    var frameByName = {};
+    frames.forEach(function (f) { if (f.name) frameByName[f.name] = f; });
+    var noGroup = [], noFrameModule = [], escaped = [];
     var shapesOutside = 0, shapesInMulti = 0;
     shapes.forEach(function (s) {
       var n = 0;
       frames.forEach(function (f) { if (cIn(s, f)) n++; });
-      if (n === 0) shapesOutside++;
       if (n > 1) shapesInMulti++;
+      if (n > 0) return;
+      shapesOutside++;
+      var g = groupOf[s.id];
+      if (g === undefined) { noGroup.push(s.id); return; }
+      var names = (g instanceof Array) ? g : [g];
+      var owner = null;
+      for (var gi = 0; gi < names.length; gi++) {
+        if (frameByName[names[gi]]) { owner = frameByName[names[gi]]; break; }
+      }
+      if (!owner) noFrameModule.push(s.id);
+      else escaped.push([s.id, names.join('/')]);
     });
     return {
       total: els.length, counts: counts, nan: nan, overlaps: ov, arrows: arrows,
@@ -182,6 +256,12 @@ window.__r = {
       frames: frames.length, framesOnGrid: framesOnGrid,
       frameOverlaps: frameOv, shapesOutsideFrames: shapesOutside,
       shapesInMultiFrames: shapesInMulti,
+      contractSeen: !!(window.__contract && window.__contract.elements),
+      shapesOutsideNoGroup: noGroup.length,
+      shapesOutsideNoFrameModule: noFrameModule.length,
+      shapesOutsideNoFrameModuleIds: noFrameModule.slice(0, 12),
+      shapesEscapingOwnFrame: escaped.length,
+      shapesEscapingOwnFrameDetail: escaped.slice(0, 10),
       aspect: shapes.length ? Number(((maxX - minX) / (maxY - minY)).toFixed(2)) : null,
       bounds: shapes.length ? [Math.round(minX), Math.round(minY),
                                Math.round(maxX), Math.round(maxY)] : null
@@ -335,6 +415,12 @@ def run_case(pw, idx, case, rep):
             "frameOverlaps": m["frameOverlaps"][:6],
             "shapesOutsideFrames": m["shapesOutsideFrames"],
             "shapesInMultiFrames": m["shapesInMultiFrames"],
+            "contractSeen": m.get("contractSeen"),
+            "shapesOutsideNoGroup": m.get("shapesOutsideNoGroup"),
+            "shapesOutsideNoFrameModule": m.get("shapesOutsideNoFrameModule"),
+            "shapesOutsideNoFrameModuleIds": m.get("shapesOutsideNoFrameModuleIds"),
+            "shapesEscapingOwnFrame": m.get("shapesEscapingOwnFrame"),
+            "shapesEscapingOwnFrameDetail": m.get("shapesEscapingOwnFrameDetail"),
             "aspect": m["aspect"], "bounds": m["bounds"], "ink": ink,
         })
         rep.note("元素 %d %s" % (m["total"], m["counts"]))
@@ -356,6 +442,18 @@ def run_case(pw, idx, case, rep):
                      " | frame 两两重叠 %d 对 | 不在任何 frame 内的图形 %d | 落在 2 个以上 frame 内的图形 %d"
                      % (m["frames"], m["framesOnGrid"], len(m["frameOverlaps"]),
                         m["shapesOutsideFrames"], m["shapesInMultiFrames"]))
+            if m.get("contractSeen"):
+                rep.note("  -- 精确口径（契约 group 对 frame.name）--")
+                rep.note("     跑出所属框（有模块 + 有同名框 + 不在框里）= %d  <== 验收唯一硬指标"
+                         % m.get("shapesEscapingOwnFrame"))
+                rep.note("     合法无框：无 group 的顶层节点 %d 个 | 模块无同名框 %d 个 %s"
+                         % (m.get("shapesOutsideNoGroup"), m.get("shapesOutsideNoFrameModule"),
+                            m.get("shapesOutsideNoFrameModuleIds") or ""))
+                if m.get("shapesEscapingOwnFrameDetail"):
+                    rep.note("     逃逸样例：%s" % (m["shapesEscapingOwnFrameDetail"][:3],))
+            else:
+                rep.note("  （未捕获契约 result，精确口径不可用 -- 该项不计入判定；本轮 SSE 帧数=%s）"
+                 % page.evaluate("() => window.__sseFrames || 0"))
             if m["frameOverlaps"]:
                 rep.note("  frame 重叠样例：%s" % m["frameOverlaps"][:3])
 
@@ -381,6 +479,14 @@ def run_case(pw, idx, case, rep):
             rep.fail("[%d] 图形数为 0（元素全是 %s）-> 布局引擎整体跳过，"
                      "种子坐标原样上屏，文字互叠 %d 对"
                      % (idx, m["counts"], len(m["labelOverlaps"])))
+        # 精确口径的硬失败：有模块、有同名框、却不在框里 —— 这个 100% 归责于代码。
+        # "模块没有同名框"不算（v2-39 落地口径明确：不主动新建 frame）。
+        if m.get("contractSeen") and m.get("shapesEscapingOwnFrame"):
+            rep.fail("[%d] %d 个图形跑出所属模块的 frame：%s"
+                     % (idx, m["shapesEscapingOwnFrame"],
+                        m["shapesEscapingOwnFrameDetail"][:3]))
+        if not m.get("contractSeen"):
+            rep.note("[%d] 警告：未捕获契约 result，精确口径跳过（指标不可用）" % idx)
     finally:
         browser.close()
     return rec

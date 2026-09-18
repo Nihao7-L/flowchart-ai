@@ -82,8 +82,17 @@
 | 输入 | n1 的 `frameId` | n2 的 `frameId` |
 |---|---|---|
 | `children: ['n1','n2']` | **`fA`（归属建立）** | **`fA`** |
-| `children: []`（**当前行为**） | `null` | `null` |
+| `children: []`（P0 期的行为，**2026-09-18 已废止**） | `null` | `null` |
 | 完全不给 `children` | 抛 `TypeError: ...reading 'forEach'` | — |
+
+**行为侧与反证侧（2026-09-18 新增，`workbuddyFlow/tools/e2e/probe_frame_membership.py`）** —— 上表只到「`frameId` 有没有被反填」，这张表回答「框到底能不能带走内容」：
+
+| 场景 | 渲染元素上的 `children` | 成员 `frameId` 反填 | 拖框 200x160 时成员跟随 |
+|---|---|---|---|
+| **A. 契约给了 `children`** | 被转换器剥掉 | **3/3** | **3/3**（非成员 0/0） |
+| **B. 契约没给 `children`** | 被转换器剥掉 | 全 `null` | **0/3** |
+
+由此可以把机制说死：**`children` 是转换期的载荷输入，`frameId` 是运行期的表示** —— `convertToExcalidrawElements` 会把 `children` 从元素上剥掉（所以运行期元素上看不到它），Excalidraw 之后靠扫 `frameId` 认人。所以"框能不能带走内容"取决于**转换时有没有喂 `children`**，与运行期元素上还留不留它无关。
 
 **结论**：09-17 拍板"契约不含 children"的**动机仍然成立**（不让 LLM 乱填），
 但落法错了 —— 适配层补 `children: []` 只解决了"不抛错"，**没有建立归属**：
@@ -117,8 +126,11 @@
 | 证据 | 位置 |
 |---|---|
 | 契约现状 | `src/main/resources/schemas/scene.schema.json` |
-| 前端字段白名单（唯一的闸门） | `frontend/src/lib/sceneAdapter.ts` → `SKELETON_KEYS`（56 行）、`normalize()`（111 行）、`children = []`（127 行） |
+| 前端字段白名单（唯一的闸门） | `frontend/src/lib/sceneAdapter.ts` → `SKELETON_KEYS`、`toSkeleton()`、`normalize()`（`children` 透传 + 过滤）、`restoreFrameGeometry()`（frame 几何契约优先）。**按函数名找，别记行号**（2026-09-18 起行号已漂移两轮） |
 | 渲染器能力权威定义 | `frontend/node_modules/@excalidraw/excalidraw/dist/types/excalidraw/element/types.d.ts`、`data/transform.d.ts` |
 | 能力探针（可复跑） | `workbuddyFlow/tools/e2e/probe_contract_capacity.py` |
 | 探针截图 | `.playwright/shots/probe-contract-capacity.png` |
 | 测试集（图型来源） | `workbuddyFlow/docs/复杂提示词测试集.md` |
+| frame ↔ 内容归属的行为证据（A/B 对照） | `workbuddyFlow/tools/e2e/probe_frame_membership.py` |
+| frame 几何/成员精度的离线确定性闸门 | `workbuddyFlow/tools/e2e/probe_frame_audit.py` |
+| 契约几何 → 浏览器渲染几何的漂移探针 | `workbuddyFlow/tools/e2e/probe_frontend_geom.py` |

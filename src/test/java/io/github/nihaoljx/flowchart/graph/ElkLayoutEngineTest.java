@@ -108,6 +108,38 @@ class ElkLayoutEngineTest {
         assertEquals(once, twice);
     }
 
+    @Test
+    @DisplayName("尺寸写回契约：图形按渲染尺寸改写宽高，不是种子里那个")
+    void writesBackRenderedSize() throws Exception {
+        // 布局是按"渲染端会画多大"算层间距的（LayoutSpec#nodeSize），
+        // 所以必须把同一套尺寸写回契约 —— 否则渲染端按旧尺寸重排文字、
+        // 把装不下的容器撑高，层间距当场失效（2026-09-18 实测题 2）。
+        String laid = layout.layout(CHAIN, Set.of());
+        int checked = 0;
+        for (JsonNode element : MAPPER.readTree(laid).get("elements")) {
+            if (!"rectangle".equals(element.path("type").asText())) {
+                continue;
+            }
+            checked++;
+            assertEquals(LayoutSpec.MIN_NODE_WIDTH,
+                    element.get("width").asDouble(), 1e-9,
+                    "无标签图形的宽度应统一到下限");
+            assertTrue(element.get("height").asDouble()
+                            >= LayoutSpec.NODE_HEIGHT,
+                    "高度不得低于下限");
+        }
+        assertEquals(5, checked);
+    }
+
+    @Test
+    @DisplayName("编辑模式：冻结图形的尺寸也一个像素不动")
+    void editModeKeepsFrozenSize() throws Exception {
+        String partial = layout.layout(CHAIN, Set.of("a", "b", "c", "d"));
+        JsonNode frozen = MAPPER.readTree(partial).get("elements").get(0);
+        assertEquals(100, frozen.get("width").asDouble(), 1e-9);
+        assertEquals(60, frozen.get("height").asDouble(), 1e-9);
+    }
+
     // ==================== 工具 ====================
 
     private static List<double[]> boxes(String json)

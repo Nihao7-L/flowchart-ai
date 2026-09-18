@@ -92,16 +92,99 @@ const rect = (over) => Object.assign({ id: 'r1', type: 'rectangle', x: 100, y: 1
 
 const cases = [
   {
-    // 2026-09-17 拍板「方案 a」：契约不含 children，由适配层补 children:[] ——
-    // 这条用例就是那个决定的锁。转换器的**产物**里不会有 children（它只是入参
-    // 要求，产出改用 boundElements/frameId），所以断言只能是"这条路走得通"：
-    // 一旦有人删掉适配层的 children 补丁，这里立刻 fatal + dropped 而红。
-    name: 'frame 元素无 children（LLM 常见输出）：适配层补丁必须让整批转换走通',
+    // 2026-09-17 拍板「方案 a」：契约不含 children，由适配层补 children:[]。
+    // 2026-09-18 改为「透传 + 兜底」（后端 ScenePlanner 现在会算并下发成员表），
+    // 但**这条用例的判据完全没变**：补丁的作用是让转换走得通。
+    // 转换器的**产物**里不会有 children（它只是入参要求，产出改用 frameId），
+    // 所以断言只能是"这条路走得通"：一旦有人删掉适配层的兜底，
+    // 这里立刻 fatal + dropped 而红。
+    name: 'frame 元素无 children（未算成员时）：适配层兜底必须让整批转换走通',
     input: [{ id: 'grp', type: 'frame', x: 0, y: 0, width: 600, height: 300, name: '登录流程' }],
     check: (r) => (r.fatal ? '不应 fatal: ' + r.fatal : null)
       || (r.dropped.length ? '不应丢弃: ' + r.dropped.join(',') : null)
       || (r.elements.length !== 1 ? '应渲染 1 个元素，实际 ' + r.elements.length : null)
       || (r.elements[0].type !== 'frame' ? '类型应为 frame' : null),
+  },
+  {
+    // v2-40 P1 的核心断言：children **有语义**，不是"渲染器细节"。
+    // 传成员 id 列表时，成员的 frameId 被反填为框的 id —— 这是「框 ↔ 内容」
+    // 归属的唯一数据通道（拖框/删框能不能带走内容全看它）。
+    // 若有人把透传改成无条件补 []，这条会红（frameId 恒 null）。
+    name: 'frame.children 透传后成员 frameId 被反填（框与内容的归属通道）',
+    input: [
+      { id: 'grp', type: 'frame', x: 0, y: 0, width: 600, height: 400, name: '下单域', children: ['n1', 'n2'] },
+      { id: 'n1', type: 'rectangle', x: 40, y: 60, width: 120, height: 60, label: { text: '创建订单' } },
+      { id: 'n2', type: 'rectangle', x: 260, y: 60, width: 120, height: 60, label: { text: '扣库存' } },
+    ],
+    check: (r) => (r.fatal ? '不应 fatal: ' + r.fatal : null)
+      || (r.dropped.length ? '不应丢弃: ' + r.dropped.join(',') : null)
+      || (() => {
+        for (const id of ['n1', 'n2']) {
+          const el = r.elements.find((e) => e.id === id);
+          if (!el) return '未找到成员 ' + id;
+          if (el.frameId !== 'grp') return id + ' 的 frameId 应为 grp，实际 ' + el.frameId;
+        }
+        return null;
+      })(),
+  },
+  {
+    // children 里的脏数据（LLM 越权填的）：指向不存在的 id、指向自己、
+    // 甚至不是字符串 —— 都必须被静默滤掉而不是让整批转换抛错。
+    name: 'frame.children 脏数据被滤掉（指向不存在/自己/非字符串）',
+    input: [
+      { id: 'grp', type: 'frame', x: 0, y: 0, width: 600, height: 400, name: '下单域', children: ['n1', 'ghost', 'grp', 42 as unknown as string] },
+      { id: 'n1', type: 'rectangle', x: 40, y: 60, width: 120, height: 60, label: { text: '创建订单' } },
+    ],
+    check: (r) => (r.fatal ? '不应 fatal: ' + r.fatal : null)
+      || (r.dropped.length ? '不应丢弃: ' + r.dropped.join(',') : null)
+      || (() => {
+        const n1 = r.elements.find((e) => e.id === 'n1');
+        if (!n1) return '未找到 n1';
+        if (n1.frameId !== 'grp') return '合法成员应仍被认领，实际 frameId=' + n1.frameId;
+        return null;
+      })(),
+  },
+  {
+    // 2026-09-18 真实电池实测缺陷：转换器把 frame 的几何当"可选输入"
+    // （data/transform.ts 里 frameY = frame.y || minY —— 注意那个 ||），
+    // 而 **数值 0 是 falsy** —— 后端算出的 y = 0（最上面一排模块）被当成
+    // "没给"，换成"成员包围盒上沿 − 10"：框从 0 掉到 70，既出 20px 网格、
+    // 又和它自己框住的节点错位。适配层必须把契约值恢复回去。
+    name: 'frame 在 y=0（falsy 陷阱）：几何必须保持契约原值',
+    input: [
+      { id: 'grp', type: 'frame', x: 0, y: 0, width: 400, height: 300, name: '顶层模块', children: ['n1'] },
+      { id: 'n1', type: 'rectangle', x: 40, y: 40, width: 120, height: 60, label: { text: '节点' } },
+    ],
+    check: (r) => (r.fatal ? '不应 fatal: ' + r.fatal : null)
+      || (() => {
+        const f = r.elements.find((e) => e.id === 'grp');
+        if (!f) return '未找到 grp';
+        if (f.x !== 0 || f.y !== 0) {
+          return 'frame 坐标应保持 (0,0)，实际 (' + f.x + ',' + f.y + ')';
+        }
+        if (f.width !== 400 || f.height !== 300) {
+          return 'frame 尺寸应保持 400x300，实际 ' + f.width + 'x' + f.height;
+        }
+        return null;
+      })(),
+  },
+  {
+    // 同一根因的另一面：契约给了几何，就不该被"按成员包围盒重算"覆盖 ——
+    // 后端的 frame 是模块包围盒 + 内边距算出来的，不是从成员猜的。
+    name: 'frame 几何不被"成员包围盒"改写（契约优先）',
+    input: [
+      { id: 'grp', type: 'frame', x: 200, y: 200, width: 900, height: 700, name: '大框', children: ['n1'] },
+      { id: 'n1', type: 'rectangle', x: 240, y: 280, width: 120, height: 60, label: { text: '小节点' } },
+    ],
+    check: (r) => (r.fatal ? '不应 fatal: ' + r.fatal : null)
+      || (() => {
+        const f = r.elements.find((e) => e.id === 'grp');
+        if (!f) return '未找到 grp';
+        if (f.x !== 200 || f.y !== 200 || f.width !== 900 || f.height !== 700) {
+          return 'frame 几何被改写为 (' + f.x + ',' + f.y + ') ' + f.width + 'x' + f.height;
+        }
+        return null;
+      })(),
   },
   {
     name: 'text 元素缺 text 字段',
@@ -272,9 +355,18 @@ const cases = [
         const props = (schema.definitions[branch] || {}).properties || {};
         for (const k of Object.keys(props)) fields.add(k);
       }
-      const missing = [...fields].filter((f) => !keys.has(f));
+      // 显式豁免：这些字段在契约里（后端排版要用）但**刻意不搬进渲染层**。
+      // group = 模块名（语义层，渲染器不认识），搬过去只会被忽略或抛错；
+      // 语义层与渲染层分开正是 v2-40「语义编译」的架构。
+      const EXEMPT = new Set(['group']);
+      const missing = [...fields].filter((f) => !keys.has(f) && !EXEMPT.has(f));
       if (missing.length) {
         return '契约里有、前端白名单缺（会被静默丢弃）: ' + missing.join(', ');
+      }
+      // 反向守卫：白名单里有、契约里没有的字段（多半是契约删了字段忘了删这里）
+      const extra = [...keys].filter((k) => k !== 'id' && !fields.has(k));
+      if (extra.length) {
+        return '前端白名单里有、契约里没有（可能是契约删了字段）: ' + extra.join(', ');
       }
       return null;
     },

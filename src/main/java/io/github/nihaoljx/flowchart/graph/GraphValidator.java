@@ -331,19 +331,22 @@ public class GraphValidator {
     /**
      * frame 的字段校验。
      *
-     * <p>⚠️ <b>为什么这里不校验 {@code children}</b>（2026-09-17 拍板动机、
-     * 2026-09-18 修正落法）：渲染器 {@code convertToExcalidrawElements} 对
-     * frame 强制访问 {@code children.forEach}，契约却（刻意）不含该字段。
-     * 动机仍成立 —— <b>不让 LLM 填</b> children（它填不准，填错会连带
-     * 影响整批转换）。
+     * <p>⚠️ <b>为什么不校验 {@code children}</b>（2026-09-17 拍板动机，
+     * 2026-09-18 两次修正）：动机始终是<b>不让 LLM 填</b> children ——
+     * 它填不准，填错（引用不存在的 id）会连带影响整批转换。
      *
-     * <p>但 2026-09-18 的对照实测推翻了对 children 性质的判断：它<b>不是</b>
-     * "渲染器实现细节、无语义"，而是「框 ↔ 内容」归属的唯一途径 ——
-     * 传 {@code children:['n1','n2']} 时成员 {@code frameId} 被反填为
-     * frame 的 id；传 {@code []}（旧做法）时成员 {@code frameId} 恒为 null，
-     * 框与内容在数据模型里毫无关系（拖框带不走内容）。
-     * 新落法：由<b>后端</b>按分组与几何算出成员列表、适配层填入
-     * （见 {@code plans/underway/v2-40-contract-capacity.md} 的 P1）。
+     * <p>修正一（性质判断）：children <b>不是</b>"渲染器实现细节、无语义"，
+     * 而是「框 ↔ 内容」归属的唯一途径 —— 传 {@code children:['n1','n2']}
+     * 时成员 {@code frameId} 被反填为 frame 的 id；传 {@code []}（旧做法）
+     * 时成员 {@code frameId} 恒为 null，框与内容在数据模型里毫无关系
+     * （拖框带不走内容、删框带不走内容）。
+     *
+     * <p>修正二（P1 落地）：该字段<b>已进契约</b>（可选，供后端填写）。
+     * 这里仍不做格式校验，理由是<b>报 issue 的代价</b>：校验失败会触发一轮
+     * 重试（实测一轮复杂图 100~150 秒），而这个字段唯一可能的错误来源是
+     * "LLM 不听话地填了" —— 后端 {@code ScenePlanner} 每次都会重算覆盖，
+     * 前端适配层还会过滤掉指向不存在元素的 id。用"两处兜底"换"不白耗一轮"，
+     * 比拿一条 issue 去纠正 LLM 更划算。
      */
     private void validateFrame(
             JsonNode elem,

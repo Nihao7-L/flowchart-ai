@@ -2,7 +2,7 @@
 
 > 用自然语言描述业务或想法，AI 在 **Excalidraw 双通道白板** 上生成并持续编辑 **流程图 / 思维导图 / 架构图**。
 
-> ⚠️ **Status（2026-09-17）**：**S1「看得见」主干已通** —— `POST /api/chat`（SSE）→ 后端产出元素场景 IR（含坐标）→ 前端画布出图；用户已端到端实测（25 / 41 / 47 元素的复杂图均一次通过）。工程底座（M0）已闭合；执行序与阶段定义见 `workbuddyFlow/plans/masterPlan/roadmap.md`。
+> ⚠️ **Status（2026-09-18）**：**S1a + S1b 已收尾** —— S1「看得见」主干全通（`POST /api/chat`（SSE）→ 后端产出元素场景 IR（含坐标）→ 前端画布出图；用户已端到端实测 25 / 41 / 47 元素的复杂图均一次通过）；**S1b 排版（v2-39）已完成并归档**（复杂图先分模块再落几何，`frame` 当模块容器，真实电池两项缺陷归零）；**S1a 契约容量（v2-40）P0 + P1 已交付**，下一步 P2 关系语义。工程底座（M0）已闭合；执行序与阶段定义见 `workbuddyFlow/plans/masterPlan/roadmap.md`，索引与工具链见 `workbuddyFlow/AGENTS.md`。
 > 早期链路（`POST /api/generate` → PlantUML/SVG、`POST /api/download`、`static/` 旧 UI）已于 2026-09-14 **全部删除**且不会恢复（ADR-4：后端不出图）。
 > 命名说明：本文件曾用名 **FlowAI**（早期链路时期），现统一为 **ChartFlow**；仓库名 `flowchart-ai` 未改。
 
@@ -14,8 +14,9 @@
 - 🔁 **全量 / 增量双协议**：S1 走全量 `result`（元素场景，含坐标）；增量 `ops` 归 S3 / v2-25
 - 📖 **API 文档**：集成 springdoc-openapi，启动即获交互式 Swagger 文档
 - 🐳 **容器化部署**：多阶段 Dockerfile + docker-compose
-- 📐 **确定性布局**：坐标由后端布局算法算出，不交给 LLM（v2-36，S1 收尾）
-- ✅ **测试覆盖**：**102** 个 JUnit 5 单元测试 + 6 个浏览器 E2E 回归 + 10 个适配层冒烟用例
+- 📐 **确定性布局**：坐标由后端布局算法算出，不交给 LLM（ELK 分层竖排，v2-36 / v2-38）
+- 🧩 **排版（结构规划）**：LLM 标注模块分组 → 后端算模块树 → 组内布局 + 组间网格打包，`frame` 当模块容器使用（v2-39）
+- ✅ **测试覆盖**：**153** 个 JUnit 5 单元测试 + 6 个浏览器 E2E 回归 + 16 个适配层冒烟用例
 
 ## 技术栈
 
@@ -39,7 +40,7 @@ agent       ── 从 session 取当前 model（IR）；组装 prompt + 模型 
    ↓          LLM 推理（复杂任务走 ReAct + Diagram Tools 自研 MCP 改后端 model）
 graph       ── 校验（field/reason/hint），不通过带 issues 再调（≤3 轮）
    ↓          落库 session
-graph       ── bind（箭头吸附）→ dedup（去重）→ 校验（field/reason/hint）→ 布局（v2-36）
+graph       ── bind（箭头吸附）→ dedup（去重）→ plan（结构规划/排版，v2-39）→ 校验（field/reason/hint）→ 布局（ELK，v2-38）
    ↓          不通过带 issues 再调（≤3 轮；校验 0 issue 立即下发）
 前端        ── 收到 result（全量元素场景）→ convert 适配 → updateScene 重绘（用户手绘保留）
 人类拖拽    ── onChange（防抖）→ 画布现状同步 PUT /api/model/canvas（与 AI 改图汇到同一份 model）
@@ -199,25 +200,36 @@ API Key 通过环境变量传入（docker-compose 已配置读取宿主机 `LLM_
 ## 测试
 
 ```bash
-mvn test                                                                   # 后端单测（102 个，约 30 秒）
+mvn test                                                                   # 后端单测（153 个）
 cd frontend && npx tsc -b && npx eslint . --ext ts,tsx && npx vite build    # 前端三绿
-node frontend/tools/scene-smoke.mjs                                        # IR → 画布适配层冒烟（10 用例）
+node frontend/tools/scene-smoke.mjs                                        # IR → 画布适配层冒烟（16 用例）
 bash .playwright/run-e2e.sh                                                # 浏览器 E2E 回归（6 个，需 5173 dev server）
 ```
+
+一键门禁（上面四步的封装，提交前跑这个）：`powershell -File workbuddyFlow/run-verify.ps1`。
+出图质量相关的改动另有三层（都需要起服务，见 `workbuddyFlow/AGENTS.md`「验证工具链」）：
+真实 LLM E2E（`python workbuddyFlow/tools/e2e/e2e_real_llm_layout.py`，34~40s）、
+复杂提示词电池（`bash .playwright/run-battery.sh`，98~283s/题）、
+以及零 LLM 消耗的探针（`workbuddyFlow/tools/e2e/probe_*.py`，秒级）。
 
 均为纯逻辑测试（E2E 除外），不依赖 Spring 容器与网络：
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
-| `GraphValidatorTest` | 16 | 字段级校验：必填 / 类型 / 枚举 / 引用完整性 / label / points |
-| `SceneDriftTest` | 14 | 编辑模式几何保真：整图重排要报，整体平移与定向修改不报 |
-| `SceneBinderTest` | 10 | 两点箭头吸附升级为绑定式 |
-| `SceneDeduperTest` | 9 | 与用户手绘重复的线、LLM 自画的重复线去重 |
+| `GraphValidatorTest` | 20 | 字段级校验：必填 / 类型 / 枚举 / 引用完整性 / label / points |
+| `ScenePlannerTest` | 17 | 排版（v2-39）：模块树（LLM 分组 / 聚类兜底 / 有 frame 时不兜底）、两级布局、frame 当容器、**零回归"逐字节一致"** |
 | `GenerationServiceTest` | 16 | 生成→校验→修正循环、通过即发、编辑语境、几何保真接线 |
-| `PromptServiceTest` | 9 | 契约内嵌 prompt、编辑模式、禁用 freedraw |
+| `SceneDriftTest` | 14 | 编辑模式几何保真：整图重排要报，整体平移与定向修改不报 |
+| `SceneLayoutTest` | 14 | 自研分层布局（`legacy` 引擎，v2-36）：零重叠、边够长、标签装得下、同输入同输出、新建 / 编辑两种模式 |
 | `InMemorySessionStoreTest` | 11 | 会话模型 / 坐标回写 / 删除 / 手绘旁路 / 解绑 |
+| `SceneBinderTest` | 10 | 两点箭头吸附升级为绑定式 |
 | `OpenAiCompatibleProviderTest` | 10 | LLM HTTP：请求拼装、响应解析、错误码、超时 |
+| `PromptServiceTest` | 10 | 契约内嵌 prompt、编辑模式、禁用 freedraw、模块分组段 |
+| `SceneDeduperTest` | 9 | 与用户手绘重复的线、LLM 自画的重复线去重 |
+| `LayoutSpecTest` | 8 | 引擎无关规格层（v2-38）：节点尺寸（须与渲染端撑大公式一致）、层间距、长宽比判据 |
+| `ElkLayoutEngineTest` | 7 | ELK 竖排引擎（v2-38）：只守契约不守具体坐标、冻结既有元素、坐标回写 |
 | `DiagramControllerTest` | 7 | `/api/health` + `/api/chat` + `PUT /api/model/canvas` 契约 + 旧端点下线防回归 |
+| **合计** | **153** | |
 
 提交前跑完整门禁（与云端 CI 同一套三步）：`workbuddyFlow\run-verify.ps1`。
 

@@ -5,7 +5,7 @@
 
 ## 一、核心能力（3~5 条，每条对应架构模块）
 
-1. **自然语言出图（NL → IR）**：用户输入自然语言 → 后端组装 Prompt 调 LLM → 产出结构化图 JSON（IR，元素场景）→ 校验 → **后端布局补坐标**（v2-36）→ 渲染。对应模块：`controller` / `service` / `llm` / `graph`。
+1. **自然语言出图（NL → IR）**：用户输入自然语言 → 后端组装 Prompt 调 LLM → 产出结构化图 JSON（IR，元素场景）→ 校验 → **后端排版 + 布局补坐标**（v2-36 分层布局、v2-38 换 Java 版 ELK 竖排、**v2-39 先结构规划再落几何**）→ 渲染。对应模块：`controller` / `service` / `llm` / `graph`。
 2. **双通道协作白板**：人类在画布拖拽/手绘 与 AI 聊天命令改图，二者改同一份图状态。对应模块：前端 `@excalidraw/excalidraw` 白板 + 后端 `session`（持有 model）+ `POST /api/chat`。
 3. **Agent 自主改图（ReAct + Diagram Tools 自研 MCP）**：复杂意图下 agent 走 Thought→Action(tools)→Observation 循环，工具（add / connect / update / delete / generate_full）直接改后端 model。对应模块：`agent` / `tools` / `service`。
 4. **校验与自修正**：图结构校验带 field / reason / hint，不通过带 issues 重调，最多 3 轮。对应模块：`graph`（GraphValidator）。
@@ -51,7 +51,8 @@
 | 11 | 可观测 | 留档（旧版有壳） | v2-27/28 | S6 |
 | 12 | Agent 可读探针 | 待做 | v2-30 | S6 |
 | 13 | 一键验证 | **已有**（M0 已闭合，v2-3 于 09-12 完成） | v2-3 | S0 ✅ |
+| 14 | 排版（结构规划：模块 → 成员 → 落几何） | **完成**（v2-39 已归档：三级降级 + 两级布局 + `frame` 当容器；离线 E2E 6/6、真实 LLM 电池两项 FAIL 归零、frame 三项指标按精确口径 0 / 0 / 0、门禁全绿） | v2-39 | S1b |
 
-> 阶段列（S0~S6）是**执行顺序**，模块编号（M0~M7）与任务编号（v2-N）是**身份**，两套体系并存、互不替代；`v2-30` 原先在 `masterPlan/` 下无归属模块，已于 2026-09-14 明确归入 M7（可观测与治理）。定义见 `plans/masterPlan/roadmap.md`。
+> 阶段列（S0~S6）是**执行顺序**，模块编号（M0~M9）与任务编号（v2-N）是**身份**，两套体系并存、互不替代（**M8 早于 M9，但 S1b 后于 S1a**）；`v2-30` 原先在 `masterPlan/` 下无归属模块，已于 2026-09-14 明确归入 M7（可观测与治理）。定义见 `plans/masterPlan/roadmap.md`。
 
 **功能完成的定义**：同时满足四条才算"完成"，缺一条即"部分"——① 代码进 `reframing` 并提交（**提交命令由用户执行**）；② `run-verify.ps1` 绿并把输出记进 `state/activeLog/`；③ 本篇状态列已更新、对应模块计划状态行已更新；④ 对应计划（plans/masterPlan/）的验收口径逐条通过。

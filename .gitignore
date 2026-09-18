@@ -56,5 +56,20 @@ workbuddyFlow/docs/阶段总结与规划.md
 run-verify.log
 compile-*.txt
 
+# Python 运行产物（E2E / 探针脚本的字节码缓存，2026-09-18 曾以未跟踪文件形式混进工作树）
+__pycache__/
+*.pyc
+
 # E2E 本地运行时（Playwright 包 + Chromium 浏览器 + venv，约 830MB 二进制，禁止入库）
 .playwright/
+
+# 工具运行产物（是"跑出来的结果"，不是源码；2026-09-18 从索引移出，本地保留）
+# battery-out/ 的时间戳快照；caseN-scene.json 这类可离线复算的场景快照不受影响
+workbuddyFlow/tools/e2e/battery-out/*-seed*.json
+# 探针输出
+workbuddyFlow/tools/e2e/probe-contract-capacity.json
+# 布局基准的坐标快照与对比图（用 LayoutBench 重新生成）
+workbuddyFlow/tools/layout-bench/out/
+workbuddyFlow/tools/layout-bench/compare.html
+workbuddyFlow/tools/layout-bench/compare.png
+workbuddyFlow/tools/layout-bench/elbow-probe.png

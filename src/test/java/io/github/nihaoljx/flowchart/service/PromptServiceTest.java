@@ -1,5 +1,6 @@
 package io.github.nihaoljx.flowchart.service;
 
+import io.github.nihaoljx.flowchart.graph.ScenePlanner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -160,6 +161,35 @@ class PromptServiceTest {
                 "内部旁路字段不得混进场景段: " + sceneBlock);
         assertTrue(sceneBlock.contains("\"id\":\"n1\""),
                 "场景段必须保留 elements");
+    }
+
+    /**
+     * 模块分组要求（v2-39）：图形多时 LLM 必须给每个图形写 {@code group}。
+     *
+     * <p>没有这条要求，后端的排版层（{@code ScenePlanner}）就永远拿不到
+     * 分区依据 —— 提示词是整条链路的源头。阈值直接引用
+     * {@link ScenePlanner#MODULE_THRESHOLD}：提示词里的数字与后端判定用的
+     * 数字必须是同一个，写死两份迟早漂移。
+     */
+    @Test
+    @DisplayName("复杂图的模块分组要求进 prompt，阈值取自后端常量")
+    void testModuleGroupingGuidance() throws IOException {
+        // When
+        String prompt = promptService
+                .buildPrompt("画一个电商微服务架构图", null);
+
+        // Then：既要"多图必须分组"，也要"小图别分组"
+        assertTrue(prompt.contains("`group`"),
+                "应要求 LLM 写 group 字段");
+        assertTrue(prompt.contains(String.valueOf(
+                        ScenePlanner.MODULE_THRESHOLD)),
+                "阈值应与 ScenePlanner.MODULE_THRESHOLD 一致");
+        assertTrue(prompt.contains("不要写 `group`"),
+                "小图必须明确不要写 group，否则简单图会被排变样");
+        assertTrue(prompt.contains("与模块名逐字相同"),
+                "框的 name 必须与模块名对齐（否则框留在原地、与内容错位）");
+        assertTrue(prompt.contains("不要给 `frame` 填 `children`"),
+                "children 由后端算出，必须明说 LLM 不要填");
     }
 
     @Test

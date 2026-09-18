@@ -110,6 +110,26 @@ export interface SceneElement {
   autoResize?: boolean;
   /** frame 的标题 */
   name?: string;
+  /**
+   * 模块归属（语义层字段，v2-39 / v2-40 P1）
+   *
+   * <p>自由文本或数组（从内到外，对齐渲染层的 {@code groupIds} 顺序），
+   * 如 {@code ["下单", "订单域"]}。LLM 在图形数 > 12 时填，后端
+   * {@code ScenePlanner} 拿它做模块划分；≤ 12 的图不填。
+   *
+   * <p>⚠️ 刻意**不进** {@code SKELETON_KEYS} 白名单：它是后端排版用的
+   * 语义标注，渲染层（Excalidraw）没有对应字段，搬过去只会被忽略或抛错。
+   */
+  group?: string | string[];
+  /**
+   * frame 成员 id 列表（渲染层字段，由后端 {@code ScenePlanner} 算出）
+   *
+   * <p>Excalidraw 的 frame 必须带 {@code children}（转换器强制遍历），
+   * 否则整批元素画不出来。契约允许后端下发；LLM 不要自己填。
+   * 前端只做「透传 + 兜底」：不是数组就补空数组，并过滤掉指向
+   * 不存在元素 / 指向自己的 id（见 {@code sceneAdapter.normalize}）。
+   */
+  children?: string[];
 }
 
 /**

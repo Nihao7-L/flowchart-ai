@@ -6,6 +6,7 @@ import io.github.nihaoljx.flowchart.graph.LayoutEngine;
 import io.github.nihaoljx.flowchart.graph.SceneBinder;
 import io.github.nihaoljx.flowchart.graph.SceneDeduper;
 import io.github.nihaoljx.flowchart.graph.SceneDrift;
+import io.github.nihaoljx.flowchart.graph.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.ValidationIssue;
 import io.github.nihaoljx.flowchart.model.ChatEvent;
 import io.github.nihaoljx.flowchart.session.SessionStore;
@@ -89,6 +90,8 @@ public class GenerationService {
     private final SceneDrift sceneDrift;
     /** 布局（v2-36）：坐标由它确定性算出，LLM 给的只是种子值 */
     private final LayoutEngine sceneLayout;
+    /** 排版（v2-39 / v2-40 P1）：先分模块再落几何；小图与编辑模式不介入 */
+    private final ScenePlanner scenePlanner;
     private final SessionStore sessionStore;
 
     /** 会话模型的序列化/反序列化（后端持 IR 唯一真相源，见 ADR-2） */
@@ -102,6 +105,7 @@ public class GenerationService {
             SceneDeduper sceneDeduper,
             SceneDrift sceneDrift,
             LayoutEngine sceneLayout,
+            ScenePlanner scenePlanner,
             SessionStore sessionStore) {
         this.promptService = promptService;
         this.llmProvider = llmProvider;
@@ -110,6 +114,7 @@ public class GenerationService {
         this.sceneDeduper = sceneDeduper;
         this.sceneDrift = sceneDrift;
         this.sceneLayout = sceneLayout;
+        this.scenePlanner = scenePlanner;
         this.sessionStore = sessionStore;
     }
 
@@ -250,13 +255,17 @@ public class GenerationService {
             // 是绑定式，比 id 对比比坐标可靠
             json = sceneDeduper.dedup(
                     json, userElements);
-            // 布局：把"摆在哪"从 LLM 手里收回（v2-36）。顺序有讲究 ——
+            // 排版（v2-39）：图形数 > 12 且带 group 时，先分模块、再让每个模块
+            // 内部各自布局、最后打包模块；顺带把 frame 对齐到模块并填 children
+            // （v2-40 P1）。小图 / 编辑模式 / 无分组时它内部直接透传给布局引擎，
+            // 输出与改造前逐字节一致 —— 所以这里是"换一个调用"，不是"多一步"。
+            // 布局（v2-36）：把"摆在哪"从 LLM 手里收回。顺序有讲究 ——
             // 必须在 bind 之后（分层要知道"哪两个图形相连"），
             // 在 dedup 之后（别为马上要被丢掉的线排版）。
             // 编辑模式传入上一版 id 全集：既有图形的坐标一个都不许动，
             // 否则会被 v2-37 的 SceneDrift 判成"整图重排"——两个
             // 组件当场互相打架（见 v2-36 决策 3）
-            json = sceneLayout.layout(json,
+            json = scenePlanner.arrange(json, sceneLayout,
                     idsOfJson(effectiveSceneJson));
 
             sendEvent(emitter, "validation",

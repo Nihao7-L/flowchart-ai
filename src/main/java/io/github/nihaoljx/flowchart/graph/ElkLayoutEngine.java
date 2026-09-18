@@ -37,6 +37,11 @@ import java.util.Set;
  * 仍由 {@link LayoutSpec} 提供，标签落位仍归我们自己 —— 这些都
  * 按它给的坐标另算，不指望引擎。
  *
+ * <p>尺寸那一条有个陷阱（2026-09-18 修）：{@link LayoutSpec#nodeSize} 给的
+ * 不是"我们希望节点多大"，而是<b>渲染端最终会画多大</b>；并且排完必须把
+ * 它<b>写回契约</b>（{@link #writeBack}），否则渲染端会按自己的规则把装不下
+ * 文字的容器撑高，与布局算的层间距对不上。
+ *
  * <p>与 {@link SceneLayout} 行为对齐的两点：
  * <ul>
  *   <li>试 DOWN / RIGHT 两个主方向，取长宽比更接近理想区间者
@@ -131,16 +136,22 @@ public class ElkLayoutEngine implements LayoutEngine {
 
             double width = LayoutSpec.nodeWidth(
                     labelsOf(movable));
-            double gap = LayoutSpec.mainGapFor(
-                    labelsOf(elements, movableIds));
+            List<String> edgeLabels =
+                    labelsOf(elements, movableIds);
+            double gap = LayoutSpec.mainGapFor(edgeLabels);
+            // 同层兄弟间距与层间距**对称**放大（2026-09-18 修的真缺陷）：
+            // 原本这里写死 LayoutSpec.SIBLING_GAP = 80，只够 4 个汉字，
+            // 而"支付请求路由"6 字 = 120px → 标签必然横跨到相邻节点上
+            double siblingGap =
+                    LayoutSpec.siblingGapFor(edgeLabels);
 
             // 两个主方向各排一次，按"偏离理想长宽比的程度"择优。
             // 判据与自研实现一致：另一个方向确实更好才换。
             double[] down = runElk(
-                    movable, movableEdges, width, gap,
+                    movable, movableEdges, width, gap, siblingGap,
                     Direction.DOWN);
             double[] right = runElk(
-                    movable, movableEdges, width, gap,
+                    movable, movableEdges, width, gap, siblingGap,
                     Direction.RIGHT);
             boolean topDown = true;
             double[] chosen = down;
@@ -151,7 +162,7 @@ public class ElkLayoutEngine implements LayoutEngine {
                 chosen = right;
             } else {
                 // RIGHT 那一跑把坐标覆盖了，重跑 DOWN 取回
-                runElk(movable, movableEdges, width, gap,
+                runElk(movable, movableEdges, width, gap, siblingGap,
                         Direction.DOWN);
             }
 
@@ -185,7 +196,8 @@ public class ElkLayoutEngine implements LayoutEngine {
      */
     private double[] runElk(
             List<Shape> shapes, List<Edge> edges,
-            double width, double gap, Direction direction) {
+            double width, double gap, double siblingGap,
+            Direction direction) {
         // 元数据（选项定义与算法清单）由 jar 内的 META-INF/services
         // 通过 SPI 自动注册，脱离 Eclipse 也不需要手动初始化
         ElkNode graph = ElkGraphUtil.createGraph();
@@ -196,7 +208,7 @@ public class ElkLayoutEngine implements LayoutEngine {
                 LayeredOptions.SPACING_NODE_NODE_BETWEEN_LAYERS,
                 gap);
         graph.setProperty(LayeredOptions.SPACING_NODE_NODE,
-                LayoutSpec.SIBLING_GAP);
+                siblingGap);
         graph.setProperty(CoreOptions.PADDING,
                 new ElkPadding(0));
         // 竖排（不折行）：长链会被排成一根长条（实测 20 图形 → 680×4820），
@@ -209,10 +221,15 @@ public class ElkLayoutEngine implements LayoutEngine {
         Map<String, ElkNode> nodes = new LinkedHashMap<>();
         for (Shape shape : shapes) {
             ElkNode node = ElkGraphUtil.createNode(graph);
-            node.setWidth(width);
-            node.setHeight(LayoutSpec.NODE_HEIGHT);
-            shape.lw = width;
-            shape.lh = LayoutSpec.NODE_HEIGHT;
+            double[] size = LayoutSpec.nodeSize(
+                    shape.type, shape.label, width);
+            // ELK 只认"节点多大"，它不管这个尺寸从哪来 —— 但层间距是
+            // 按它算的，所以这里必须给**渲染端最终会画多大**的尺寸
+            // （见 LayoutSpec#nodeSize：文字装不下时渲染端会撑高容器）
+            node.setWidth(size[0]);
+            node.setHeight(size[1]);
+            shape.lw = size[0];
+            shape.lh = size[1];
             nodes.put(shape.id, node);
         }
         for (Edge edge : edges) {
@@ -236,9 +253,8 @@ public class ElkLayoutEngine implements LayoutEngine {
             shape.py = node.getY();
             minX = Math.min(minX, shape.px);
             minY = Math.min(minY, shape.py);
-            maxX = Math.max(maxX, shape.px + width);
-            maxY = Math.max(maxY,
-                    shape.py + LayoutSpec.NODE_HEIGHT);
+            maxX = Math.max(maxX, shape.px + shape.lw);
+            maxY = Math.max(maxY, shape.py + shape.lh);
         }
         return new double[] {
             minX, minY, maxX - minX, maxY - minY,
@@ -321,6 +337,7 @@ public class ElkLayoutEngine implements LayoutEngine {
             }
             shapes.add(new Shape(
                     (ObjectNode) element, id,
+                    text(element, "type"),
                     labelOf(element),
                     number(element, "x"),
                     number(element, "y"),
@@ -387,10 +404,21 @@ public class ElkLayoutEngine implements LayoutEngine {
         return labels;
     }
 
+    /**
+     * 把算好的坐标与尺寸写回图形。
+     *
+     * <p><b>尺寸必须一起写回</b>（2026-09-18 修）：引擎是按
+     * {@link LayoutSpec#nodeSize} 算出的"渲染尺寸"排的层间距，如果契约里
+     * 留着 LLM 给的另一个尺寸，渲染端就会按它自己的规则重排文字、把装不下
+     * 的容器撑高 —— 排好的层间距当场失效（实测题 2：两处图形重叠）。
+     * 自研引擎 {@link SceneLayout} 一直写着尺寸，这里是补齐它的行为。
+     */
     private void writeBack(List<Shape> shapes) {
         for (Shape shape : shapes) {
             shape.json.put("x", shape.px);
             shape.json.put("y", shape.py);
+            shape.json.put("width", shape.lw);
+            shape.json.put("height", shape.lh);
         }
     }
 
@@ -445,17 +473,20 @@ public class ElkLayoutEngine implements LayoutEngine {
     private static final class Shape {
         private final ObjectNode json;
         private final String id;
+        /** 图形类型：决定"文字可用宽高"（菱形只用到一半宽） */
+        private final String type;
         private final String label;
         private double px;
         private double py;
-        /** 当前尺寸：冻结图形保持原样，可移动图形在布局时统一 */
+        /** 当前尺寸：冻结图形保持原样，可移动图形由规格算出并写回 */
         private double lw;
         private double lh;
 
-        private Shape(ObjectNode json, String id, String label,
-                double x, double y, double w, double h) {
+        private Shape(ObjectNode json, String id, String type,
+                String label, double x, double y, double w, double h) {
             this.json = json;
             this.id = id;
+            this.type = type;
             this.label = label;
             this.px = x;
             this.py = y;
