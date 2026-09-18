@@ -1,0 +1,12 @@
+#!/bin/bash
+# 后端启动（沙箱里 mvn 命令的 MSYS 路径转换会坏，改用 java 直启 Maven launcher）
+exec > /tmp/backend.log 2>&1
+M2="D:/maven-home/apache-maven-3.9.5-bin/apache-maven-3.9.5"
+cd "F:/ProgramData/IDEA/flowchart" || exit 1
+echo "START $(date)"
+java -classpath "$M2/boot/plexus-classworlds-2.7.0.jar" \
+  -Dclassworlds.conf="$M2/bin/m2.conf" \
+  -Dmaven.home="$M2" \
+  -Dmaven.multiModuleProjectDirectory="F:/ProgramData/IDEA/flowchart" \
+  org.codehaus.plexus.classworlds.launcher.Launcher -B spring-boot:run
+echo "EXIT=$? $(date)"

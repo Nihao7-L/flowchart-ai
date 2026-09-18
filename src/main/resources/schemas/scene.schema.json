@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://chartflow.local/schemas/scene.schema.json",
+  "title": "Diagram Scene（元素场景 IR）",
+  "description": "后端与前端共用的唯一真相源。场景=有序元素数组；数组顺序即 z 序（谁在后谁在上）。坐标为数据：生成时由布局算法确定性算出，用户拖拽后回写。元素是 Excalidraw skeleton（程序化创建元素的官方简化格式）的精简子集。",
+  "type": "object",
+  "required": ["elements"],
+  "additionalProperties": false,
+  "properties": {
+    "elements": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/element" }
+    }
+  },
+  "definitions": {
+    "label": {
+      "type": "object",
+      "required": ["text"],
+      "additionalProperties": false,
+      "properties": { "text": { "type": "string", "minLength": 1 } }
+    },
+    "point": {
+      "type": "array",
+      "description": "相对坐标 [dx,dy]",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "binding": {
+      "type": "object",
+      "description": "端点绑定：指向某元素 id",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" } }
+    },
+    "arrowhead": {
+      "description": "箭头端点形状（渲染层字段：由后端按「关系语义」统一编译填入，LLM 不要输出）。crowfoot_* 是数据库 ER 图的基数标记；triangle_outline 常用于继承，bar 常用于起点。2026-09-18 实测：端点形状与端点绑定可共存，不必解绑。",
+      "enum": ["arrow", "bar", "dot", "circle", "circle_outline", "triangle", "triangle_outline", "diamond", "diamond_outline", "crowfoot_one", "crowfoot_many", "crowfoot_one_or_many"]
+    },
+    "roundness": {
+      "type": "object",
+      "description": "圆角（渲染层字段：由后端按语义统一填入，LLM 不要输出）。Excalidraw 原生形态：{type:3} 自适应圆角（常用）、{type:2} 比例半径、{type:1} 旧版",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": { "type": { "enum": [1, 2, 3] } }
+    },
+    "verticalAlign": {
+      "description": "文字在容器内的垂直对齐（渲染层字段，由后端填入，LLM 不要输出）",
+      "enum": ["top", "middle", "bottom"]
+    },
+    "link": {
+      "type": "string",
+      "description": "超链接：点击该元素时跳转的 URL（可选）。给视觉元素指回文档 / 需求来源时用。"
+    },
+    "element": {
+      "oneOf": [
+        { "$ref": "#/definitions/shape" },
+        { "$ref": "#/definitions/arrow" },
+        { "$ref": "#/definitions/line" },
+        { "$ref": "#/definitions/text" },
+        { "$ref": "#/definitions/frame" },
+        { "$ref": "#/definitions/freedraw" }
+      ]
+    },
+    "shape": {
+      "type": "object",
+      "required": ["id", "type", "x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "type": { "enum": ["rectangle", "ellipse", "diamond"] },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "angle": { "type": "number", "description": "弧度，默认 0" },
+        "label": { "$ref": "#/definitions/label" },
+        "strokeColor": { "type": "string" },
+        "backgroundColor": { "type": "string" },
+        "fillStyle": { "enum": ["hachure", "cross-hatch", "solid", "zigzag"] },
+        "strokeStyle": { "enum": ["solid", "dashed", "dotted"] },
+        "strokeWidth": { "type": "number", "minimum": 0 },
+        "roughness": { "type": "number", "minimum": 0 },
+        "roundness": { "$ref": "#/definitions/roundness" },
+        "link": { "$ref": "#/definitions/link" },
+        "opacity": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "arrow": {
+      "type": "object",
+      "required": ["id", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "type": { "const": "arrow" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "points": { "type": "array", "items": { "$ref": "#/definitions/point" }, "minItems": 2 },
+        "start": { "$ref": "#/definitions/binding" },
+        "end": { "$ref": "#/definitions/binding" },
+        "label": { "$ref": "#/definitions/label" },
+        "strokeColor": { "type": "string" },
+        "strokeWidth": { "type": "number", "minimum": 0 },
+        "strokeStyle": { "enum": ["solid", "dashed", "dotted"] },
+        "startArrowhead": { "$ref": "#/definitions/arrowhead" },
+        "endArrowhead": { "$ref": "#/definitions/arrowhead" },
+        "link": { "$ref": "#/definitions/link" },
+        "opacity": { "type": "integer", "minimum": 0, "maximum": 100 }
+      },
+      "oneOf": [
+        { "required": ["start", "end"] },
+        { "required": ["points"] }
+      ]
+    },
+    "line": {
+      "type": "object",
+      "required": ["id", "type", "x", "y", "points"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "type": { "const": "line" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "points": { "type": "array", "items": { "$ref": "#/definitions/point" }, "minItems": 2 },
+        "strokeColor": { "type": "string" },
+        "strokeWidth": { "type": "number", "minimum": 0 },
+        "strokeStyle": { "enum": ["solid", "dashed", "dotted"] },
+        "link": { "$ref": "#/definitions/link" },
+        "opacity": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "text": {
+      "type": "object",
+      "required": ["id", "type", "x", "y", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "type": { "const": "text" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "text": { "type": "string", "minLength": 1 },
+        "fontSize": { "type": "number", "minimum": 1 },
+        "fontFamily": { "enum": [1, 2, 3], "description": "1=手绘 2=Helvetica 3=等宽" },
+        "textAlign": { "enum": ["left", "center", "right"] },
+        "verticalAlign": { "$ref": "#/definitions/verticalAlign" },
+        "autoResize": {
+          "type": "boolean",
+          "description": "文字尺寸随内容自适应（渲染层字段，由后端填入，LLM 不要输出）"
+        },
+        "angle": { "type": "number" },
+        "strokeColor": { "type": "string" },
+        "link": { "$ref": "#/definitions/link" }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "description": "分组画框。渲染器另需 children 数组（成员 id 列表），它**不是**实现细节：2026-09-18 对照实测证明 children 是「框 ↔ 内容」归属的唯一途径（填了成员 id，成员的 frameId 才会被反填）。落法：由**后端**按分组与几何算出成员列表、前端适配层填入；LLM 不要输出 children（2026-09-17 拍板的动机不变，见 constraint.md 技术约束）。",
+      "required": ["id", "type", "x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "type": { "const": "frame" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "name": { "type": "string", "description": "画框标题，可空" },
+        "link": { "$ref": "#/definitions/link" }
+      }
+    },
+    "freedraw": {
+      "type": "object",
+      "required": ["id", "type", "x", "y", "points"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "type": { "const": "freedraw" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "points": { "type": "array", "items": { "$ref": "#/definitions/point" }, "minItems": 2 },
+        "strokeColor": { "type": "string" },
+        "strokeWidth": { "type": "number", "minimum": 0 },
+        "opacity": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    }
+  }
+}

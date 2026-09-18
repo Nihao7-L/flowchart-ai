@@ -55,3 +55,6 @@ workbuddyFlow/docs/阶段总结与规划.md
 # 验证脚本产物（临时）
 run-verify.log
 compile-*.txt
+
+# E2E 本地运行时（Playwright 包 + Chromium 浏览器 + venv，约 830MB 二进制，禁止入库）
+.playwright/

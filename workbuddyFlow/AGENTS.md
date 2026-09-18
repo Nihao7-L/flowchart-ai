@@ -36,7 +36,7 @@ ChartFlow：Spring Boot + 大模型（LLM）的 AI 图表生成器（流程图/�
 
 - 每个计划文件顶部状态行：`规划中 | 进行中 | 阻塞 | 完成`。
 - `plans/masterPlan/` 放**模块总计划**：一个核心模块一个文件 `mN-<模块>.md`，**一个模块内含多个 v2-N 子计划**（各自带状态行）；模块**整体完成**后移 `state/completed/masterPlan/`（`m0-harness.md` 已于 2026-09-14 归档）。
-- `plans/underway/` 放**进行中计划**：来自 masterPlan 里某个 v2-N 子计划的工作台副本，**可多个并行**；不限定数量；完成后移 `state/completed/underway/`。
+- `plans/underway/` 放**进行中计划**：来自 masterPlan 里某个 v2-N 子计划的工作台副本，**可多个并行**；不限定数量；完成后移 `state/completed/underway/`（示例：`m1-pre-cleanup.md` 已于 2026-09-14 完成并归档至此）。
 - `state/active/` 放**最活跃的那一个**（从 underway 提升而来），同一时刻**只保留 1 个文件**（进入活跃态移入、离开移出）；空目录表示当前无活跃项。
 - `state/activeLog/` 按日期分文件、**只追加不修改**，格式 `MM-DD HH:mm 做了什么 → 证据`；多 Agent 并行天然不冲突。
 - 会话被压缩 / 换新会话：读 `state/activeLog/` 尾部几行 + `plans/masterPlan/` 状态行即可续上。

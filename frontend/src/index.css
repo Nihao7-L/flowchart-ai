@@ -1,9 +1,11 @@
+/* 全站固定浅色：锁定 color-scheme，避免系统深色模式把滚动条/输入框/原生控件改成深色
+   （与 App.css 的“固定白底”约定配套，详见 v2-23 设计稿） */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 body {
   margin: 0;
-  background: #f7f7f8;
+  background: #FFFFFF;
   color: #1a1a1a;
 }

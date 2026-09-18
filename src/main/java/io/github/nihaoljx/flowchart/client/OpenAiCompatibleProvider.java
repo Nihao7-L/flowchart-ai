@@ -15,6 +15,10 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * OpenAI 兼容格式的 LLM Provider
@@ -77,10 +81,16 @@ public class OpenAiCompatibleProvider implements LlmProvider {
      * 发送 prompt → 返回提取后的纯文本
      *
      * 两步合一：发 HTTP 请求 + 解析响应 JSON
-     * 对外只暴露纯文本，调用方（ParserService）不关心响应格式
+     * 对外只暴露纯文本，调用方（解析/校验层）不关心响应格式
      */
     @Override
     public String chat(String prompt) throws Exception {
+        return chat(prompt, timeoutSeconds);
+    }
+
+    @Override
+    public String chat(String prompt, int callTimeoutSeconds)
+            throws Exception {
         // ===== 1. 构建 OpenAI 兼容格式的请求体 =====
         // 用 Jackson 自动转义，不再手拼 JSON
         String escapedPrompt = objectMapper.writeValueAsString(prompt);
@@ -97,15 +107,19 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                 .uri(URI.create(apiUrl))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + apiKey)
-                .timeout(Duration.ofSeconds(timeoutSeconds))
+                .timeout(Duration.ofSeconds(callTimeoutSeconds))
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
 
-        HttpResponse<String> response = httpClient.send(
-                request, HttpResponse.BodyHandlers.ofString());
+        long startedAt = System.currentTimeMillis();
+        HttpResponse<String> response =
+                sendWithHardTimeout(request, callTimeoutSeconds);
+        long costMs = System.currentTimeMillis() - startedAt;
 
-        // 打印日志方便排查
-        System.out.println("=== LLM HTTP 状态码: " + response.statusCode());
+        // 打印日志方便排查（带上耗时：这是判断"要不要收紧单轮上限"的依据）
+        System.out.println("=== LLM HTTP 状态码: "
+                + response.statusCode()
+                + "，耗时 " + costMs + " ms");
         System.out.println("=== LLM 原始响应: " + response.body());
 
         if (response.statusCode() != 200) {
@@ -115,6 +129,45 @@ public class OpenAiCompatibleProvider implements LlmProvider {
 
         // ===== 3. 解析响应：choices[0].message.content =====
         return extractContent(response.body());
+    }
+
+    /**
+     * 带"真·总时限"的发送
+     *
+     * 不能只依赖 {@code HttpRequest.timeout()}：实测推理类模型会在真正
+     * 开始生成前先回一个响应头（首字节 8.2 秒即到达），此后 JDK 的请求
+     * 计时便不再生效，正文可以再传近百秒。所以这里在 Future 层补一道
+     * 总时限，覆盖"连接 + 响应头 + 正文"全过程。
+     *
+     * @param request 已构建的请求
+     * @param seconds 整次调用的硬上限，单位秒
+     * @return HTTP 响应
+     * @throws Exception 超时、网络错误或被中断
+     */
+    private HttpResponse<String> sendWithHardTimeout(
+            HttpRequest request, int seconds) throws Exception {
+        CompletableFuture<HttpResponse<String>> future =
+                httpClient.sendAsync(
+                        request,
+                        HttpResponse.BodyHandlers.ofString());
+        try {
+            return future.get(seconds, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            throw new Exception("LLM 调用超时：整次调用超过 "
+                    + seconds + " 秒（含正文传输）");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            throw new Exception("LLM 调用失败: "
+                    + (cause == null
+                            ? e.getMessage()
+                            : cause.getMessage()),
+                    cause);
+        } catch (InterruptedException e) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new Exception("LLM 调用被中断");
+        }
     }
 
     /**

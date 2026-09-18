@@ -27,23 +27,22 @@
 浏览器 onChange / 聊天
   → POST /api/chat (SSE)
   → controller 校验
-  → service.agent 编排：从 session 取 model(IR)
-  → 组装 system prompt + model + 意图
-  → llm 推理；复杂走 ReAct：Thought → Action(tools) → Observation 回喂
+  → service 编排：从 session 取 model(IR) 与历史，经 rag/ 检索相关片段，组装 system prompt（含工具清单）
+  → service.agent 跑真 ReAct 循环：Thought（**含意图分类**——四子判断→路由，与主 LLM 同一次调用）→ Action(tools) → Observation 回喂
   → tools (Diagram Tools=自研 MCP) 直改后端内存 model
   → graph 校验 (field/reason/hint)；不通过带 issues 再调 ≤3 轮
   → 落库 session (Redis 优先)
   → SSE 回传：思考/工具/校验事件 + 结果
-       · 增量 → ops (add/connect/update/delete)
-       · 整图 → spec (全量 IR 无坐标)
-  → 前端 apply ops / 用 spec 替换镜像 → layout → convert → updateScene 重绘
-人类拖拽：onChange → syncPositions → PATCH /api/model/positions 回写后端 model
+       · S1 起只走**全量** `result`（元素场景，含坐标；坐标由后端布局算出）
+       · 增量 `ops`（add/connect/update/delete）归 S3 / v2-25（Diagram Tools）
+  → 前端用 `result` 全量替换镜像 → convert → updateScene 重绘（**前端不做布局**，见 ADR-4 / v2-36）
+人类拖拽：onChange（收敛为"坐标真变 + pointerup + 防抖"）→ `PUT /api/model/canvas` 回写后端 model
 ```
 
 ### 2.2 数据视图（唯一真相源）
-- IR（图状态：节点+边，无坐标）唯一真相源 = **后端 session**（Redis 优先，降级内存）。
+- IR（元素场景：elements 数组，含坐标）唯一真相源 = **后端 session**（Redis 优先，降级内存）。
 - 前端只持**渲染镜像**；AI 改图与人手拖拽都汇到同一份后端 model，互不覆盖。
-- 坐标与手绘样式由前端 `layout`/`convert` 在渲染时补全，不进入 IR。
+- 坐标由**后端布局**（`graph/` 手写分层布局，v2-36）**确定性生成**并作为数据存入 IR（scene 元素携带 x/y）；用户拖拽后经 `PUT /api/model/canvas` 回写；前端 `convert` 直接渲染 IR 携带的坐标 —— **前端不做任何布局**（原有的"前端兜底重排"已于 2026-09-17 按决定 A2 删除）。
 
 ### 2.3 部署视图
 - 单进程 Spring Boot + 浏览器；Redis 可选（不可用时降级内存）。
@@ -55,7 +54,7 @@
 | `controller/` | REST+SSE，只做校验与编排 | `service/` |
 | `service/` | 生成编排：Prompt→LLM→解析→校验→修正 | `llm/ graph/ rag/ tools/ session/` |
 | `llm/` | Provider 抽象 + 网关 | — |
-| `graph/` | 图模型、校验、布局（后端不出图：渲染与坐标由前端 Excalidraw 兜底，见 ADR-4） | — |
+| `graph/` | 图模型、校验、**布局**（后端出元素场景 IR，含坐标；**布局是本包职责**，前端只做 `convert` 渲染，见 ADR-4 / v2-36） | — |
 | `rag/` | 检索增强（**S2**） | `llm/` |
 | `tools/` | 工具注册与执行（**S3**） | `rag/ llm/` |
 | `agent/` | ReAct 规划与执行（**S4**） | `tools/ llm/ graph/` |
@@ -63,6 +62,8 @@
 | `infra/` | Trace/指标/审计（**S6**） | — |
 
 规矩：同层不互调；下层不知上层；新增跨包依赖先改此表。
+
+> 上下文分工（避免权限歧义）：`service/` 负责拼装本轮上下文（调 `rag/` 检索、`session/` 取历史与 IR）；`agent/` 只跑 Thought→Action→Observation 循环本体，**不直接调 `rag/`/`session/`**。意图分类在 Thought 内完成（方案 A，不另设独立分类器）。
 
 > 括号里的 `S0~S6` 是**执行顺序**，与模块编号 `M0~M7` 是两套体系：**编号是身份、S 是时间**，定义见 `plans/masterPlan/roadmap.md`。
 
@@ -78,15 +79,17 @@
   - 背景：双通道下"谁是唯一真相源"直接决定数据流。
   - 选项：前端持有 / 后端持有 / LLM 直连前端。
   - 决定：后端 session 为唯一真相源，前端只持渲染镜像。理由：利于多端/协作/审计，消除"生成段"与"双通道段"抢模型归属的矛盾。
-  - 代价：每次人类拖拽要 `PATCH /api/model/positions` 回写；实时性靠 SSE 增量。
+  - 代价：每次人类拖拽要 `PUT /api/model/canvas` 回写（现状同步四类：positions / removedIds / userElements / unboundArrows）；实时性靠 SSE 推送。
   - 落地顺序：**内存实现随 S1（M1）交付**，Redis 持久化在 S5（M5）补上——这样 S3 验证"人拖拽与 AI 改图写同一份 model"时无需等持久化就绪。
 
 - **ADR-3 LLM 调用收口到 llm/ 网关，禁止业务直连**
   - 背景：多 Provider、需审计与降级。决定：全部 LLM 调用经 `llm/` 网关。代价：业务层失去灵活性，换模型需走网关。
 
-- **ADR-4 LLM 只出 IR 语义（无坐标），不出 Excalidraw 元素 JSON**
-  - 背景：让 LLM 直接出像素级元素 JSON 易错且不可控。
-  - 决定：LLM/Agent 只出节点+边（IR）；坐标/样式由前端 `layout`/`convert` 兜底。代价：需独立布局层，复杂图布局质量依赖 elkjs/dagre。
+- **ADR-4 LLM 只出「元素场景」语义，不直出 Excalidraw 全量元素 JSON**
+  - 背景：Excalidraw 是自由画布（frame/手绘/图片/重叠），"图类型"(flowchart/architecture/mindmap) 分类不成立；用户手绘元素若不在模型内，AI 无法引用。让 LLM 直出带 `seed`/`versionNonce`/`boundElements` 的全量元素 JSON 既易错又不可控。
+  - 决定：LLM/Agent 只出**简化元素场景**（`elements`：id + type + 几何 + 绑定 + 样式的精简子集，见 `resources/schemas/scene.schema.json`）；**坐标由布局算法确定性生成、作为数据存进 IR**（不再"无坐标"），用户拖拽后经 `PUT /api/model/canvas` 回写；前端负责 IR → Excalidraw 全量元素（补 seed/版本等）。**布局责任明确落在后端**：v2-36 交付前流水线里暂无布局环节，前端也不兜底（决定 A2）。
+  - 代价：IR 不再坐标无关，session 要存坐标；生成时的布局层仍在 —— **v2-36 先落地 `graph/` 手写分层布局；v2-38 起默认改用 Java 版 ELK（`org.eclipse.elk`，竖排）**，手写实现降为 `chartflow.layout.engine=legacy` 的备用（零第三方依赖退路 + 对照基线）。仍**不引 elkjs/dagre** —— 它们是 JS 库，只能在前端或 Node 侧算，等于给"几何唯一真相源在后端"开第二真相源。**换引擎的天花板**：箭头是绑定箭头（只存两端 id、由两端现算直线），ELK 的正交边路由与虚拟节点绕行因此拿不到 —— 收益只在"节点怎么摆"，不在"线怎么画"。
+  - 状态：**本条推翻并取代原 ADR-4（2026-09-14 路线 2 决策）**。
 
 ## 四、横切关注点
 
@@ -97,7 +100,7 @@
 
 ## 五、风险与演进
 
-- **旧链路已清算（2026-09-14）**：早期 `/api/generate` → PlantUML → SVG 那条链路（含 `DiagramService`、`plantuml` 依赖、`static/` 旧 UI、`/api/download` 及两个旧请求 record）已全部删除，后端 API 现存仅 `GET /api/health`。目标链路（`/api/chat` + agent/tools/session/IR）由 M1（v2-8 起）重建，详见 `plans/underway/m1-pre-cleanup.md`。
+- **旧链路已清算（2026-09-14）**：早期 `/api/generate` → PlantUML → SVG 那条链路（含 `DiagramService`、`plantuml` 依赖、`static/` 旧 UI、`/api/download` 及两个旧请求 record）已全部删除，后端 API 现存仅 `GET /api/health`。目标链路（`/api/chat` + agent/tools/session/IR）由 M1（v2-8 起）重建，详见 `state/completed/underway/m1-pre-cleanup.md`。
 - **单进程扩展上限**：当前无水平扩展，多用户需重做部署视图。
 - **无压测/无评测集**：性能与"自反馈"闭环缺量化基线（见 `workflow.md` 自反馈机制）。
 - **下一步**：按执行序推进 —— S0 底座（已完成）→ **S1 看得见（M1 + M6a）** → S2 更准（M2）→ S3 能改（M3 + M6b①）→ S4 会规划（M4 + M6b②）→ S5 不丢（M5）→ S6 可追踪（M7）。**编号与顺序是两套体系**，见 `plans/masterPlan/roadmap.md`。
@@ -107,9 +110,9 @@
 1. 所有 LLM 调用经 `llm/` 网关收口。
 2. 出图走结构化 JSON 契约 + 校验循环，禁裸文本直出。
 3. 校验问题带 field/reason/hint，不只报数量。
-4. Agent 每步 Observation 必须回喂 LLM 再决策。
+4. Agent 每步必须回喂 LLM：Thought（含意图分类）决策 → Action(tools) → Observation 回喂，循环不得跳过分类。
 5. 新增跨包依赖先更新 2.4 包表；文档与代码不一致先改文档。
-6. LLM/Agent 只出 IR 语义，坐标/样式前端兜底，禁 LLM 直出 Excalidraw 元素 JSON。
+6. LLM/Agent 只出元素场景 IR（简化 elements，见 `scene.schema.json`），坐标由布局确定性生成并存入 IR，禁 LLM 直出 Excalidraw 全量元素 JSON（含 seed/versionNonce/boundElements）。
 7. IR 唯一真相源在后端 session，前端只持渲染镜像；AI 改图与人类拖拽汇同一份 model，禁前端自认权威。
 
 ## 七、开发视图附录：本机编译/验证

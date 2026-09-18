@@ -1,0 +1,178 @@
+{
+  "seed": 1789698901,
+  "picked": [
+    2,
+    4
+  ],
+  "records": [
+    {
+      "index": 2,
+      "section": "二、流程图（嵌套子流程）",
+      "title": "提示词 2：电商订单处理全流程（含嵌套子流程）",
+      "promptChars": 1144,
+      "status": "ok",
+      "seconds": 267.3,
+      "chat": [
+        {
+          "cls": "msg agent",
+          "text": "第 1 轮生成中..."
+        },
+        {
+          "cls": "msg agent",
+          "text": "第 1 轮校验中..."
+        },
+        {
+          "cls": "msg agent",
+          "text": "第 1 轮校验失败: 1 个问题"
+        },
+        {
+          "cls": "msg agent",
+          "text": "第 2 轮生成中..."
+        },
+        {
+          "cls": "msg agent",
+          "text": "第 2 轮校验中..."
+        },
+        {
+          "cls": "msg agent",
+          "text": "已生成 88 个元素"
+        }
+      ],
+      "sentChars": 1144,
+      "sentLines": 1,
+      "shot": "F:\\ProgramData\\IDEA\\flowchart\\.playwright\\shots\\battery-case02.png",
+      "total": 143,
+      "counts": {
+        "frame": 4,
+        "ellipse": 5,
+        "rectangle": 32,
+        "arrow": 42,
+        "diamond": 5,
+        "text": 55
+      },
+      "shapes": 42,
+      "nan": [],
+      "shapeOverlaps": [],
+      "shapeOverlapCount": 0,
+      "labelOverlapCount": 0,
+      "labelOverlaps": [],
+      "labelOnShape": 2,
+      "boundArrows": 42,
+      "unboundArrows": 0,
+      "edgeChannelPairs": 19,
+      "aspect": 1.24,
+      "bounds": [
+        0,
+        0,
+        2160,
+        1740
+      ],
+      "ink": 67100
+    },
+    {
+      "index": 4,
+      "section": "四、时序图（嵌套循环）",
+      "title": "提示词 4：复杂用户登录时序图（含嵌套循环和并行）",
+      "promptChars": 1374,
+      "status": "ok",
+      "seconds": 283.5,
+      "chat": [
+        {
+          "cls": "msg agent",
+          "text": "第 1 轮生成中..."
+        },
+        {
+          "cls": "msg agent",
+          "text": "第 1 轮校验中..."
+        },
+        {
+          "cls": "msg agent",
+          "text": "第 1 轮校验失败: 2 个问题"
+        },
+        {
+          "cls": "msg agent",
+          "text": "第 2 轮生成中..."
+        },
+        {
+          "cls": "msg agent",
+          "text": "第 2 轮校验中..."
+        },
+        {
+          "cls": "msg agent",
+          "text": "已生成 28 个元素"
+        }
+      ],
+      "sentChars": 1374,
+      "sentLines": 1,
+      "shot": "F:\\ProgramData\\IDEA\\flowchart\\.playwright\\shots\\battery-case04.png",
+      "total": 46,
+      "counts": {
+        "text": 26,
+        "arrow": 18,
+        "frame": 2
+      },
+      "shapes": 0,
+      "nan": [],
+      "shapeOverlaps": [],
+      "shapeOverlapCount": 0,
+      "labelOverlapCount": 72,
+      "labelOverlaps": [
+        [
+          "前端",
+          "输入用户名密码",
+          32,
+          18
+        ],
+        [
+          "API网关",
+          "POST /api/login",
+          53,
+          18
+        ],
+        [
+          "API网关",
+          "返回Token+成功",
+          58,
+          18
+        ],
+        [
+          "API网关",
+          "返回错误(剩余次数)",
+          58,
+          18
+        ],
+        [
+          "API网关",
+          "返回\"用户不存在\"",
+          58,
+          18
+        ],
+        [
+          "API网关",
+          "携带Token请求",
+          49,
+          18
+        ],
+        [
+          "API网关",
+          "返回数据",
+          23,
+          18
+        ],
+        [
+          "API网关",
+          "返回数据+新Token",
+          58,
+          18
+        ]
+      ],
+      "labelOnShape": 0,
+      "boundArrows": 18,
+      "unboundArrows": 0,
+      "edgeChannelPairs": 0,
+      "aspect": null,
+      "bounds": null,
+      "ink": 25177
+    }
+  ]
+}
