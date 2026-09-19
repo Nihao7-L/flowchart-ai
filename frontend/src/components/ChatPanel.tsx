@@ -15,7 +15,7 @@ interface ChatPanelProps {
  */
 const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSend, isLoading, style }) => {
   const logRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   /** 本次生成的已等待秒数（纯前端计时，不依赖服务端心跳） */
   const [elapsed, setElapsed] = useState(0);
@@ -50,8 +50,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSend, isLoading, styl
     input.value = '';
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter 发送、Shift+Enter 换行；isComposing 防止中文输入法选词时误触发送
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       handleSend();
     }
@@ -75,12 +76,13 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSend, isLoading, styl
       </div>
 
       <div className="chat-input-bar">
-        <input
+        <textarea
           ref={inputRef}
           className="chat-input"
-          placeholder="输入消息..."
+          placeholder="输入消息（Enter 发送，Shift+Enter 换行）..."
           onKeyDown={handleKeyDown}
           disabled={isLoading}
+          rows={3}
         />
         <button
           className="chat-send-btn"
