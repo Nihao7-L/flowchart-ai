@@ -28,10 +28,10 @@
   → POST /api/chat (SSE)
   → controller 校验
   → service 编排：从 session 取 model(IR) 与历史，经 rag/ 检索相关片段，组装 system prompt（含工具清单）
-  → service.agent 跑真 ReAct 循环：Thought（**含意图分类**——四子判断→路由，与主 LLM 同一次调用）→ Action(tools) → Observation 回喂
+  → service.agent 跑**真 ReAct 循环**（LLM 持工具：`tool_calls` 提议动作 → `service` 执行 → Observation 回喂再决策；`LoopState` 记每轮状态 + `ReadabilityGate` 判"再跑 / 停"，连美观一起查）—— M4 已按 **G1** 拍板为真 ReAct（见 `plans/masterPlan/m4-loop-engineering.md` / M10 / M11）
   → tools (Diagram Tools=自研 MCP) 直改后端内存 model
   → graph 校验 (field/reason/hint)；不通过带 issues 再调 ≤3 轮
-  → 落库 session (Redis 优先)
+  → 落库 session：Redis 热层（当前会话，ms 读写 + TTL）+ PostgreSQL 冷层（历史 / 快照）+ pgvector（RAG 向量，G6 分层存储，见 M5 / M2 / M12）
   → SSE 回传：思考/工具/校验事件 + 结果
        · S1 起只走**全量** `result`（元素场景，含坐标；坐标由后端布局算出）
        · 增量 `ops`（add/connect/update/delete）归 S3 / v2-25（Diagram Tools）
@@ -40,32 +40,34 @@
 ```
 
 ### 2.2 数据视图（唯一真相源）
-- IR（元素场景：elements 数组，含坐标）唯一真相源 = **后端 session**（Redis 优先，降级内存）。
+- IR（元素场景：elements 数组，含坐标）唯一真相源 = **后端 session**（**G6 分层存储**：Redis 热层 `flowai:session:<id>` 存当前 IR + 拖拽坐标 + 校验问题，TTL 自动过期、重启不丢；PostgreSQL 冷层存历史会话 / IR 快照，长期留；pgvector 存历史 IR + 提示词语义向量供 RAG 召回）。Redis 不可用时降级内存（热层丢、冷层不受影响）。
 - 前端只持**渲染镜像**；AI 改图与人手拖拽都汇到同一份后端 model，互不覆盖。
 - 坐标由**后端布局**（`graph/`：**先结构规划、再落几何** —— `ScenePlanner` 按 `group` 分模块 → 模块内交布局引擎 → 模块间网格打包，v2-39；引擎默认 Java 版 ELK 竖排，v2-38）**确定性生成**并作为数据存入 IR（scene 元素携带 x/y）；用户拖拽后经 `PUT /api/model/canvas` 回写；前端 `convert` 直接渲染 IR 携带的坐标 —— **前端不做任何布局**（原有的"前端兜底重排"已于 2026-09-17 按决定 A2 删除）。
 
 ### 2.3 部署视图
 - 单进程 Spring Boot + 浏览器；Redis 可选（不可用时降级内存）。
-- 当前单用户本地；无容器编排、无多实例。网络化/多租户为未来演进。
+- **本地依赖改由容器编排（M12，2026-09-20 规划中）**：`docker compose` 起 `redis:7.4-alpine`（替代本机 Windows Redis 3.0）与 `pgvector/pgvector:pg16`（PostgreSQL + 向量扩展，供 M2 RAG 与 M5 持久化），目标"新克隆 + `up -d` 即用"；**应用本身仍是单进程单实例**，架构边界不变。计划见 `plans/masterPlan/m12-docker-infra.md`。
+- 当前单用户本地；无多实例。网络化/多租户为未来演进。
 
 ### 2.4 开发视图（包边界，跨包调用只允许箭头方向）
 | 包 | 职责 | 允许调用 |
 |---|---|---|
 | `controller/` | REST+SSE，只做校验与编排 | `service/` |
 | `service/` | 生成编排：Prompt→LLM→解析→校验→修正 | `llm/ graph/ rag/ tools/ session/` |
-| `llm/` | Provider 抽象 + 网关 | — |
+| `llm/` | Provider 抽象 + 网关（**M13** 加固：统一收口 + 指数退避重试 + 每调用 token/成本/延迟埋点；不含限流，单用户） | — |
 | `graph/` | 图模型、校验、**布局**（后端出元素场景 IR，含坐标；**布局是本包职责**，前端只做 `convert` 渲染，见 ADR-4 / v2-36） | — |
-| `rag/` | 检索增强（**S2**） | `llm/` |
+| `context/` | 上下文组装（**S2**；`rank` 固定硬约束首尾 + token 预算 + 每轮回放，见 M10） | — |
+| `rag/` | 检索增强（**S6**；向量库用 PostgreSQL + pgvector，基础设施见 M12） | `llm/` |
 | `tools/` | 工具注册与执行（**S3**） | `rag/ llm/` |
-| `agent/` | ReAct 规划与执行（**S4**） | `tools/ llm/ graph/` |
-| `session/` | 会话与记忆（**内存版 S1 / Redis 版 S5**） | — |
-| `infra/` | Trace/指标/审计（**S6**） | — |
+| `agent/` | 真 ReAct 循环（LLM 持工具：`tool_calls`→Observation）：`LoopState` + `ReadabilityGate`（连美观一起查，**S4**；**G1** 已拍板，见 M4） | `tools/ llm/ graph/ rag/` |
+| `session/` | 会话与记忆（**内存版 S1 / G6 分层 Redis热+PG冷 版 S7**） | — |
+| `infra/` | Trace/指标/审计（**S8**） | — |
 
 规矩：同层不互调；下层不知上层；新增跨包依赖先改此表。
 
-> 上下文分工（避免权限歧义）：`service/` 负责拼装本轮上下文（调 `rag/` 检索、`session/` 取历史与 IR）；`agent/` 只跑 Thought→Action→Observation 循环本体，**不直接调 `rag/`/`session/`**。意图分类在 Thought 内完成（方案 A，不另设独立分类器）。
+> 上下文分工（避免权限歧义）：上下文由 `context/`（M10）统一组装（调 `rag/` 检索、`session/` 取历史与 IR）；真 ReAct 下 `agent/` 跑循环本体（`LoopState` + 质量门）并可在循环内经 `rag/` 做检索动作（G1），但**不直接调 `session/`**（会话读写归 M5）。
 
-> 括号里的 `S0~S6` 是**执行顺序**，与模块编号 `M0~M7` 是两套体系：**编号是身份、S 是时间**，定义见 `plans/masterPlan/roadmap.md`。
+> 括号里的 `S0~S8` 是**执行顺序**，与模块编号 `M0~M14` 是两套体系：**编号是身份、S 是时间**，定义见 `plans/masterPlan/roadmap.md`。**M13（LLM 网关加固）与 M14（评估回归门禁）为本项目对 javaguide harness L5/L6 的落地，均为并行轨、不占 S 槽**，分别与 M7（观测）构成"网关产生指标 / 评估判质量 / 观测做看板"的闭环。
 
 ## 三、关键决策与取舍（ADR）
 
@@ -80,7 +82,7 @@
   - 选项：前端持有 / 后端持有 / LLM 直连前端。
   - 决定：后端 session 为唯一真相源，前端只持渲染镜像。理由：利于多端/协作/审计，消除"生成段"与"双通道段"抢模型归属的矛盾。
   - 代价：每次人类拖拽要 `PUT /api/model/canvas` 回写（现状同步四类：positions / removedIds / userElements / unboundArrows）；实时性靠 SSE 推送。
-  - 落地顺序：**内存实现随 S1（M1）交付**，Redis 持久化在 S5（M5）补上——这样 S3 验证"人拖拽与 AI 改图写同一份 model"时无需等持久化就绪。
+  - 落地顺序：**内存实现随 S1（M1）交付**，Redis 持久化在 S7（M5，G6 分层存储：Redis 热 + PostgreSQL 冷）补上——这样 S3 验证"人拖拽与 AI 改图写同一份 model"时无需等持久化就绪。
 
 - **ADR-3 LLM 调用收口到 llm/ 网关，禁止业务直连**
   - 背景：多 Provider、需审计与降级。决定：全部 LLM 调用经 `llm/` 网关。代价：业务层失去灵活性，换模型需走网关。
@@ -103,7 +105,7 @@
 - **旧链路已清算（2026-09-14）**：早期 `/api/generate` → PlantUML → SVG 那条链路（含 `DiagramService`、`plantuml` 依赖、`static/` 旧 UI、`/api/download` 及两个旧请求 record）已全部删除，后端 API 现存仅 `GET /api/health`。目标链路（`/api/chat` + agent/tools/session/IR）由 M1（v2-8 起）重建，详见 `state/completed/underway/m1-pre-cleanup.md`。
 - **单进程扩展上限**：当前无水平扩展，多用户需重做部署视图。
 - **无压测/无评测集**：性能与"自反馈"闭环缺量化基线（见 `workflow.md` 自反馈机制）。
-- **下一步**：按执行序推进 —— S0 底座（已完成）→ **S1 看得见（M1 + M6a）** → S2 更准（M2）→ S3 能改（M3 + M6b①）→ S4 会规划（M4 + M6b②）→ S5 不丢（M5）→ S6 可追踪（M7）。**编号与顺序是两套体系**，见 `plans/masterPlan/roadmap.md`。
+- **下一步**：按执行序推进 —— S0 底座（已完成）→ **S1 看得见（M1 + M6a）** → **S1a 画得出（v2-40）/ S1b 排得清（v2-39，已完成）** → S2 上下文（M10）→ S3 双通道（M3 + M6b①）→ S4 循环（M4 + M6b②）→ S5 提示词（M11）→ S6 更准·RAG（M2）→ S7 不丢（M5，G6 分层）→ S8 可追踪（M7）。**编号与顺序是两套体系**，见 `plans/masterPlan/roadmap.md`。
 
 ## 六、架构不变式（改代码不得破坏）
 
@@ -127,6 +129,7 @@
 - 一键验证：`powershell -File run-verify.ps1`（末行 `VERIFY PASS`、退出码 0）。
 - `run-verify.ps1` 的两个 PowerShell 注意事项：① 脚本**必须带 UTF-8 BOM**，否则 PowerShell 5.1 按本地编码解析，中文注释乱码会报"字符串缺少终止符"；② `Invoke-Maven` 内须先用 `Out-Host` 消费 java 输出再 `return $LASTEXITCODE`，否则函数把 stdout 一并当返回值，退出码判断恒为真（BUILD SUCCESS 也会误判 FAIL）。
 - 前端门禁：`run-verify.ps1` 用 `-FrontendInstallMode ci|install` 选安装方式——**本地默认 `install`**（增量、不清空 `node_modules`、秒级），CI 传 `ci`（严格按 lockfile）。选 `ci` 时注意：它会先清空 `node_modules`，若残留 vite / esbuild 进程（开发服务器未彻底退出）会握着文件锁导致 `ENOTEMPTY`（-4048），跑之前先确认无 `esbuild.exe` 残留。
+- 第三个原因（沙箱）：`vite build` 必须带 `--emptyOutDir false`（见 `constraint.md` 技术约束），否则 safe-delete 拦截 shim 会拦清空 `dist/`。
 
 ### 7.1 云端执行器：`.github/workflows/ci.yml`
 
@@ -145,4 +148,3 @@
 - 实测（2026-09-12，run #2，`reframing`@`67cacc9`）：总 43s；后端 job 39s（安装 JDK 0s → `clean test` 25s → `checkstyle` 8s）、前端 job 17s（`npm ci` 5s → `build` 2s → `lint` 1s），两 job step 级全 success，`Tests run: 58` / `You have 0 violations.`。
 - 排障可达性：运行的**状态与耗时**可匿名读（`api.github.com/repos/{owner}/{repo}/actions/runs`、`/runs/{id}/jobs`，含 step 级状态与时间戳）；但**日志正文需登录**（`/actions/jobs/{id}/logs` 匿名返回 `403 Must have admin rights`），查失败原因须在登录态浏览器里看。
 - 已知缺口（未处理）：`src/main/resources/application.yml` 被 `.gitignore` 排除（含明文 key），**云端仓库没有这个文件**。当前 58 个测试全是纯逻辑测试 + `standaloneSetup`，不起 Spring 容器，故无碍；将来引入 `@SpringBootTest` 一类需要启动上下文的测试时，CI 会因读不到配置而失败——届时需注入 dummy 环境变量或补一份 test 专用配置。
-

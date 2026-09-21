@@ -234,13 +234,22 @@ const withArrowGeometry = (
     return skeleton;
   }
 
-  const startEl = startId ? byId.get(startId) : undefined;
-  const endEl = endId ? byId.get(endId) : undefined;
+  // A1b（2026-09-21）：被绑定的元素如果「不存在」（类型未知被过滤掉、
+  // 或 LLM 编了个不存在的 id），必须摘掉这条绑定、改成自由箭头 —— 否则
+  // Excalidraw 转换器解析绑定时会去读不存在元素的属性，抛
+  // `TypeError: Cannot read properties of undefined (reading 'id')`。
+  // 摘掉后由两个真实端点（或原点兜底）算出合法几何，箭头照样能画出来。
+  const clean: Record<string, unknown> = { ...skeleton };
+  if (startId && !byId.has(startId)) delete clean.start;
+  if (endId && !byId.has(endId)) delete clean.end;
+
+  const startEl = startId && byId.has(startId) ? byId.get(startId) : undefined;
+  const endEl = endId && byId.has(endId) ? byId.get(endId) : undefined;
 
   const hasXY = Number.isFinite(Number(skeleton.x)) && Number.isFinite(Number(skeleton.y));
   const hasPoints = Array.isArray(skeleton.points) && skeleton.points.length >= 2;
   if (hasXY && hasPoints) {
-    return skeleton;
+    return clean;
   }
 
   // 取「边缘交点」而非中心点：中心点会让箭头穿过图形、与框内文字叠在一起
@@ -252,7 +261,7 @@ const withArrowGeometry = (
   const to = endEl ? edgePointTowards(endEl, startCenter) : endCenter;
 
   return {
-    ...skeleton,
+    ...clean,
     x: from.x,
     y: from.y,
     points: hasPoints ? skeleton.points : [[0, 0], [to.x - from.x, to.y - from.y]],
@@ -746,6 +755,26 @@ const finishConversion = (
  * Excalidraw 转换器还有我们控制不了的隐含前提（children / text 就是两例）。
  * 过去这类异常被 catch 静默吞掉，表现为"聊天说已生成 N 个元素、画布空白"。
  */
+/**
+ * Excalidraw 转换器认识的元素类型（与 scene.schema.json 的 type 枚举全集一致）。
+ *
+ * A1b（2026-09-21）修复：LLM 越界输出契约外的类型（典型如「时序图」被它用
+ * `lifeline` / `actor` 等契约没有的原语拼出来）时，Excalidraw 的
+ * `convertToExcalidrawElements` 在解析**指向该元素的箭头绑定**时会去读那个
+ * 未知类型元素的属性，抛 `TypeError: Cannot read properties of undefined
+ * (reading 'id')`，整批转换失败 → 画布全空 + fatal。转换前先按这个白名单
+ * 隔离未知类型，坏类型进入 dropped 让用户看到被跳过（不再静默崩）。
+ */
+const KNOWN_EXCALIDRAW_TYPES = new Set<SceneElementType>([
+  'rectangle',
+  'ellipse',
+  'diamond',
+  'arrow',
+  'line',
+  'text',
+  'frame',
+]);
+
 export const convertScene = (elements: SceneElement[]): SceneConversion => {
   const dropped: string[] = [];
 
@@ -762,6 +791,13 @@ export const convertScene = (elements: SceneElement[]): SceneConversion => {
     // [NaN, NaN, NaN, NaN]，照样毁掉视口让整张图看不见。
     // 用户手绘不经过本函数（它们在画布场景里，只回写坐标），所以跳过它不影响手绘。
     if (el.type === 'freedraw') {
+      dropped.push(el.id ?? `#${index}`);
+      return false;
+    }
+    // A1b（2026-09-21）：契约外的未知类型（如时序图原语 lifeline）会让
+    // Excalidraw 转换器在解析箭头绑定时崩溃。转换前先隔离，而非等到批量
+    // 转换抛错连累整批元素都画不出来。
+    if (!KNOWN_EXCALIDRAW_TYPES.has(el.type)) {
       dropped.push(el.id ?? `#${index}`);
       return false;
     }

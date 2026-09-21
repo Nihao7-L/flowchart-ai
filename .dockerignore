@@ -6,3 +6,9 @@ target/
 workbuddyFlow/docs/
 *.md
 .claude/
+
+# 关键：排除含明文密钥的配置文件，禁止烤进镜像层（见 m12-docker-infra.md 三个「up 即用」缺口②）
+src/main/resources/application.yml
+
+# 密钥文件（compose 运行时从 .env 读取，不进构建上下文）
+.env

@@ -12,13 +12,13 @@
 | 项 | 值 |
 |---|---|
 | 文档版本 | 对齐代码分支 `reframing`@`837e587`（2026-09-14 基线；**M1 核心链路 + M6a 画布已落盘并归档，工作树待提交**） |
-| 文档状态 | 评审中（M0 已闭合；**S1 已闭合**——M1 + M6a 模块整体完成并于 2026-09-18 归档至 `state/completed/masterPlan/`，验收证据见 `state/activeLog/2026-09-18.md`；旧链路已于 2026-09-14 清算删除；执行序 S0~S6） |
+| 文档状态 | 评审中（M0 已闭合；**S1 已闭合**——M1 + M6a 模块整体完成并于 2026-09-18 归档至 `state/completed/masterPlan/`，验收证据见 `state/activeLog/2026-09-18.md`；旧链路已于 2026-09-14 清算删除；执行序 **S0~S8**，见 `plans/masterPlan/roadmap.md`） |
 | 作者 | 用户 22719（产品/架构决策）+ AI 协作撰写 |
 | 评审人 | 待用户评审 |
-| 最后更新 | 2026-09-18 |
+| 最后更新 | 2026-09-20 |
 | 仓库地址 | 本地 `F:\ProgramData\IDEA\flowchart`（git，`reframing` 分支）；远端 `github.com/Nihao7-L/flowchart-ai`（public，已接入 GitHub Actions CI） |
 | 设计稿 | `frontend/`（**M6a**：09-12 落地空壳 → 09-16 起为真画布 + 双通道 → 09-18 归档，见 `state/completed/masterPlan/m6a-render.md`；PoC HTML 仅作历史参照，见第七节） |
-| 需求/路线图 | `plans/masterPlan/`（按核心模块拆分的模块计划，v2-N 出处）；**执行顺序**见 `plans/masterPlan/roadmap.md`（S0~S6） |
+| 需求/路线图 | `plans/masterPlan/`（按核心模块拆分的模块计划，v2-N 出处）；**执行顺序**见 `plans/masterPlan/roadmap.md`（S0~S8） |
 
 > 版本号跟代码版本对齐；状态是活的——定稿后任何内容改动都要升版本并在第三节留一行。
 
@@ -55,7 +55,7 @@
 |---|---|
 | 工作分支 | `reframing`（基线 `837e587`，2026-09-14；**工作树有改动待用户提交**，条数以 `git status --porcelain -uall` 为准） |
 | 旧版留档 | tag `archive/v0.3-full-tasks`（原任务 40-53 全量，**只作思路对照，不直接复用**） |
-| 阶段目标（执行序 S0~S6） | S0 底座 → **S1 看得见（M1 + M6a）** → **S1a 画得出（M9 契约容量）＋ S1b 排得清（M8 排版）** → S2 更准（M2）→ S3 能改（M3 + M6b①）→ S4 会规划（M4 + M6b②）→ S5 不丢（M5）→ S6 可追踪（M7）。模块编号 `M0~M9` 是身份、`S` 是时间（**M8 早于 M9 但 S1b 后于 S1a**），见 `plans/masterPlan/roadmap.md` |
+| 阶段目标（执行序 S0~S8） | S0 底座 → **S1 看得见（M1 + M6a）** → **S1a 画得出（v2-40）/ S1b 排得清（v2-39，已完成）** → S2 上下文（M10）→ S3 双通道（M3 + M6b①）→ S4 循环（M4 + M6b②）→ S5 提示词（M11）→ S6 更准·RAG（M2）→ S7 不丢（M5，G6 分层）→ S8 可追踪（M7）。模块编号 `M0~M14` 是身份、`S` 是时间，见 `plans/masterPlan/roadmap.md` |
 | 路线图出处 | `plans/masterPlan/`（模块计划，v2-N 出处） |
 | 当前阶段 | **S1a 与 S1b 已收尾**：`v2-39` 排版**已完成并归档**（门禁 153/16/6 全绿，两处 FAIL 归零）；`v2-38` 引擎可替换同步归档；当前活跃项 = `v2-40` 契约容量（P0 + P1 已交付，下一步 **P2 关系语义**） |
 | 进度查看 | `plans/masterPlan/`（模块总计划）、`plans/underway/`（在跑）、`state/activeLog/`（已做 + 证据）、`state/completed/`（已归档） |
@@ -69,7 +69,7 @@
 | 前端 UI | 双通道协作白板：前端持 IR **渲染镜像**，**人类拖拽/手绘 + AI 聊天命令都改后端持有的同一份 model（IR）** |
 | 工程底座 | 先行搭建（Harness 四层），功能长在底座上 |
 | 六层框架（L1-L6） | 用作讲解与分层检查的骨架；四层 Harness 用作施工顺序 |
-| 模型归属 | IR 唯一真相源在后端 session（Redis 优先），前端只持渲染镜像 |
+| 模型归属 | IR 唯一真相源在后端 session（**G6 分层存储**：Redis 热层 + PostgreSQL 冷层 + pgvector；Redis 不可用时降级内存，冷层不受影响），前端只持渲染镜像 |
 
 ## 六、不做的事（Non-goals，本文件级）
 

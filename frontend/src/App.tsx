@@ -57,11 +57,21 @@ function App() {
         try {
           const scene: SceneIR = JSON.parse(event.data);
           setElements(scene.elements);
-          setMessages(prev => [...prev, {
-            role: 'agent',
-            text: `已生成 ${scene.elements.length} 个元素`,
-            timestamp: Date.now(),
-          }]);
+          // A3（2026-09-21）：0 元素被当成「成功生成」是误导——画布空白、
+          // 用户不知发生了什么。空场景要明确告诉用户没画出来并给提示。
+          if (scene.elements.length === 0) {
+            setMessages(prev => [...prev, {
+              role: 'error',
+              text: '没有生成任何图形。请描述得更具体一些（例如「画一个用户登录的流程图」），或换个图型说法。',
+              timestamp: Date.now(),
+            }]);
+          } else {
+            setMessages(prev => [...prev, {
+              role: 'agent',
+              text: `已生成 ${scene.elements.length} 个元素`,
+              timestamp: Date.now(),
+            }]);
+          }
         } catch {
           setMessages(prev => [...prev, {
             role: 'error',

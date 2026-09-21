@@ -1,8 +1,8 @@
-# 模块计划 · 可观测与治理（S6 可追踪）
+# 模块计划 · 可观测与治理（S8 可追踪）
 
 > 状态：规划中
 > 关联架构：`architecture.md` 2.4 包表（`infra`）、四（横切关注点）、`constraint.md` 六、日志规范
-> 所属阶段：**S6 可追踪**（执行序见 `plans/masterPlan/roadmap.md`）
+> 所属阶段：**S8 可追踪**（执行序见 `plans/masterPlan/roadmap.md`）
 > 覆盖任务：v2-27 ~ v2-30
 
 ## 元信息

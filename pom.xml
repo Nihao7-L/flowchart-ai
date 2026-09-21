@@ -51,6 +51,15 @@
             <artifactId>org.eclipse.xtext.xbase.lib</artifactId>
             <version>2.36.0</version>
         </dependency>
+
+        <!-- Redis（热缓存 / 会话热层，M12 Redis 阶段 + M5 持久化热层）。
+             2026-09-20 用户拍板：仅先加 redis 依赖；postgresql / spring-boot-starter-jdbc
+             推迟到 RAG（M2）阶段再加。spring-boot-dependencies 已 import，版本由 BOM 管理，
+             无需显式写 <version>。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
     </dependencies>
     <dependencyManagement>
         <dependencies>

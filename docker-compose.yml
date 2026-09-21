@@ -1,16 +1,48 @@
-# ===== Docker Compose：一条命令启动完整服务 =====
+# ===== Docker Compose：一条命令启动 ChartFlow（Redis 阶段） =====
 #
 # 使用方式：
-#   1. 设置环境变量：set LLM_API_KEY=你的Kimi_API_Key
-#   2. 启动：docker compose up --build
-#   3. 停止：docker compose down
-#   4. 后台运行：docker compose up -d --build
+#   1. 准备密钥：cp .env.example .env  → 编辑填入 LLM_API_KEY
+#   2. 启动：docker compose up -d --build
+#   3. 看状态：docker compose ps
+#   4. 停止：docker compose down
+#
+# 范围说明（2026-09-20）：
+#   - 本阶段只编排 **Redis（热缓存）**：redis:7.4-alpine 替代本机 Windows Redis 3.0。
+#   - PostgreSQL / pgvector（持久化 + RAG）**推迟到 RAG（M2）阶段**，届时再加 `db` 服务、
+#     pgvector 初始化脚本与 datasource 配置；compose 已为扩容留好位置。
+#   - 应用经 profile=docker 加载 application-docker.yml（提交版，非密钥），密钥只走 .env → 容器 env。
 
 services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   flowai:
     build: .
     ports:
       - "8080:8080"
     environment:
       - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS}
+      - SPRING_PROFILES_ACTIVE=docker
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  redis-data:

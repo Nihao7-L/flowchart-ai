@@ -107,9 +107,13 @@ const Canvas: React.FC<CanvasProps> = ({ elements, onSync, onRenderIssue }) => {
       viewportFrameRef.current = window.requestAnimationFrame(() => {
         viewportFrameRef.current = null;
         try {
+          // A2（2026-09-21）：fitToContent 默认把内容顶到视口边缘，最上面一排
+          // 节点会被 Excalidraw 顶部悬浮工具栏（形状工具条）永久遮挡、点不到也
+          // 拖不动。canvasOffsets 在取景时给四边留余量，顶部留足 64px 覆盖工具条。
           api.scrollToContent([...converted, ...userElements], {
             fitToContent: true,
             animate: false,
+            canvasOffsets: { top: 64, right: 24, bottom: 24, left: 24 },
           });
         } catch (e) {
           console.warn('[Canvas] scrollToContent 失败:', e);

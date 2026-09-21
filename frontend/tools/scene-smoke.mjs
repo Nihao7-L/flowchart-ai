@@ -355,10 +355,11 @@ const cases = [
         const props = (schema.definitions[branch] || {}).properties || {};
         for (const k of Object.keys(props)) fields.add(k);
       }
-      // 显式豁免：这些字段在契约里（后端排版要用）但**刻意不搬进渲染层**。
-      // group = 模块名（语义层，渲染器不认识），搬过去只会被忽略或抛错；
-      // 语义层与渲染层分开正是 v2-40「语义编译」的架构。
-      const EXEMPT = new Set(['group']);
+      // 显式豁免：这些字段在契约里（后端排版/语义要用）但**刻意不搬进渲染层**。
+      // group = 模块名；relation = 箭头的语义关系类型（flow/call/data/async/
+      // inherit/ER 基数等）—— 都是语义层字段，渲染器（Excalidraw）不认识，
+      // 搬过去只会被忽略或抛错；语义层与渲染层分开正是 v2-40「语义编译」的架构。
+      const EXEMPT = new Set(['group', 'relation']);
       const missing = [...fields].filter((f) => !keys.has(f) && !EXEMPT.has(f));
       if (missing.length) {
         return '契约里有、前端白名单缺（会被静默丢弃）: ' + missing.join(', ');
@@ -370,6 +371,24 @@ const cases = [
       }
       return null;
     },
+  },
+  {
+    // A1b 回归（2026-09-21）：「时序图」类输入会被 LLM 用契约没有的原语
+    // （lifeline）拼出来，且箭头常绑到这些未知类型元素。修复前整批转换抛
+    // TypeError: Cannot read properties of undefined (reading 'id') 让整批转换失败 → 画布全空。
+    // 修复后：未知类型被隔离进 dropped，指向它的箭头脱落成自由箭头，矩形照常渲染。
+    name: 'A1b 回归：未知元素类型 + 悬空箭头绑定不得让整批转换抛错',
+    input: [
+      { id: 'actor1', type: 'rectangle', x: 50, y: 50, width: 120, height: 60, label: { text: '用户' } },
+      { id: 'actor2', type: 'rectangle', x: 400, y: 50, width: 120, height: 60, label: { text: '服务端' } },
+      { id: 'life', type: 'lifeline', x: 110, y: 120, width: 2, height: 400 },
+      { id: 'm1', type: 'arrow', start: { id: 'actor1' }, end: { id: 'life' } },
+      { id: 'm2', type: 'arrow', start: { id: 'life' }, end: { id: 'actor2' } },
+      { id: 'm3', type: 'arrow', start: { id: 'ghost_a' }, end: { id: 'ghost_b' } },
+    ],
+    check: (r) => (r.fatal ? '不应 fatal（A1b 回归）: ' + r.fatal : null)
+      || (!r.dropped.includes('life') ? '未知类型 life 应被记录为 dropped' : null)
+      || (r.elements.filter((e) => e.type === 'rectangle').length !== 2 ? '两个矩形应保留，实际 ' + r.elements.filter((e) => e.type === 'rectangle').length : null),
   },
 ];
 

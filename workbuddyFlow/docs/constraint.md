@@ -6,7 +6,7 @@
 ## 一、技术约束（必须跑在哪、不能引入什么）
 
 - **必须跑在本地单进程 Spring Boot 内，不起独立后端/微服务。** 后果：部署极简、无网络分区，但水平扩展受限（当前单用户场景可接受；多租户需重做部署视图）。
-- **禁止改动环境变量与系统设置**（含增删用户级 env var）。后果：密钥只能留 `application.yml` 明文、不能走环境变量读取，靠 `.gitignore` 兜底防入库。
+- **禁止改动环境变量与系统设置**（含增删用户级 env var）。后果：密钥只能留 `application.yml` 明文、不能走环境变量读取，靠 `.gitignore` 兜底防入库。**边界澄清（2026-09-20）**：本条约束的是**宿主系统**的环境变量 / 系统设置；项目内 `docker-compose.yml` / `.env` 的**容器级**变量属项目配置，不在本条范围内（M12 容器化用到，见 `plans/masterPlan/m12-docker-infra.md`）。
 - **前端依赖用本地 UMD 三件套**（`react` / `react-dom` / `excalidraw` 与 HTML 同目录 `./` 引用），不引 CDN。后果：离线可用、无供应链风险，但需同目录部署、升级需手动换包。
 - **在 Agent 沙箱里跑 `vite build` 必须带 `--emptyOutDir false`。** 原因：沙箱给 node 注入 safe-delete 拦截 shim，`vite build` 清空已有 `dist/` 时会撞批量删除拦截、报 `checkBulkDeleteGuard` 而失败（2026-09-18 实测：`dist/` 有上次产物时裸跑 `npx vite build` 失败，加 `--emptyOutDir false` 后 `✓ built in 11.37s`、exit 0）。**注意**：项目 `package.json` 的 `build` 脚本（`tsc -b && vite build`）与门禁 `run-verify.ps1` / `ci.yml` **都不带**此参数 —— CI 是干净检出、`dist/` 不存在，压根没有删除动作。后果：沙箱里复跑前端构建必须**显式加参数**，不要误判成项目配置缺陷去"修"它。
 - **`convertToExcalidrawElements` 会重生成元素 id，认领元素只能靠 `customData`。** 后果：任何"按 id 前缀认领模型/用户元素"的写法都会元素翻倍，前端必须用 `customData.m` 区分归属。
@@ -31,7 +31,7 @@
 
 - **本机硬件 HP OMEN 暗影精灵8：i7-12700H / 16GB / RTX 3050 Ti 4GB。** 后果：本地无法跑大模型推理，依赖云端 LLM API；前端构建在本机，图布局改由**后端 `graph/` 手写分层布局**在服务端算（v2-36），**不引 elkjs/dagre** —— 与 `GraphValidator` 手写实现的风格一致，且避免新依赖所需的网络下载（按协作红线，任何下载须另行征得同意）。
 - **模型 token 月额度受外部 API 限制。** 后果：需 token 预算与审计（infra 阶段 v2-27+），长会话/大图需控成本，必要时降级到小模型。
-- **Redis 为可选依赖**（未注册为服务，需手动启动）。后果：session 持久化在 Redis 不可用时降级内存，重启即丢；生产化前需把 Redis 纳入部署。
+- **Redis / PostgreSQL / pgvector 均为可选依赖，且必须保持"连不上即降级"。** 部署形态（2026-09-20 起规划，G6 分层存储）：由 `docker compose` 提供 **`redis:7.4-alpine`**（替代本机 Windows Redis **3.0**，热层）+ **`pgvector/pgvector:pg16`**（PostgreSQL + 向量扩展，冷层 + RAG 向量层），见 `plans/masterPlan/m12-docker-infra.md`。后果（G6 分层语义）：① Redis 挂 → 热层降级内存（当前会话丢、重启丢），但**冷层 PostgreSQL 不受影响**、历史仍在；② PostgreSQL 挂 → 冷层暂不可用、热层照常、RAG 召回降级；③ pgvector 不可用 → RAG 召回降级、生成照常。**降级路径不得因容器化被破坏**；容器是"可选依赖"的**提供方式**，不是新的硬依赖。
 
 ## 四、合规约束（数据流向、审计要求）
 
