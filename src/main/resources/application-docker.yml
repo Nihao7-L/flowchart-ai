@@ -1,0 +1,11 @@
+# application-docker.yml —— profile=docker 时由 Spring 自动加载（提交版，非密钥）
+#
+# 仅提供本阶段（Redis）新增的基础设施连接配置。
+# llm.* 等仍由本地 application.yml（gitignored，不入库）或运行时 env 提供，
+# 此处不重复设置，避免覆盖本地真实值（profile 专属文件优先级高于 application.yml）。
+# PostgreSQL / pgvector 的 datasource 配置将在 RAG（M2）阶段补到此文件。
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
