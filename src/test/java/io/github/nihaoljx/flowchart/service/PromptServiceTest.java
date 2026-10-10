@@ -1,5 +1,6 @@
 package io.github.nihaoljx.flowchart.service;
 
+import io.github.nihaoljx.flowchart.graph.RelationCatalog;
 import io.github.nihaoljx.flowchart.graph.ScenePlanner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -49,21 +50,21 @@ class PromptServiceTest {
     }
 
     @Test
-    @DisplayName("buildPrompt 应列出 7 种可生成 type，并明确禁用 freedraw")
+    @DisplayName("buildPrompt 应列出全部元素 type（含 freedraw / image / embeddable / magicframe）")
     void testListsElementTypes() throws IOException {
         // When
         String prompt = promptService.buildPrompt("画个架构示意", null);
 
         // Then
         String[] types = {
-                "rectangle", "ellipse", "diamond", "arrow", "line", "text", "frame"};
+                "rectangle", "ellipse", "diamond", "arrow", "line", "text", "frame",
+                "freedraw", "image", "embeddable", "magicframe"};
         for (String type : types) {
             assertTrue(prompt.contains(type), "prompt 应提及元素类型: " + type);
         }
-        // freedraw 是唯一被禁用的类型：它的取景边界算不出来，
-        // 2026-09-16 实测会让整张图都看不见（详见 sceneAdapter 注释）
-        assertTrue(prompt.contains("不要输出 `freedraw`"),
-                "prompt 应明确禁止 LLM 输出 freedraw");
+        // md v5.8.0 约束8：freedraw 默认不开（仅用户明确要手绘/涂鸦时才用）
+        assertTrue(prompt.contains("默认不开"),
+                "prompt 应写明 freedraw 默认不开");
     }
 
     @Test
@@ -164,32 +165,41 @@ class PromptServiceTest {
     }
 
     /**
-     * 模块分组要求（v2-39）：图形多时 LLM 必须给每个图形写 {@code group}。
-     *
-     * <p>没有这条要求，后端的排版层（{@code ScenePlanner}）就永远拿不到
-     * 分区依据 —— 提示词是整条链路的源头。阈值直接引用
-     * {@link ScenePlanner#MODULE_THRESHOLD}：提示词里的数字与后端判定用的
-     * 数字必须是同一个，写死两份迟早漂移。
+     * 分组 / 画框口径（md v5.8.0）：提示词正文已改由 {@code system-prompt.md} 提供，
+     * 这里验证 md 覆盖了分组与画框的关键约束，且阈值数字与后端
+     * {@link ScenePlanner#MODULE_THRESHOLD} 一致（同一处数字，写死两份迟早漂移）。
      */
     @Test
-    @DisplayName("复杂图的模块分组要求进 prompt，阈值取自后端常量")
+    @DisplayName("md 提示词应含分组 / 画框约束，阈值与 ScenePlanner.MODULE_THRESHOLD 一致")
     void testModuleGroupingGuidance() throws IOException {
         // When
         String prompt = promptService
                 .buildPrompt("画一个电商微服务架构图", null);
 
-        // Then：既要"多图必须分组"，也要"小图别分组"
-        assertTrue(prompt.contains("`group`"),
+        // Then
+        assertTrue(prompt.contains("group"),
                 "应要求 LLM 写 group 字段");
         assertTrue(prompt.contains(String.valueOf(
                         ScenePlanner.MODULE_THRESHOLD)),
-                "阈值应与 ScenePlanner.MODULE_THRESHOLD 一致");
-        assertTrue(prompt.contains("不要写 `group`"),
-                "小图必须明确不要写 group，否则简单图会被排变样");
-        assertTrue(prompt.contains("与模块名逐字相同"),
-                "框的 name 必须与模块名对齐（否则框留在原地、与内容错位）");
-        assertTrue(prompt.contains("不要给 `frame` 填 `children`"),
-                "children 由后端算出，必须明说 LLM 不要填");
+                "阈值仍应与 ScenePlanner.MODULE_THRESHOLD 一致（用于 frame 认领判定）");
+        assertTrue(prompt.contains("逐字相同"),
+                "框的 name 必须与模块 group 逐字相同（否则认领不上）");
+        assertTrue(prompt.contains("children"),
+                "应说明 children 由后端自动填（在「不要写进输出」清单里）");
+    }
+
+    /**
+     * 单一来源守卫：md 正文里写死的 relation 值集合必须覆盖
+     * {@link RelationCatalog#ALL_RELATIONS} —— md 现在是提示词的唯一正文，
+     * 若 RelationCatalog 扩了值而 md 没跟上，模型就不知道新值，会漏用。
+     */
+    @Test
+    @DisplayName("md 提示词必须列出 RelationCatalog 的全部 relation（单一来源不漂移）")
+    void testAllRelationsListed() throws IOException {
+        String prompt = promptService.buildPrompt("画个图", null);
+        for (String rel : RelationCatalog.ALL_RELATIONS) {
+            assertTrue(prompt.contains(rel), "md 应提及 relation: " + rel);
+        }
     }
 
     @Test
@@ -215,5 +225,94 @@ class PromptServiceTest {
         assertFalse(
                 promptService.buildPrompt("画个图", "")
                         .contains("修改规则"));
+    }
+
+    /**
+     * v2-42：编辑模式元素数 **超过** {@link PromptService#EDIT_INLINE_MAX_ELEMENTS}
+     * 时，当前场景不再整份贴出，改为「结构摘要 + 被改元素全文 + 引用骨架」。
+     *
+     * <p>这一条守的是"大图别把 47 个元素整份灌进去"——
+     * 骨架里**仍带 id / type / 几何 / label**，否则输出侧
+     * 「未点名元素原样保留」就没有依据，图会散。
+     */
+    @Test
+    @DisplayName("v2-42: >阈值走结构摘要，骨架全量列出 id/type/几何")
+    void testCompactModeForLargeScene() throws IOException {
+        int n = PromptService.EDIT_INLINE_MAX_ELEMENTS + 1;
+        String prompt = promptService.buildPrompt(
+                "把订单服务改成支付服务", bigScene(n));
+
+        assertTrue(prompt.contains("结构摘要"),
+                "大图应改走结构摘要");
+        assertTrue(prompt.contains("共 " + n + " 个元素"),
+                "摘要应标出元素总数");
+        assertFalse(prompt.contains("## 当前场景（用户眼下看到的图"),
+                "大图不应再整份贴出当前场景");
+        for (int i = 1; i <= n; i++) {
+            assertTrue(prompt.contains("n" + i + " rectangle"),
+                    "骨架必须全量含元素 n" + i);
+        }
+        assertTrue(prompt.contains("(200,0,160x60)"),
+                "骨架必须带几何，否则未点名元素无法原样保留");
+    }
+
+    @Test
+    @DisplayName("v2-42: 阈值边界 —— 恰好等于阈值仍整份贴出（小图行为零漂移）")
+    void testFullDumpAtThreshold() throws IOException {
+        String prompt = promptService.buildPrompt(
+                "删掉 n1",
+                bigScene(PromptService.EDIT_INLINE_MAX_ELEMENTS));
+
+        assertTrue(prompt.contains("## 当前场景（用户眼下看到的图"),
+                "恰好等于阈值应仍整份贴出");
+        assertFalse(prompt.contains("结构摘要"),
+                "未超过阈值不得走摘要");
+    }
+
+    @Test
+    @DisplayName("v2-42: 被点名元素给完整 JSON，引用骨架列出箭头端点")
+    void testCompactMentionedAndRefs() throws IOException {
+        StringBuilder sb = new StringBuilder("{\"elements\":[");
+        for (int i = 1; i <= 31; i++) {
+            sb.append("{\"id\":\"n").append(i)
+                    .append("\",\"type\":\"rectangle\",\"x\":").append(i * 200)
+                    .append(",\"y\":0,\"width\":160,\"height\":60,\"label\":{\"text\":\"")
+                    .append(i == 7 ? "订单服务" : "节点" + i)
+                    .append("\"}},");
+        }
+        sb.append("{\"id\":\"e1\",\"type\":\"arrow\",\"start\":{\"id\":\"n1\"},"
+                + "\"end\":{\"id\":\"n2\"},\"label\":{\"text\":\"调用\"}}]}");
+
+        String prompt = promptService.buildPrompt("把「订单服务」改名", sb.toString());
+
+        assertTrue(prompt.contains("你可能要改的元素"),
+                "点名元素应有完整定义段");
+        assertTrue(prompt.contains("\"id\":\"n7\""),
+                "被点名的 n7 应给完整 JSON");
+        assertTrue(prompt.contains("引用骨架"),
+                "应给出引用骨架");
+        assertTrue(prompt.contains("e1: n1 -> n2"),
+                "引用骨架应列出箭头端点");
+    }
+
+    /**
+     * 造一个含 {@code count} 个矩形的大场景（v2-42 测试用）。
+     *
+     * @param count 元素个数
+     * @return 场景 JSON
+     */
+    private String bigScene(int count) {
+        StringBuilder sb = new StringBuilder("{\"elements\":[");
+        for (int i = 1; i <= count; i++) {
+            if (i > 1) {
+                sb.append(',');
+            }
+            sb.append("{\"id\":\"n").append(i)
+                    .append("\",\"type\":\"rectangle\",\"x\":").append(i * 200)
+                    .append(",\"y\":0,\"width\":160,\"height\":60,\"label\":{\"text\":\"节点")
+                    .append(i).append("\"}}");
+        }
+        sb.append("]}");
+        return sb.toString();
     }
 }

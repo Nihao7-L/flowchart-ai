@@ -314,10 +314,9 @@ class GraphValidatorTest {
     }
 
     @Test
-    @DisplayName("D3: 自环箭头（start.id == end.id）必须报错")
+    @DisplayName("md v5.8.0 约束3：自环箭头（start.id == end.id）应判非法")
     void selfLoopArrowFails() {
-        // 2026-09-16 实测：LLM 删图后为消除悬挂引用把箭头全改绑成 end→end。
-        // 零长度自环无意义且会渲染成一段看不到的线段。
+        // 2026-09-24 口径反转（以 system-prompt.md 为准）：v2-41 曾放开自环，现收回。
         String json = """
                 {
                   "elements": [
@@ -331,8 +330,7 @@ class GraphValidatorTest {
         List<ValidationIssue> issues =
                 validator.validate(json);
         assertTrue(issues.stream().anyMatch(
-                i -> i.field().equals("elements[1]")
-                        && i.reason().contains("自环箭头")),
+                        i -> i.reason().contains("自环")),
                 "自环箭头应报错，实际: " + issues);
     }
 
@@ -454,5 +452,152 @@ class GraphValidatorTest {
         assertTrue(validator.validate(bad).stream().anyMatch(
                 i -> i.field().endsWith("verticalAlign")),
                 "非法 verticalAlign 应报错");
+    }
+
+    // ===== v2-41: 放开 P0 / P1 原生能力限制 =====
+
+    @Test
+    @DisplayName("v10.0.0：arrow 允许 start/end 绑定与 points 折线并存（会转弯的箭头）")
+    void arrowWithBindingAndPointsPasses() {
+        String json = """
+                {
+                  "elements": [
+                    {"id": "n1", "type": "rectangle", "x": 0, "y": 0, "width": 100, "height": 60},
+                    {"id": "n2", "type": "rectangle", "x": 300, "y": 0, "width": 100, "height": 60},
+                    {"id": "a1", "type": "arrow", "start": {"id": "n1"}, "end": {"id": "n2"},
+                     "points": [[0, 0], [150, 80], [300, 0]]}
+                  ]
+                }
+                """;
+        // v5.9.0 起这条被判"只能二选一"，代价是「会转弯的箭头」整个能力消失，
+        // 而它本是 Excalidraw 原生形态（编辑器拖中点加拐点就是这个数据结构），
+        // 前端 sceneAdapter.withArrowGeometry 对 hasXY && hasPoints 也原样透传。
+        // v10.0.0 放开：绑两端保证跟随，points 提供折线顶点。
+        List<ValidationIssue> issues = validator.validate(json);
+        assertTrue(issues.isEmpty(),
+                "绑定 + 折线应放行，实际 issues: " + issues);
+    }
+
+    @Test
+    @DisplayName("v10.0.0：绑定箭头带非法点仍被打回（放开并存不等于放开点形状）")
+    void arrowWithBindingAndMalformedPointsFails() {
+        String json = """
+                {
+                  "elements": [
+                    {"id": "n1", "type": "rectangle", "x": 0, "y": 0, "width": 100, "height": 60},
+                    {"id": "n2", "type": "rectangle", "x": 300, "y": 0, "width": 100, "height": 60},
+                    {"id": "a1", "type": "arrow", "start": {"id": "n1"}, "end": {"id": "n2"},
+                     "points": [[0, 0], ["150", 80]]}
+                  ]
+                }
+                """;
+        assertTrue(validator.validate(json).stream().anyMatch(
+                        i -> i.field().contains("points[1]")),
+                "非法点必须照常打回（否则折线坐标会变 NaN、图形被画到画布外）");
+    }
+
+    @Test
+    @DisplayName("md v5.8.0 约束3：arrow 不能绑到 frame（画框不能当端点）")
+    void arrowBindingToFrameFails() {
+        String json = """
+                {
+                  "elements": [
+                    {"id": "f1", "type": "frame", "x": 0, "y": 0, "width": 400, "height": 300, "name": "订单域"},
+                    {"id": "n1", "type": "rectangle", "x": 20, "y": 20, "width": 100, "height": 60},
+                    {"id": "a1", "type": "arrow", "start": {"id": "f1"}, "end": {"id": "n1"}}
+                  ]
+                }
+                """;
+        assertTrue(validator.validate(json).stream().anyMatch(
+                        i -> i.reason().contains("不能绑定到frame")),
+                "箭头绑 frame 应报错，issues: " + validator.validate(json));
+    }
+
+    @Test
+    @DisplayName("md v5.8.0 约束7：line 不能用 start/end 绑定（只作装饰分隔线）")
+    void lineBindingFails() {
+        String json = """
+                {
+                  "elements": [
+                    {"id": "n1", "type": "rectangle", "x": 0, "y": 0, "width": 100, "height": 60},
+                    {"id": "n2", "type": "rectangle", "x": 300, "y": 0, "width": 100, "height": 60},
+                    {"id": "l1", "type": "line", "x": 0, "y": 0, "start": {"id": "n1"}, "end": {"id": "n2"}}
+                  ]
+                }
+                """;
+        assertTrue(validator.validate(json).stream().anyMatch(
+                        i -> i.reason().contains("不能用 start/end 绑定")),
+                "绑定式 line 应报错，issues: " + validator.validate(json));
+    }
+
+    @Test
+    @DisplayName("md v5.8.0 约束7：line 无 points 应报错")
+    void lineWithoutGeometryFails() {
+        String json = """
+                {
+                  "elements": [
+                    {"id": "l1", "type": "line", "x": 0, "y": 0}
+                  ]
+                }
+                """;
+        List<ValidationIssue> issues = validator.validate(json);
+        assertTrue(issues.stream().anyMatch(
+                i -> i.reason().contains("line 必须有 points 路径")),
+                "无几何的 line 应报错，实际: " + issues);
+    }
+
+    @Test
+    @DisplayName("md v5.8.0 约束6：group 只能贴在矩形/椭圆/菱形上（text/arrow/line 判非法）")
+    void groupOnNonShapeFails() {
+        String json = """
+                {
+                  "elements": [
+                    {"id": "n1", "type": "rectangle", "x": 0, "y": 0, "width": 100, "height": 60},
+                    {"id": "n2", "type": "rectangle", "x": 300, "y": 0, "width": 100, "height": 60},
+                    {"id": "t1", "type": "text", "x": 0, "y": 0, "text": "说明", "group": "订单域"},
+                    {"id": "a1", "type": "arrow", "start": {"id": "n1"}, "end": {"id": "n2"}, "group": "订单域"},
+                    {"id": "l1", "type": "line", "x": 0, "y": 0, "points": [[0,0],[10,0]], "group": "支付域"}
+                  ]
+                }
+                """;
+        List<ValidationIssue> issues = validator.validate(json);
+        long cnt = issues.stream()
+                .filter(i -> i.reason().contains("group 只能贴在矩形"))
+                .count();
+        assertTrue(cnt == 3,
+                "text / arrow / line 上的 group 都应报错（共 3 条），实际: " + issues);
+    }
+
+    @Test
+    @DisplayName("v2-41 P1#7: fillStyle 新增 dots / dashed / diagonal 应通过")
+    void fillStyleExtensionsPass() {
+        for (String fs : new String[]{"dots", "dashed", "diagonal"}) {
+            String json = """
+                    {
+                      "elements": [
+                        {"id": "n1", "type": "rectangle", "x": 0, "y": 0,
+                         "width": 100, "height": 60, "fillStyle": "%s"}
+                      ]
+                    }
+                    """.formatted(fs);
+            assertTrue(validator.validate(json).isEmpty(),
+                    "fillStyle=" + fs + " 应通过，issues: "
+                            + validator.validate(json));
+        }
+    }
+
+    @Test
+    @DisplayName("v2-41 P1#6: group 数组最多 5 层应通过")
+    void groupArrayUpToFivePasses() {
+        String json = """
+                {
+                  "elements": [
+                    {"id": "n1", "type": "rectangle", "x": 0, "y": 0, "width": 100, "height": 60,
+                     "group": ["L1", "L2", "L3", "L4", "L5"]}
+                  ]
+                }
+                """;
+        assertTrue(validator.validate(json).isEmpty(),
+                "5 层 group 应通过，issues: " + validator.validate(json));
     }
 }

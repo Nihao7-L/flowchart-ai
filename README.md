@@ -1,6 +1,6 @@
-# ChartFlow - AI 图表生成器
+# ChartFlow - AI 白板（Whiteboard）
 
-> 用自然语言描述业务或想法，AI 在 **Excalidraw 双通道白板** 上生成并持续编辑 **流程图 / 思维导图 / 架构图**。
+> 用自然语言描述业务或想法，AI 在 **Excalidraw 双通道白板** 上生成并持续编辑**任意白板内容**——流程图 / 思维导图 / 架构图 / 线框图 / 标注笔记 / 图文混排等，凡是 Excalidraw 能画能写的形式都支持。
 
 > ⚠️ **Status（2026-09-18）**：**S1a + S1b 已收尾** —— S1「看得见」主干全通（`POST /api/chat`（SSE）→ 后端产出元素场景 IR（含坐标）→ 前端画布出图；用户已端到端实测 25 / 41 / 47 元素的复杂图均一次通过）；**S1b 排版（v2-39）已完成并归档**（复杂图先分模块再落几何，`frame` 当模块容器，真实电池两项缺陷归零）；**S1a 契约容量（v2-40）P0 + P1 已交付**，下一步 P2 关系语义。工程底座（M0）已闭合；执行序与阶段定义见 `workbuddyFlow/plans/masterPlan/roadmap.md`，索引与工具链见 `workbuddyFlow/AGENTS.md`。
 > 早期链路（`POST /api/generate` → PlantUML/SVG、`POST /api/download`、`static/` 旧 UI）已于 2026-09-14 **全部删除**且不会恢复（ADR-4：后端不出图）。
@@ -8,15 +8,15 @@
 
 ## ✨ 特性（目标）
 
-- 🤖 **聊天驱动出图**：用自然语言对话逐步生成、修改图表，而非一次性文本转图
+- 🤖 **聊天驱动生成**：用自然语言对话逐步生成、修改白板内容，而非一次性文本转图
 - 🎨 **Excalidraw 双通道白板**：手绘画布 + AI 聊天命令改同一份图；人类拖拽与 AI 编辑互不覆盖
 - 🧠 **后端持有图状态（IR）**：图的语义与坐标唯一真相源在后端 session（Redis 优先），前端只持渲染镜像
 - 🔁 **全量 / 增量双协议**：S1 走全量 `result`（元素场景，含坐标）；增量 `ops` 归 S3 / v2-25
 - 📖 **API 文档**：集成 springdoc-openapi，启动即获交互式 Swagger 文档
 - 🐳 **容器化部署**：多阶段 Dockerfile + docker-compose
-- 📐 **确定性布局**：坐标由后端布局算法算出，不交给 LLM（ELK 分层竖排，v2-36 / v2-38）
-- 🧩 **排版（结构规划）**：LLM 标注模块分组 → 后端算模块树 → 组内布局 + 组间网格打包，`frame` 当模块容器使用（v2-39）
-- ✅ **测试覆盖**：**153** 个 JUnit 5 单元测试 + 6 个浏览器 E2E 回归 + 16 个适配层冒烟用例
+- 📐 **LLM 原生布局**：坐标由 LLM 直接给出、后端不做整体重排（v2-41 起；实测后端重排会把图收成窄条）。`graph/SceneLayout` / `ElkLayoutEngine` 保留为可选能力，当前不在运行时流水线
+- 🧩 **画框认领**：LLM 标注模块分组 → 后端 `ScenePlanner.claimFramesOnly` 把 `frame` 认领给同名模块并填 `frame.children`，**不改动几何**
+- ✅ **测试覆盖**：**184** 个 JUnit 5 单元测试 + 6 个浏览器 E2E 回归 + 17 个适配层冒烟用例
 
 ## 技术栈
 
@@ -40,7 +40,7 @@ agent       ── 从 session 取当前 model（IR）；组装 prompt + 模型 
    ↓          LLM 推理（复杂任务走 ReAct + Diagram Tools 自研 MCP 改后端 model）
 graph       ── 校验（field/reason/hint），不通过带 issues 再调（≤3 轮）
    ↓          落库 session
-graph       ── bind（箭头吸附）→ dedup（去重）→ plan（结构规划/排版，v2-39）→ 校验（field/reason/hint）→ 布局（ELK，v2-38）
+graph       ── bind（箭头吸附）→ dedup（去重）→ claimFramesOnly（画框认领，v2-41）→ 校验（field/reason/hint）
    ↓          不通过带 issues 再调（≤3 轮；校验 0 issue 立即下发）
 前端        ── 收到 result（全量元素场景）→ convert 适配 → updateScene 重绘（用户手绘保留）
 人类拖拽    ── onChange（防抖）→ 画布现状同步 PUT /api/model/canvas（与 AI 改图汇到同一份 model）
@@ -156,11 +156,11 @@ stop
 
 ### 思维导图（mindmap）
 
-输入：`AI 流程图生成器的核心模块`
+输入：`AI 白板生成器的核心模块`
 
 ```plantuml
 @startmindmap
-* AI 流程图生成器
+* AI 白板生成器
 ** 前端
 *** 类型切换
 *** 下载
@@ -200,9 +200,9 @@ API Key 通过环境变量传入（docker-compose 已配置读取宿主机 `LLM_
 ## 测试
 
 ```bash
-mvn test                                                                   # 后端单测（153 个）
+mvn test                                                                   # 后端单测（184 个）
 cd frontend && npx tsc -b && npx eslint . --ext ts,tsx && npx vite build    # 前端三绿
-node frontend/tools/scene-smoke.mjs                                        # IR → 画布适配层冒烟（16 用例）
+node frontend/tools/scene-smoke.mjs                                        # IR → 画布适配层冒烟（17 用例）
 bash .playwright/run-e2e.sh                                                # 浏览器 E2E 回归（6 个，需 5173 dev server）
 ```
 
@@ -216,20 +216,22 @@ bash .playwright/run-e2e.sh                                                # 浏
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
-| `GraphValidatorTest` | 20 | 字段级校验：必填 / 类型 / 枚举 / 引用完整性 / label / points |
-| `ScenePlannerTest` | 17 | 排版（v2-39）：模块树（LLM 分组 / 聚类兜底 / 有 frame 时不兜底）、两级布局、frame 当容器、**零回归"逐字节一致"** |
-| `GenerationServiceTest` | 16 | 生成→校验→修正循环、通过即发、编辑语境、几何保真接线 |
+| `GraphValidatorTest` | 29 | 字段级校验：必填 / 类型 / 枚举 / 引用完整性 / label / points / 箭头自环 |
+| `ScenePlannerTest` | 18 | 排版（v2-39）：模块树（LLM 分组 / 聚类兜底 / 有 frame 时不兜底）、两级布局、frame 当容器、**零回归"逐字节一致"** |
+| `GenerationServiceTest` | 17 | 生成→校验→修正循环、通过即发、编辑语境、几何保真接线、**system + user 双消息组装（v2-41）** |
+| `OpenAiCompatibleProviderTest` | 14 | LLM HTTP：请求拼装（含多消息 `system` / `user` 角色与顺序）、响应解析、错误码、超时 |
 | `SceneDriftTest` | 14 | 编辑模式几何保真：整图重排要报，整体平移与定向修改不报 |
 | `SceneLayoutTest` | 14 | 自研分层布局（`legacy` 引擎，v2-36）：零重叠、边够长、标签装得下、同输入同输出、新建 / 编辑两种模式 |
+| `RelationCompileTest` | 11 | 关系语义编译（v2-40 P2）：`relation` → 线型 / 端点形状 |
+| `PromptServiceTest` | 14 | 静态层读 `system-prompt.md`（唯一来源）+ 注入契约、编辑模式、v2-42 大图结构摘要（阈值边界 / 骨架全量 / 点名全文 / 引用骨架）、分组/画框约束、relation 单一来源守卫 |
 | `InMemorySessionStoreTest` | 11 | 会话模型 / 坐标回写 / 删除 / 手绘旁路 / 解绑 |
 | `SceneBinderTest` | 10 | 两点箭头吸附升级为绑定式 |
-| `OpenAiCompatibleProviderTest` | 10 | LLM HTTP：请求拼装、响应解析、错误码、超时 |
-| `PromptServiceTest` | 10 | 契约内嵌 prompt、编辑模式、禁用 freedraw、模块分组段 |
 | `SceneDeduperTest` | 9 | 与用户手绘重复的线、LLM 自画的重复线去重 |
 | `LayoutSpecTest` | 8 | 引擎无关规格层（v2-38）：节点尺寸（须与渲染端撑大公式一致）、层间距、长宽比判据 |
 | `ElkLayoutEngineTest` | 7 | ELK 竖排引擎（v2-38）：只守契约不守具体坐标、冻结既有元素、坐标回写 |
 | `DiagramControllerTest` | 7 | `/api/health` + `/api/chat` + `PUT /api/model/canvas` 契约 + 旧端点下线防回归 |
-| **合计** | **153** | |
+| `BackendPipelineNativeGeometryTest` | 1 | 原生坐标改造后，后端流水线端到端的几何结果 |
+| **合计** | **184** | |
 
 提交前跑完整门禁（与云端 CI 同一套三步）：`workbuddyFlow\run-verify.ps1`。
 

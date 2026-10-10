@@ -1,5 +1,10 @@
 import { convertToExcalidrawElements } from '@excalidraw/excalidraw';
-import type { SceneElement, UnboundArrowBrief, UserElementBrief } from '../types';
+import type {
+  SceneElement,
+  SceneElementType,
+  UnboundArrowBrief,
+  UserElementBrief,
+} from '../types';
 
 /**
  * 「AI 生成元素」的标记位，写在 Excalidraw 元素的 `customData` 上。
@@ -61,10 +66,10 @@ const SKELETON_KEYS = [
   'type', 'id', 'x', 'y', 'width', 'height', 'angle',
   'label', 'strokeColor', 'backgroundColor', 'fillStyle',
   'strokeWidth', 'strokeStyle', 'roughness', 'roundness',
-  'link', 'opacity',
-  'points', 'start', 'end', 'startArrowhead', 'endArrowhead',
+  'link', 'opacity', 'fileId', 'url',
+  'points', 'start', 'end', 'startArrowhead', 'endArrowhead', 'closed',
   'text', 'fontSize', 'fontFamily', 'textAlign', 'verticalAlign',
-  'autoResize', 'name', 'children',
+  'autoResize', 'name', 'children', 'containerId',
 ] as const;
 
 /**
@@ -125,6 +130,13 @@ const normalize = (
 ): Record<string, unknown> => {
   const out: Record<string, unknown> = { ...skeleton };
 
+  // magicframe 在 Excalidraw 0.18 是独立类型，但 convertToExcalidrawElements 的
+  // skeleton 路径不认它（实测整批 fatal）。契约里 magicframe「语义同 frame」，
+  // 这里降级成 frame 处理（children 由后续 frame 分支兜底），让它至少能渲染成框。
+  if (out.type === 'magicframe') {
+    out.type = 'frame';
+  }
+
   // 数值兜底：NaN / Infinity / undefined / 非数字字符串都归一成 0。
   // 只处理 x/y —— 它们是 getCommonBounds 的输入，也是 NaN 的唯一来源。
   for (const key of ['x', 'y']) {
@@ -135,6 +147,11 @@ const normalize = (
   }
 
   if (out.type === 'frame') {
+    // 2026-10-10：剥离 frame.name —— 分区底板本不该带 Excalidraw 默认的小灰字
+    // 标题：模型给分区框起了 name（agent-loop / hooks / extensions）又额外写了
+    // text 分区标题，两者叠加重叠。目标图里分区标题由独立 text 承担，这里统一
+    // 剥离 name，让 frame 退化为纯底板。
+    delete out.name;
     // 成员表由**后端**算出（v2-40 P1，见上方"补丁一"）：
     //   1. 不是数组就补空数组 —— 转换器对 frame 强制 `children.forEach`，
     //      undefined 会让整批转换抛错、画布全空；
@@ -149,6 +166,68 @@ const normalize = (
 
   if (out.type === 'arrow') {
     return withArrowGeometry(out, byId);
+  }
+
+  // line 闭合填充（#1，2026-09-28）：Excalidraw 0.18.1 的 line 元素**没有**
+  // `closed` 布尔字段 —— 它靠 `isPathALoop(points)`（首点 ≈ 末点）判定是否
+  // 闭合并填充（dist/.../chunk 渲染分支 9549-9553：只有成环才填 backgroundColor）。
+  // 骨架里的 `closed:true` 被 `convertToExcalidrawElements` 直接丢弃（实测产物
+  // 无该字段、points 未闭合），所以这里显式把首点补到末尾形成闭环；
+  // backgroundColor / fillStyle 已由 SKELETON_KEYS 透传。这样"用线画填充
+  // 多边形 / 等轴测伪 3D"才真能填色。已闭合（首末点重合）则不重复追加。
+  if (out.type === 'line' && out.closed === true) {
+    const pts = Array.isArray(out.points)
+      ? (out.points as number[][]).slice()
+      : [];
+    if (pts.length >= 2) {
+      const [fx, fy] = pts[0];
+      const [lx, ly] = pts[pts.length - 1];
+      if (fx !== lx || fy !== ly) {
+        pts.push([fx, fy]);
+        out.points = pts;
+      }
+    }
+    // `closed` 字段对渲染无意义（转换器不认），但保留无害，且能明示意图。
+  }
+
+  // freedraw：Excalidraw 要求 pressures（0~1 的笔压）与 points 等长，
+  // 契约里没这个字段（LLM 也编不出来），这里按中压 0.5 合成，避免转换器抛错。
+  if (out.type === 'freedraw') {
+    const pts = Array.isArray(out.points) ? (out.points as number[][]) : [];
+    const pressures = out.pressures as number[] | undefined;
+    if (!Array.isArray(pressures) || pressures.length !== pts.length) {
+      out.pressures = pts.map(() => 0.5);
+    }
+  }
+
+  // embeddable：契约用 `url` 表达嵌入地址，Excalidraw 的 embeddable 元素认 `link`，
+  // 这里做一次字段名对齐（缺 link 时回退 url）。
+  if (out.type === 'embeddable' && !out.link && out.url) {
+    out.link = out.url;
+  }
+
+  // A1d（2026-09-26 实测发现）：`containerId` 只能指向**能装文字的容器**。
+  //
+  // 契约 `text.containerId` 的原话是"把本文字挂进某**图形**内当内文字
+  // （与 shape.label 二选一）"—— 也就是 rectangle / ellipse / diamond；
+  // 另外 Excalidraw 自身支持"箭头文字"（containerId 指向 arrow / line）。
+  // 指向 **frame** 是**非法**用法：画框的标题另有来源（`frame.name`），
+  // 框 ↔ 内容的唯一数据通道是 `frame.children`（反填 `frameId`）。
+  //
+  // 后果不是报错，而是**静默不可见** —— 2026-09-26 实测（f30_scale）：
+  // 12 个 `containerId` 指向 frame 的子文字，元素在场景里、x/y/w/h 全部正常、
+  // `isDeleted=false`，但 3x 截图里一个像素都没画出来（对照实验：仅把这 12 个
+  // 的 `containerId` 摘掉、其余一字不改，文字立刻出现在框内正确位置）。
+  // 用户看到的还是"AI 生成了但画布是空的/内容缺了一块"。
+  //
+  // 处理：摘掉非法 containerId，让文字降级成独立文字元素（坐标本来就是对的）。
+  // 这治的是"渲染不丢内容"；真正的修法在后端 —— 框内文字应由 `frame.children`
+  // 表达归属，而不是给文字填 frame 的 id 当 containerId。
+  if (out.type === 'text' && typeof out.containerId === 'string') {
+    const container = byId.get(out.containerId);
+    if (!container || !TEXT_CONTAINER_TYPES.has(String(container.type))) {
+      delete out.containerId;
+    }
   }
 
   return out;
@@ -207,6 +286,55 @@ const edgePointTowards = (
 };
 
 /**
+ * Excalidraw 允许作为箭头绑定端点的类型。
+ *
+ * 取值不是拍脑袋，而是照着转换器里那段 `bindLinearElementToElement` 的
+ * switch 逐个抄的（0.18.x，`src/data/transform.ts`）：
+ * <ul>
+ *   <li>`rectangle` / `ellipse` / `diamond` —— switch 里显式列出的三个
+ *       `case`；</li>
+ *   <li>`text` —— 它不在 switch 里，但有独立的
+ *       `if (startType === 'text')` 分支，同样能绑。</li>
+ * </ul>
+ * 其余一切类型（`frame` / `embeddable` / `image` / `freedraw` / `line` /
+ * `arrow` / `magicframe`）统统落进 `default: assertNever(..., true)` 分支，
+ * **不构造任何端点元素** —— 于是 `bindLinearElement(linearElement, undefined,
+ * 'start', ...)` 下一行就是 `hoveredElement.id`：
+ * `TypeError: Cannot read properties of undefined (reading 'id')`，整批失败。
+ *
+ * 对照契约 `scene.schema.json`：`shape` 的 `type` 枚举正好就是
+ * rectangle / ellipse / diamond；`text` 是带 `text` 字段的独立定义。
+ */
+const BINDABLE_TYPES = new Set<string>([
+  'rectangle',
+  'ellipse',
+  'diamond',
+  'text',
+]);
+
+/** 一个元素能不能当箭头的绑定端点（不存在 ⇒ 不能） */
+const isBindableTarget = (
+  el: Record<string, unknown> | undefined,
+): boolean => !!el && BINDABLE_TYPES.has(String(el.type));
+
+/**
+ * 能"装文字"的容器类型（= 契约 `text.containerId` 的合法目标）。
+ *
+ * 三个图形来自契约原文（"挂进某图形内当内文字，与 shape.label 二选一"）；
+ * `arrow` / `line` 是 Excalidraw 的"箭头文字"（线段中点上的标签）。
+ * **frame / magicframe 不在其中**：画框标题是 `frame.name`，框内归属走
+ * `frame.children`；给 frame 填 containerId 的文字在 Excalidraw 里
+ * 一个像素都画不出来（见 normalize 里的 A1d 说明）。
+ */
+const TEXT_CONTAINER_TYPES = new Set<string>([
+  'rectangle',
+  'ellipse',
+  'diamond',
+  'arrow',
+  'line',
+]);
+
+/**
  * 绑定式箭头的几何推导。
  *
  * LLM 输出形如 `{id:"a1", type:"arrow", start:{id:"n1"}, end:{id:"n2"}}` ——
@@ -234,17 +362,22 @@ const withArrowGeometry = (
     return skeleton;
   }
 
-  // A1b（2026-09-21）：被绑定的元素如果「不存在」（类型未知被过滤掉、
-  // 或 LLM 编了个不存在的 id），必须摘掉这条绑定、改成自由箭头 —— 否则
-  // Excalidraw 转换器解析绑定时会去读不存在元素的属性，抛
-  // `TypeError: Cannot read properties of undefined (reading 'id')`。
-  // 摘掉后由两个真实端点（或原点兜底）算出合法几何，箭头照样能画出来。
-  const clean: Record<string, unknown> = { ...skeleton };
-  if (startId && !byId.has(startId)) delete clean.start;
-  if (endId && !byId.has(endId)) delete clean.end;
+  const startEl = startId ? byId.get(startId) : undefined;
+  const endEl = endId ? byId.get(endId) : undefined;
 
-  const startEl = startId && byId.has(startId) ? byId.get(startId) : undefined;
-  const endEl = endId && byId.has(endId) ? byId.get(endId) : undefined;
+  // A1b（2026-09-21）+ A1c（2026-09-26）：绑不上就摘掉，别把整批拖下水。
+  //
+  // A1b 只挡住了「绑定目标**不存在**」这一种；A1c 补上第二种 ——
+  // 目标**存在但类型不可绑**（embeddable 嵌网页、frame 画框都是实测踩到的）。
+  // 这类绑定在转换器眼里是"合法引用"，不会被引擎自己解绑，于是走到
+  // `bindLinearElement(..., undefined, ...)` 直接抛 TypeError。
+  //
+  // 摘掉后该端变自由端：只要另一头还站着，几何照旧按真实元素算（下面的
+  // startEl / endEl 逻辑），箭头照样画到该去的地方；两头都不可绑时，
+  // 按两个真实元素的中心连一条自由箭头，而不是丢个残桩在原点。
+  const clean: Record<string, unknown> = { ...skeleton };
+  if (startId && !isBindableTarget(startEl)) delete clean.start;
+  if (endId && !isBindableTarget(endEl)) delete clean.end;
 
   const hasXY = Number.isFinite(Number(skeleton.x)) && Number.isFinite(Number(skeleton.y));
   const hasPoints = Array.isArray(skeleton.points) && skeleton.points.length >= 2;
@@ -299,6 +432,50 @@ const tagModel = (els: ConvertedElement[]): ConvertedElement[] =>
  * 缺尺寸时按 `points` 的包围盒推算（这正是 Excalidraw 对线类元素的定义），
  * 再不行补 0。x / y 也一并兜底，保证「坐标 + 尺寸」四项全为有限数字。
  */
+/**
+ * Excalidraw 元素基类字段的兜底默认值（每次调用新建，避免数组被多个元素共享）。
+ *
+ * 背景（2026-09-23 实测）：`convertToExcalidrawElements` 对 **freedraw / embeddable**
+ * 只做**部分初始化** —— 转换产物缺 `angle` / `groupIds` / `frameId` / `seed` /
+ * `version`（version 实测是 NaN）等基类字段；其余类型（rectangle / image ...）是完整元素。
+ * 后果有两层：① `getCommonBounds` 的旋转数学读 `angle` 得 undefined → NaN → 视口损坏；
+ * ② `api.updateScene` 会**静默丢弃**这些不完整元素（实测 convLen=1 → sceneLen=0，画布空白）。
+ */
+const baseElementDefaults = (): Record<string, unknown> => ({
+  angle: 0,
+  strokeColor: '#1e1e1e',
+  backgroundColor: 'transparent',
+  fillStyle: 'solid',
+  strokeWidth: 2,
+  strokeStyle: 'solid',
+  roughness: 1,
+  opacity: 100,
+  groupIds: [],
+  frameId: null,
+  roundness: null,
+  seed: 1,
+  version: 1,
+  versionNonce: 0,
+  isDeleted: false,
+  boundElements: null,
+  link: null,
+  locked: false,
+});
+
+/** 给元素补齐基类字段（只补缺的 / 非有限的，不覆盖已有值），让白板新类型真正能渲染 */
+const completeBaseElements = (els: ConvertedElement[]): ConvertedElement[] =>
+  els.map((el) => {
+    const out = { ...el } as Record<string, unknown>;
+    const defaults = baseElementDefaults();
+    for (const key of Object.keys(defaults)) {
+      const value = out[key];
+      if (value === undefined || (typeof value === 'number' && !Number.isFinite(value))) {
+        out[key] = defaults[key];
+      }
+    }
+    return out as ConvertedElement;
+  });
+
 const ensureFiniteSize = (els: ConvertedElement[]): ConvertedElement[] =>
   els.map((el) => {
     // points 只存在于线类元素上，在联合类型上直接访问不到，按需断言
@@ -317,15 +494,36 @@ const ensureFiniteSize = (els: ConvertedElement[]): ConvertedElement[] =>
     const spanY = span(ys);
     const linear = points.length >= 2 && (spanX > 0 || spanY > 0);
 
-    const width = linear ? spanX : Number(el.width);
-    const height = linear ? spanY : Number(el.height);
     const x = Number(el.x);
     const y = Number(el.y);
+    // angle 兜底：freedraw / embeddable 经转换器后**没有** angle 字段（其余类型有），
+    // 而 getCommonBounds / getElementAbsoluteCoords 的旋转数学读 angle 得
+    // undefined → NaN → 视口损坏。缺则补 0（2026-09-23 实测：补后 bounds 恢复正常）。
+    const rawAngle = Number((el as unknown as { angle?: unknown }).angle);
+    const angle = Number.isFinite(rawAngle) ? rawAngle : 0;
+
+    if (linear) {
+      // 线类 / 手绘：尺寸必须由 points 包围盒决定（转换器不保证给 width/height，
+      // freedraw 转换后 width/height 是 undefined；line 给的是默认 100 而非真实跨度）。
+      // 用 points 自带的宽高重算，永远比沿用转换器默认值可靠。
+      return {
+        ...el,
+        x: Number.isFinite(x) ? x : 0,
+        y: Number.isFinite(y) ? y : 0,
+        width: spanX,
+        height: spanY,
+        angle,
+      } as ConvertedElement;
+    }
+
+    const w = Number(el.width);
+    const h = Number(el.height);
     if (
-      Number.isFinite(width) &&
-      Number.isFinite(height) &&
+      Number.isFinite(w) &&
+      Number.isFinite(h) &&
       Number.isFinite(x) &&
-      Number.isFinite(y)
+      Number.isFinite(y) &&
+      Number.isFinite(rawAngle)
     ) {
       return el;
     }
@@ -334,8 +532,9 @@ const ensureFiniteSize = (els: ConvertedElement[]): ConvertedElement[] =>
       ...el,
       x: Number.isFinite(x) ? x : 0,
       y: Number.isFinite(y) ? y : 0,
-      width: Number.isFinite(width) ? width : 0,
-      height: Number.isFinite(height) ? height : 0,
+      width: Number.isFinite(w) ? w : 0,
+      height: Number.isFinite(h) ? h : 0,
+      angle,
     } as ConvertedElement;
   });
 
@@ -566,13 +765,14 @@ const expectedArrowEndpoints = (
   return { from, to };
 };
 
-const arrowEndpoints = (
+  const arrowEndpoints = (
   el: ConvertedElement,
 ): { start: { x: number; y: number }; end: { x: number; y: number } } => {
   const x = Number((el as unknown as { x?: unknown }).x);
   const y = Number((el as unknown as { y?: unknown }).y);
   const pts = (el as unknown as { points?: readonly (readonly number[])[] }).points;
-  const p1 = Array.isArray(pts) && pts.length >= 2 ? pts[1] : [0, 0];
+  // 取**末点**作为终点（2 点直连时末点 === pts[1]，语义一致且对多点折线正确）。
+  const p1 = Array.isArray(pts) && pts.length >= 2 ? pts[pts.length - 1] : [0, 0];
   const sx = Number.isFinite(x) ? x : 0;
   const sy = Number.isFinite(y) ? y : 0;
   return {
@@ -593,6 +793,14 @@ export const healCorruptedArrows = (
   const healedIds = new Set<string>();
   const healed = elements.map((el) => {
     if (el.type !== 'arrow') return el;
+    // 2026-10-10：显式折线（≥3 点）是**作者刻意的绕行路由**（如回流箭头从框顶
+    // 绕回上游，故意偏离「两端中心连线」），其几何本身就是事实，绝不能被边界
+    // 不变量误判为「污染」拉直。只有 2 点直连（几何由两端图形决定）才参与自愈。
+    // 实测：回流箭头 4 点折线 vs 期望边缘交点的偏差可达 ~577px > 容差，旧逻辑会
+    // 把它压成穿过框身的直线，与目标图不符。
+    const rawPts = (el as unknown as { points?: readonly (readonly number[])[] })
+      .points;
+    if (Array.isArray(rawPts) && rawPts.length >= 3) return el;
     // 只修「两端都绑定」的箭头：它的几何完全由两端图形决定；
     // 自由端 / 单端绑定的几何是它自己的事实，不该被我们的反推覆盖。
     const sb = (el.startBinding as { elementId?: unknown } | null | undefined)
@@ -728,6 +936,110 @@ const detachCrossFrameArrows = (els: ConvertedElement[]): ConvertedElement[] => 
   });
 };
 
+/**
+ * 补丁五：补全 `text.containerId` 的**双向绑定**（2026-10-10 修的真缺陷）。
+ *
+ * 症状（三图复刻验收 v2 实测）：agent_arch 37 个元素全部通过 convertScene
+ * （0 dropped / 0 fatal / 0 NaN），截图里 17 个容器内文字**一个都没画**，
+ * 而同样文字改用 shape.label 时（v1）正常显示；容器 boundElements 全为 null。
+ *
+ * 根因是一条「三方都不认账」的静默链：
+ *   1. 契约说 text.containerId = 「挂进某图形当内文字」，模型照填；
+ *   2. normalize 只校验 containerId 指向的容器**合法**，合法就放行 ——
+ *      但渲染层找 bound text 只认**容器的 boundElements**
+ *      （getBoundTextElement 读 boundElements，从不反查 containerId）；
+ *   3. Excalidraw 转换器第二遍只处理 `label.text`（bindTextToContainer
+ *      会回填 boundElements 并调 redrawTextBoundingBox 居中），**没有
+ *      「独立 text 骨架自带 containerId」的分支**。
+ * 结果：文字带着合法 containerId 躺在场景里（x/y/w/h 全对、isDeleted=false），
+ * 渲染时既不算独立文字（isTextElement && containerId 会被过滤跳过），
+ * 也算不成 bound 文字 —— 一个像素都画不出来，无报错、无 dropped。
+ *
+ * 修法（照抄 bindTextToContainer 对 label 做的两步，改在转换产物上补）：
+ *   1. 把 {type:'text', id} 回填进容器 boundElements（幂等，已有则跳过）；
+ *   2. 重新居中：形状用包围盒中心，arrow/line 用折线长度中点（贴线不落空），
+ *      等价 redrawTextBoundingBox 的 CENTER/MIDDLE 效果，并补齐两个对齐缺省；
+ *   3. 容器不在本批（三级降级逐元素转换时）→ 摘掉 containerId 降级成独立
+ *      文字（坐标本来就在容器位置），宁可位置略偏也不许静默消失（与 A1d 同纪律）。
+ */
+
+/** bindContainerTexts 内部用的可变视图（ConvertedElement 是只读联合，直接改会打架） */
+type BoundTextMut = {
+  id: string;
+  type: string;
+  containerId?: unknown;
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  textAlign?: string;
+  verticalAlign?: string;
+  boundElements?: Array<{ type: string; id: string }> | null;
+  points?: readonly (readonly number[])[];
+};
+
+/** 折线长度中点（绝对坐标）。总长为 0 / points 缺失时返回 null 走兜底 */
+const linearMidpoint = (
+  el: Pick<BoundTextMut, 'x' | 'y' | 'points'>,
+): { x: number; y: number } | null => {
+  const pts = Array.isArray(el.points) ? el.points : [];
+  if (pts.length < 2) return null;
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  }
+  if (!(total > 0)) return { x: el.x + pts[0][0], y: el.y + pts[0][1] };
+  let remain = total / 2;
+  for (let i = 1; i < pts.length; i++) {
+    const len = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    if (len > 0 && remain <= len) {
+      const t = remain / len;
+      return {
+        x: el.x + pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
+        y: el.y + pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+      };
+    }
+    remain -= len;
+  }
+  return null;
+};
+
+const bindContainerTexts = (els: ConvertedElement[]): ConvertedElement[] => {
+  const byId = new Map<string, BoundTextMut>();
+  for (const e of els) {
+    byId.set(e.id, e as unknown as BoundTextMut);
+  }
+  for (const e of els) {
+    const text = e as unknown as BoundTextMut;
+    if (text.type !== 'text' || typeof text.containerId !== 'string') continue;
+    const container = byId.get(text.containerId);
+    if (!container) {
+      delete text.containerId;
+      continue;
+    }
+    const bound = Array.isArray(container.boundElements) ? container.boundElements : [];
+    if (!bound.some((b) => b.type === 'text' && b.id === text.id)) {
+      container.boundElements = [...bound, { type: 'text', id: text.id }];
+    }
+    if (text.textAlign == null) text.textAlign = 'center';
+    if (text.verticalAlign == null) text.verticalAlign = 'middle';
+    const w = Number(text.width);
+    const h = Number(text.height);
+    const center =
+      container.type === 'arrow' || container.type === 'line'
+        ? linearMidpoint(container)
+        : {
+            x: Number(container.x) + Number(container.width) / 2,
+            y: Number(container.y) + Number(container.height) / 2,
+          };
+    if (center && Number.isFinite(w) && Number.isFinite(h)) {
+      text.x = center.x - w / 2;
+      text.y = center.y - h / 2;
+    }
+  }
+  return els;
+};
+
 /** 统一出口：打标记 + 尺寸兜底，保证任何路径产出的元素都能安全取景 */
 const finishConversion = (
   els: ConvertedElement[],
@@ -736,7 +1048,11 @@ const finishConversion = (
   fatal?: string,
 ): SceneConversion => ({
   elements: tagModel(
-    ensureFiniteSize(restoreFrameGeometry(detachCrossFrameArrows(els), byId)),
+    ensureFiniteSize(
+      completeBaseElements(
+        restoreFrameGeometry(detachCrossFrameArrows(bindContainerTexts(els)), byId),
+      ),
+    ),
   ),
   dropped,
   fatal,
@@ -745,11 +1061,8 @@ const finishConversion = (
 /**
  * 把后端 IR 转成 Excalidraw 元素，**任何一个元素坏掉都不许拖垮整批**。
  *
- * 策略（fail loud, degrade gracefully）：
- * 1. 先整批转换（箭头 start/end 绑定需要同批元素在场才能解析）；
- * 2. 整批失败 → 逐元素试转，隔离出"毒元素"并记录 id；
- * 3. 幸存者再整批转换一次（保住箭头绑定）；
- * 4. 仍失败 → 返回空场景 + fatal 摘要，由调用方向用户显式报错。
+ * 策略（fail loud, degrade gracefully）：见 {@link convertWithIsolation} ——
+ * 三级降级，且第三级保证"只要还有一个元素转得出来就绝不返回空场景"。
  *
  * 之所以需要 2/3 步：LLM 输出是**无界**的，schema 只约束了我们想到的字段，
  * Excalidraw 转换器还有我们控制不了的隐含前提（children / text 就是两例）。
@@ -773,8 +1086,19 @@ const KNOWN_EXCALIDRAW_TYPES = new Set<SceneElementType>([
   'line',
   'text',
   'frame',
+  'freedraw',
+  'image',
+  'embeddable',
+  'magicframe',
 ]);
 
+/** 一条箭头 skeleton 是否"带着绑不上的绑定"（= 毒元素头号嫌疑） */
+const isSuspiciousBinding = (skeleton: Record<string, unknown>): boolean =>
+  skeleton.type === 'arrow' && (!!skeleton.start || !!skeleton.end);
+
+/**
+ * 三级降级兜底（A1c，2026-09-26）。详见 {@link convertScene} 上方的说明。
+ */
 export const convertScene = (elements: SceneElement[]): SceneConversion => {
   const dropped: string[] = [];
 
@@ -785,15 +1109,11 @@ export const convertScene = (elements: SceneElement[]): SceneConversion => {
       dropped.push(el.id ?? `#${index}`);
       return false;
     }
-    // freedraw（手绘路径）在 AI 生成场景里没有正当用途：它是「人类手绘」的表达形式，
-    // 让 LLM 编一条手绘轨迹毫无意义。而它在 Excalidraw 里的取景边界算不出来 ——
-    // 2026-09-16 实测：points 合法、x/y/w/h 齐全，`getCommonBounds` 依然返回
-    // [NaN, NaN, NaN, NaN]，照样毁掉视口让整张图看不见。
-    // 用户手绘不经过本函数（它们在画布场景里，只回写坐标），所以跳过它不影响手绘。
-    if (el.type === 'freedraw') {
-      dropped.push(el.id ?? `#${index}`);
-      return false;
-    }
+    // freedraw（手绘路径）现在是白板的一等能力：用户说「画几笔」「圈一下」时
+    // LLM 可以输出 freedraw。它在 Excalidraw 里的取景边界由 points 推算，
+    // 本文件的 ensureFiniteSize 已按 points 包围盒兜底 width/height/x/y，
+    // 不会出现 2026-09-16 那种 [NaN,NaN,NaN,NaN] 毁视口的问题。
+    // （用户手绘不经过本函数、只回写坐标，这里只管 AI 生成的 freedraw。）
     // A1b（2026-09-21）：契约外的未知类型（如时序图原语 lifeline）会让
     // Excalidraw 转换器在解析箭头绑定时崩溃。转换前先隔离，而非等到批量
     // 转换抛错连累整批元素都画不出来。
@@ -819,32 +1139,101 @@ export const convertScene = (elements: SceneElement[]): SceneConversion => {
     return { elements: [], dropped };
   }
 
-  try {
-    return finishConversion(runConverter(skeletons), dropped, byId);
-  } catch {
-    // 整批失败：逐元素定位毒元素
-    const survivors: Record<string, unknown>[] = [];
-    skeletons.forEach((skeleton, index) => {
-      try {
-        runConverter([skeleton]);
-        survivors.push(skeleton);
-      } catch {
-        dropped.push(String(skeleton.id ?? `#${index}`));
-      }
-    });
+  return convertWithIsolation(skeletons, byId, dropped);
+};
 
-    if (survivors.length === 0) {
-      return {
-        elements: [],
-        dropped,
-        fatal: '所有元素都无法转换为画布元素',
-      };
-    }
-
+/**
+ * A1c（2026-09-26）：**把"整批失败"变成"最多丢一条"**。
+ *
+ * 背景：2026-09-26 的 32 组实测里，f21/f30 拿回的仍是空画布，尽管
+ * `convertScene` 本来写了"整批失败就逐元素重试"。实测把这条路径钉死了 ——
+ *
+ * <pre>
+ *   整批 runConverter           → THROW bindLinearElement (reading 'id')
+ *   逐元素 runConverter([x])    → 全过（毒箭头单独转时绑定会被 A1b 摘掉，转得出来）
+ *   幸存者整批 runConverter     → 又 THROW（幸存者＝全集，等于第一次）
+ *   ⇒ 兜底逻辑一个毒元素都没抓到，dropped 为空、elements 为空
+ * </pre>
+ *
+ * 也就是说「逐元素试转」这一步**根本测不出毒元素**（毒元素的毒只在同批里
+ * 才发作）。所以这里换成三级降级，且保证第三级**永不返回空数组**：
+ * <ol>
+ *   <li>整批转换 —— 绑定式箭头需要同批元素在场才能解析；</li>
+ *   <li>抛了就按"最像毒药"的优先序剔除嫌疑元素后重试（每次剔除都记进
+ *       {@code dropped}，不静默）；</li>
+ *   <li>仍不行就逐元素转换后拼接。**哪怕只救回一个元素也绝不放空**。
+ *       逐元素转换保不住箭头绑定（绑定目标不在单元素批次里），但它是最后
+ *       一道防线，宁可画一条自由箭头，也不能让画布全白。</li>
+ * </ol>
+ */
+const convertWithIsolation = (
+  skeletons: Record<string, unknown>[],
+  byId: Map<string, Record<string, unknown>>,
+  dropped: string[],
+): SceneConversion => {
+  const attempt = (
+    list: Record<string, unknown>[],
+  ): { ok: boolean; result: SceneConversion } => {
     try {
-      return finishConversion(runConverter(survivors), dropped, byId);
+      return {
+        ok: true,
+        result: finishConversion(runConverter(list), dropped, byId),
+      };
     } catch (e) {
-      return { elements: [], dropped, fatal: errText(e) };
+      return { ok: false, result: { elements: [], dropped, fatal: errText(e) } };
     }
+  };
+
+  const whole = attempt(skeletons);
+  if (whole.ok && whole.result.elements.length > 0) {
+    return whole.result;
+  }
+
+  // 第二级：逐个剔除嫌疑元素后重试。循环体每次都 splice 掉一个，长度单调
+  // 递减，必然终止；没有可剔除的嫌疑时跳出，交给第三级逐元素兜底。
+  const remaining = [...skeletons];
+  while (remaining.length > 0) {
+    const victimIndex = remaining.findIndex(isSuspiciousBinding);
+    if (victimIndex < 0) break;
+    const [victim] = remaining.splice(victimIndex, 1);
+    if (victim.id !== undefined) {
+      dropped.push(String(victim.id));
+    }
+    const retry = attempt(remaining);
+    if (retry.ok && retry.result.elements.length > 0) {
+      return retry.result;
+    }
+  }
+
+  // 第三级：逐元素转换 + 拼接。这是"绝不返回空数组"的最后保证。
+  const salvaged: ConvertedElement[] = [];
+  for (const skeleton of remaining) {
+    try {
+      salvaged.push(...runConverter([skeleton]));
+    } catch {
+      if (skeleton.id !== undefined) {
+        dropped.push(String(skeleton.id));
+      }
+    }
+  }
+
+  if (salvaged.length === 0) {
+    return {
+      elements: [],
+      dropped,
+      fatal: '所有元素都无法转换为画布元素',
+    };
+  }
+
+  try {
+    return finishConversion(salvaged, dropped, byId);
+  } catch (e) {
+    // 收尾阶段（几何恢复 / 字段补齐）理论上不会抛；真抛了也别把已救回的
+    // 元素丢掉 —— 宁可少几个基类字段，也不能让画布变空。
+    return {
+      elements: tagModel(completeBaseElements(salvaged)),
+      dropped,
+      fatal: errText(e),
+    };
   }
 };

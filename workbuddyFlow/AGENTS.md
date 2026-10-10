@@ -1,20 +1,28 @@
 # AGENTS.md — ChartFlow 项目地图
 
 > 只做索引，不做百科全书：先读这里，再按下面的表去读对应文档。
-> 最后更新：2026-09-18（S1 收尾后刷新：补 `tools/` 工具链索引、补 `docs/diagram-grammar.md` 与 `docs/复杂提示词测试集.md`、四拍加入工具链、状态机补归档判据）。
+> 最后更新：2026-10-10（M10 上下文工程收尾归档：版本号治理 v2-43 完成、账本对齐、现状快照刷新）。
 
 ## 项目一句话
 
-ChartFlow：Spring Boot + 大模型（LLM）的 AI 图表生成器（流程图/思维导图/架构图），支持「人类手绘 + AI 聊天」双通道协作编辑。
+ChartFlow：Spring Boot + 大模型（LLM）的 **AI 白板（Whiteboard）**，支持「人类手绘 + AI 聊天」双通道协作编辑；白板可承载图表 / 图形图案 / 标注笔记 / 图文混排等任意 Excalidraw 能画能写的形式，不限于图表。
 
-## 现状快照（2026-09-18 收尾后）
+## 现状快照（2026-10-10 核对）
 
 | 项 | 值 |
 |---|---|
 | 分支 / 远端 | `reframing` → `github.com/Nihao7-L/flowchart-ai`（public） |
-| 门禁 | 后端 **153 测试** + 0 checkstyle 违规 · 前端 tsc/eslint/vite 三绿 · 冒烟 **16/16** · 离线 E2E **6/6** |
-| 活跃项 | `state/active/v2-40-contract-capacity.md`（S1a 契约容量：P0+P1 已交付，P2~P4 待做） |
-| 执行序 | S1a（契约容量 / M9）→ S1b（排版，M8：v2-38 引擎、v2-39 结构规划，均已归档）→ S2+ 见 `plans/masterPlan/roadmap.md` |
+| 门禁（2026-10-10 实跑） | 后端 **266 测试 / 0 失败**（`mvn -o test`）· **checkstyle 0 违规** · 前端 `tsc --noEmit` 退出码 0（10-10 当日口径）· 冒烟 `scene-smoke.mjs` **22/22** |
+| 提示词唯一来源 | **`src/main/resources/prompts/whiteboard/system-prompt.md`（v10.2.0 / 7462 B）**（运行时 `PromptService.buildSystemBlock()` 直读 + 注入契约）。⚠️ **改完必跑 `scene-smoke.mjs`**（契约字段↔前端白名单双向守卫） |
+| 提示词版本号 | ✅ **不再硬编码**：`PromptService.promptVersion()` 从 md 治理头现读。`GenerationService.PROMPT_VERSION` 那个常量已退役——它在 09-28~10-10 期间 md 连改十余版而它一直停在 v8.0.1，**不报错不告警只是安静地记错**，会喂假基线给 M14 回归。**CHANGELOG 同期漏记 v9/v10 整段，已补齐**；`PromptServiceContractTest` 3 条守卫锁死（改 md 忘了改账本 → 测试红） |
+| 刁难电池（2026-09-24 实测） | 20 组 → 后端校验器 **13 PASS / 7 FAIL**；7 FAIL 全是模型照做的违规、**7/7 被拦**；修复「强迫违规返回空场景」后复测 3/3 转合法非空 |
+| 端到端电池（2026-10-10 实测） | 白话 9 例 **9/9 PASS** · 难度 12 例 **12/12 PASS**（均经修正轮修好） |
+| 活跃项 | **空**（`state/active/` 只剩 README）—— M10 已完成归档至 `state/completed/masterPlan/m10-system-prompt.md` |
+| 执行序 | S1（M1+M6a）、S1a（M9）、S1b（M8）均已归档 → **S2 上下文工程（M10）已完成** → 下一站见 `plans/masterPlan/roadmap.md` |
+
+> ⚠️ **别信状态文件**：`state/active/` 与 `plans/masterPlan/*.md` 靠人手动搬移，
+> 连续干活时不更新 —— M10 就曾"看着卡在进行中"，实际早已跑远 16 天。
+> 判断真实进度请交叉核 **md 头 + CHANGELOG + Java 常量 + `mvn` 末行**。
 
 ## 索引（每份只回答一类问题，按需读一份，不要全读）
 
@@ -25,7 +33,7 @@ ChartFlow：Spring Boot + 大模型（LLM）的 AI 图表生成器（流程图/�
 | 工程约束（含日志规范）：红线与后果 | `docs/constraint.md` |
 | 架构设计：组成、连接、决策、风险 | `docs/architecture.md` |
 | 自反馈机制：怎么知道做得好并修正 | `docs/workflow.md` |
-| 图型能力：哪些图能画、缺哪些原语、渲染器实际支持什么 | `docs/diagram-grammar.md` |
+| 白板能力：哪些元素 / 原语能画能写、渲染器实际支持什么 | `docs/whiteboard-grammar.md` |
 | 复杂提示词测试集（9 条，512~2570 字，电池题源） | `docs/复杂提示词测试集.md` |
 | 前端 / IR / SSE 机制的纵深长文（梳理性质，非索引类） | `docs/FlowAI架构与交互机制.md` |
 | 模块总计划（按核心模块拆分，v2-N 出处） | `plans/masterPlan/` |
@@ -45,6 +53,8 @@ ChartFlow：Spring Boot + 大模型（LLM）的 AI 图表生成器（流程图/�
 | ② 离线 E2E（打桩 `/api/chat`，只验前端逻辑） | `bash .playwright/run-e2e.sh [用例名]` | 5173 dev server | 秒级 / 条 |
 | ③ 真实 LLM E2E（不打桩） | `python tools/e2e/e2e_real_llm_layout.py` | 8080 后端 + 5173 | 34~40 秒 / 轮 |
 | ④ 复杂提示词电池（压力 / 探索，不做 PASS/FAIL） | `bash .playwright/run-battery.sh [--list\|--pick N\|--all\|--seed S]` | 8080 + 5173 | 98~283 秒 / 题 |
+| ⑤ 刁难电池（**直连 LLM、不经后端**，20 组：5 类强迫违规 + 6 张超大复杂图） | `D:\Python-Home\python.exe .workbuddy\ab\adv_battery.py` | 只读 `.env`（无需起服务） | 12~105 秒 / 题 |
+| ⑤′ 把 ⑤ 的真实输出喂给**真实 `GraphValidator`**（考验后端护栏拦不拦得住） | `mvn -o test -Dtest=AdvValidatorCheck` | 先跑 ⑤ 生成 `raw_adv/` | 秒级 |
 
 探针（零 LLM 调用、秒级，用来"不改代码先问事实"）：
 
@@ -89,6 +99,7 @@ ChartFlow：Spring Boot + 大模型（LLM）的 AI 图表生成器（流程图/�
 - 沙箱注入了 `SERVER__PORT=61150`（已被宿主占用）→ 起后端前必须 `unset SERVER__PORT SERVER_PORT`；**不改项目配置**。
 - 前端构建必须带 `--emptyOutDir false`（否则沙箱的 safe-delete 会拦掉清空 `dist/` 的动作）。
 - `.playwright/`（约 817MB）是 E2E 工具链，**是工具不是垃圾，勿删**。
+- **`scene.schema.json` 的完整性不能只靠后端测试守**：后端把它当**纯文本**嵌进 prompt（`PromptService.loadSchema()`），而 `GraphValidator` 是**手写**校验器、**不解析**它 ⇒ 文件被改成坏 JSON 时 `mvn test` **照样全绿**。唯一会 `JSON.parse` 它的是前端冒烟 `frontend/tools/scene-smoke.mjs`（同时负责「契约字段 ↔ 前端白名单」双向差集守卫）。**改完契约务必跑一次冒烟**。2026-09-24 实测：`arrow` 定义里删 `oneOf` 时**连带删掉了该对象的收尾大括号** → 冒烟崩在第 16 例；而那段坏 JSON 此间一直被当契约喂给 LLM。
 
 ## 提交与分支约定
 

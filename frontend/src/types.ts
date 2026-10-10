@@ -54,7 +54,10 @@ export type SceneElementType =
   | 'line'
   | 'text'
   | 'frame'
-  | 'freedraw';
+  | 'freedraw'
+  | 'image'
+  | 'embeddable'
+  | 'magicframe';
 
 /**
  * 后端场景 IR 的元素。
@@ -78,7 +81,14 @@ export interface SceneElement {
   label?: SceneLabel;
   strokeColor?: string;
   backgroundColor?: string;
-  fillStyle?: 'hachure' | 'cross-hatch' | 'solid' | 'zigzag';
+  fillStyle?: 'hachure' | 'cross-hatch' | 'solid' | 'zigzag' | 'dots' | 'dashed' | 'diagonal';
+  /**
+   * 闭合线 = 多边形（line 专用，Excalidraw 的 closed line）。
+   * true 时首尾点自动相连，线围出的区域可被 {@link backgroundColor} / {@link fillStyle}
+   * 填充 —— 即"用线画任意填充形状 / 插画 / 等轴测伪 3D"的能力。
+   * 配套字段 {@link points} 至少 3 个才有面积。
+   */
+  closed?: boolean;
   strokeWidth?: number;
   strokeStyle?: 'solid' | 'dashed' | 'dotted';
   roughness?: number;
@@ -114,8 +124,8 @@ export interface SceneElement {
    * 模块归属（语义层字段，v2-39 / v2-40 P1）
    *
    * <p>自由文本或数组（从内到外，对齐渲染层的 {@code groupIds} 顺序），
-   * 如 {@code ["下单", "订单域"]}。LLM 在图形数 > 12 时填，后端
-   * {@code ScenePlanner} 拿它做模块划分；≤ 12 的图不填。
+   * 如 {@code ["下单", "订单域"]}。LLM 在图形数 > 15 时填，后端
+   * {@code ScenePlanner} 拿它做模块划分；≤ 15 的图不填。
    *
    * <p>⚠️ 刻意**不进** {@code SKELETON_KEYS} 白名单：它是后端排版用的
    * 语义标注，渲染层（Excalidraw）没有对应字段，搬过去只会被忽略或抛错。
@@ -130,6 +140,12 @@ export interface SceneElement {
    * 不存在元素 / 指向自己的 id（见 {@code sceneAdapter.normalize}）。
    */
   children?: string[];
+  /** 图片元素：后端上传接口返回的文件引用（前向兼容，LLM 不产出） */
+  fileId?: string;
+  /** 嵌入网页元素的地址（前向兼容，LLM 不产出） */
+  url?: string;
+  /** text 挂进某图形内部当内文字（Excalidraw containerId；与 label 二选一，优先 label） */
+  containerId?: string;
 }
 
 /**

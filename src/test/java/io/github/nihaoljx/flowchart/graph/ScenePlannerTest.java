@@ -235,13 +235,13 @@ class ScenePlannerTest {
     @DisplayName("兜底·拓扑：无 group 但分成两块互不相连 → 按连通分量分区")
     void infersModulesFromTopology() throws Exception {
         List<String> elements = new ArrayList<>();
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 8; i++) {
             elements.add(rect("a" + i, "节点" + i, null));
             if (i > 0) {
                 elements.add(arrow("ea" + i, "a" + (i - 1), "a" + i));
             }
         }
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 8; i++) {
             elements.add(rect("b" + i, "节点" + i, null));
             if (i > 0) {
                 elements.add(arrow("eb" + i, "b" + (i - 1), "b" + i));
@@ -313,7 +313,7 @@ class ScenePlannerTest {
                 elements.add(arrow("ea" + i, "a" + (i - 1), "a" + i));
             }
         }
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 8; i++) {
             elements.add(rect("b" + i, "节点" + i, null));
             if (i > 0) {
                 elements.add(arrow("eb" + i, "b" + (i - 1), "b" + i));
@@ -357,22 +357,22 @@ class ScenePlannerTest {
     @DisplayName("嵌套模块（数组 group）：子模块各自成块、互不重叠")
     void nestedModulesAreSupported() throws Exception {
         List<String> elements = new ArrayList<>();
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 6; i++) {
             elements.add(rect("oa" + i, "下单" + i,
                     "[\"下单\",\"订单域\"]"));
         }
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 6; i++) {
             elements.add(rect("ob" + i, "查询" + i,
                     "[\"查询\",\"订单域\"]"));
         }
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 6; i++) {
             elements.add(rect("u" + i, "用户" + i, quote("用户域")));
         }
         String laid = planner.arrange(
                 sceneOf(elements.toArray(new String[0])),
                 engine, Set.of());
         JsonNode elements2 = mapper.readTree(laid).get("elements");
-        assertEquals(15, elements2.size());
+        assertEquals(18, elements2.size());
 
         double[] order = idPrefixBounds(laid, "oa");
         double[] query = idPrefixBounds(laid, "ob");
@@ -384,7 +384,7 @@ class ScenePlannerTest {
 
     // ==================== 场景构造 ====================
 
-    /** 三个模块 × 5 个图形 + 模块内箭头（15 个图形 > 阈值 12） */
+    /** 三个模块 × 5 个图形 + 模块内箭头（15 个图形 > 阈值 15） */
     private static String modularScene() {
         return sceneOf(modularElements().toArray(new String[0]));
     }
@@ -557,5 +557,49 @@ class ScenePlannerTest {
             }
         }
         return null;
+    }
+
+    // ==================== v2-41 原生坐标模式 ====================
+
+    @Test
+    @DisplayName("v2-41 原生坐标：claimFramesOnly 填 frame.children，但不动任何几何")
+    void claimFramesOnlyFillsChildrenKeepsGeometry()
+            throws Exception {
+        // LLM 原生坐标：一个 frame 把两个同 group 图形包在里面
+        String json = sceneOf(
+                frame("f-order", "订单域"),
+                rect("o1", "创建订单", quote("订单域")),
+                rect("o2", "支付订单", quote("订单域")),
+                arrow("e1", "o1", "o2"));
+
+        String out = planner.claimFramesOnly(json);
+
+        // 1) frame.children 被后端认领填上成员（拖动画框能带上内容）
+        JsonNode frame = findFrame(out, "订单域");
+        assertNotNull(frame, "应存在「订单域」框");
+        JsonNode children = frame.get("children");
+        assertNotNull(children, "frame 必须填上 children");
+        assertEquals(2, children.size(),
+                "children 应含两个同模块图形");
+
+        // 2) 几何原样保留（不重排）：frame 与图形的 x/y/width/height 与输入一致
+        JsonNode in = mapper.readTree(json);
+        for (JsonNode el : mapper.readTree(out).get("elements")) {
+            String id = el.path("id").asText();
+            JsonNode src = null;
+            for (JsonNode s : in.get("elements")) {
+                if (id.equals(s.path("id").asText())) {
+                    src = s;
+                }
+            }
+            assertNotNull(src, "输出不应多出元素: " + id);
+            for (String f : new String[]{"x", "y", "width", "height"}) {
+                if (src.has(f)) {
+                    assertEquals(src.get(f).asDouble(),
+                            el.get(f).asDouble(), 0.001,
+                            "原生坐标模式不应改写 " + id + "." + f);
+                }
+            }
+        }
     }
 }

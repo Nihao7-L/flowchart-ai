@@ -3,7 +3,7 @@
 > 状态：规划中
 > 关联架构：`agent/` 包（ADR-4：允许调 `tools` / `llm` / `graph` / `rag`）；不碰 `GraphValidator` 判定逻辑本身、`scene.schema.json` 字段语义
 > 所属阶段：**S4 循环工程**（与 M6b② 同阶段交付；执行序见 `roadmap.md` 第二节）
-> 覆盖任务：v2-43 ~ v2-44
+> 覆盖任务：v2-55 ~ v2-56
 > 方向来源：用户 2026-09-20 要求主轴「上下文工程 → 循环工程(ReAct) → 提示词工程」，参考 javaguide《loop-engineering》《workflow-graph-loop》《agent-basis》。
 > **决策落地（2026-09-20 用户拍板）**：
 > - **G1 = 真 ReAct**：本模块落地"LLM 持工具、Thought→Action(`tool_calls`)→Observation 循环"的真 Agent 范式（**不是**上轮草稿里的"状态化 Graph Loop"）。理由：用户选择让 LLM 保有工具调度权、循环本体按 Agent 范式实现。
@@ -38,12 +38,12 @@
 - （M11 提示词内容可并行；本模块不依赖其落地才能跑，但 few-shot / 路由成熟后循环稳定性更好）
 
 ## 步骤
-1. **v2-43 真 ReAct 循环骨架 + ReadabilityGate（连美观一起查）**：
+1. **v2-55 真 ReAct 循环骨架 + ReadabilityGate（连美观一起查）**：
    - **循环骨架**：`agent/` 跑 Thought→Action(`tool_calls`)→Observation；LLM 提议（生成 / 检索 / 读 / 校验 / 修正），`service/` 编排执行（调 `tools` / `llm` / `graph`，检索经 `rag` M2），Observation 回喂 LLM 再决策。替换今天 `GenerationService` 的隐式 for 循环。
    - `ReadabilityGate`：**G4 已拍板连美观一起查**——退出条件 = `GraphValidator` 0 issue **且** 硬指标（NaN=0、图形重叠=0、非空图）**且** 美观指标（标签压叠=0、文字互叠 ≤ 阈值，复用 M8/M9 口径）全过。任一不过 → 把对应 issue（含美观项）折进下一轮 Observation，继续循环（治八段⑦「校验只查契约」：循环现在门可读性 + 美观，不只是契约）。
    - `LoopState`：持有 `{round, sceneIR(working), lastIssues, history[]}`；方法 `append(observation)` / `replace(scene)` / `checkpoint()`（序列化到磁盘，供 M5 分层持久化 / M7）。替换今天 `round` 计数器与隐式状态。
    - **不破坏"生成期确定性"**：工具只改 model，不引入外部非确定副作用；每次 Observation 回喂都要可重放（挂钩 M10 每轮回放）。
-2. **v2-44 无进展检测 + issue 明细外露 + checkpoint**：
+2. **v2-56 无进展检测 + issue 明细外露 + checkpoint**：
    - `NoProgressDetector`：连续 2 轮 issue 数不降，或 dedup 哈希与上一轮相同（产出未变）→ 提前 break，emit partial + tech-debt 备注 + 暴露原因。治「白烧 3 轮修不动」的隐性成本。
    - issue 明细外露（修发现 5）：`validation` SSE 事件与日志带 issue 明细（字段 / 位置 / 类型，**含美观项**），不再只报数量。
    - `checkpoint`：每轮 `LoopState.checkpoint()` 落盘 → 支持中断/恢复（刷新后续跑从 checkpoint 接上，不从头）；checkpoint 格式即 M5 分层持久化（Redis 热层 + PostgreSQL 冷层）与 M7 Trace 的输入契约。
@@ -71,5 +71,5 @@
 移入 `state/completed/masterPlan/`；`state/activeLog/<YYYY-MM-DD>.md` 追加一行带证据。
 
 ## 状态跟踪
-- [ ] v2-43 真 ReAct 循环骨架（Thought→Action→Observation，LLM 持工具）+ `LoopState` + `ReadabilityGate`（**G4 连美观一起查**）
-- [ ] v2-44 无进展检测 + issue 明细外露（含美观）+ checkpoint（中断 / 恢复，挂钩 M5 分层持久化）
+- [ ] v2-55 真 ReAct 循环骨架（Thought→Action→Observation，LLM 持工具）+ `LoopState` + `ReadabilityGate`（**G4 连美观一起查**）
+- [ ] v2-56 无进展检测 + issue 明细外露（含美观）+ checkpoint（中断 / 恢复，挂钩 M5 分层持久化）

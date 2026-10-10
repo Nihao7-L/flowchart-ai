@@ -2,7 +2,7 @@
 
 > 模块状态：**进行中**（子计划 v2-40：**P0 + P1 已交付**，P2~P4 待做）
 > 建立：2026-09-18（用户拍板「新开 m9」，不并入已归档的 M1）
-> 依据：`../docs/diagram-grammar.md`（图型语法与元素能力矩阵）· `../docs/constraint.md`（两道闸门红线）
+> 依据：`../docs/whiteboard-grammar.md`（图型语法与元素能力矩阵）· `../docs/constraint.md`（两道闸门红线）
 
 ## 一、这个模块要解决什么
 
@@ -50,7 +50,7 @@
 ## 四、前置
 
 - v2-38（`LayoutEngine` 接口 + ELK 竖排为默认）—— ✅ 已完成
-- `docs/diagram-grammar.md`（图型清单与能力矩阵）—— ✅ 已建立（2026-09-18）
+- `docs/whiteboard-grammar.md`（图型清单与能力矩阵）—— ✅ 已建立（2026-09-18）
 - 实测探针 `workbuddyFlow/tools/e2e/probe_contract_capacity.py`（零 LLM 调用）—— ✅ 已就绪
 
 ## 五、子计划

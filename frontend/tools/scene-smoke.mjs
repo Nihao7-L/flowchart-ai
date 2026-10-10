@@ -290,15 +290,15 @@ const cases = [
     },
   },
   {
-    name: 'freedraw 被安全跳过（取景边界算不出来，会毁掉整张图）',
+    name: 'freedraw 保留并参与取景（白板手绘能力：points 包围盒 + 基类字段补齐）',
     input: [
       { id: 'f1', type: 'freedraw', x: 200, y: 200, points: [[0, 0], [10, 10], [20, 5]] },
       rect({ id: 'keep', x: 0, y: 0 }),
     ],
     check: (r) => (r.fatal ? '不应 fatal: ' + r.fatal : null)
-      || (!r.dropped.includes('f1') ? '应跳过 freedraw' : null)
-      || (r.elements.length < 2 ? '矩形与其标签应保留，实际 ' + r.elements.length : null)
-      || (getCommonBounds(r.elements).some((v) => !Number.isFinite(v)) ? '剩余元素取景边界仍有 NaN' : null),
+      || (r.dropped.includes('f1') ? 'freedraw 不应被跳过（已是白板一等能力）' : null)
+      || (r.elements.length < 2 ? '矩形与其标签、freedraw 都应保留，实际 ' + r.elements.length : null)
+      || (getCommonBounds(r.elements).some((v) => !Number.isFinite(v)) ? '取景边界不应有 NaN' : null),
   },
   {
     name: '空输入（新建对话清空）',
@@ -351,7 +351,7 @@ const cases = [
       const schemaPath = join(FRONTEND, '..', 'src', 'main', 'resources', 'schemas', 'scene.schema.json');
       const schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
       const fields = new Set();
-      for (const branch of ['shape', 'arrow', 'line', 'text', 'frame', 'freedraw']) {
+      for (const branch of ['shape', 'arrow', 'line', 'text', 'frame', 'freedraw', 'image', 'embeddable', 'magicframe']) {
         const props = (schema.definitions[branch] || {}).properties || {};
         for (const k of Object.keys(props)) fields.add(k);
       }
@@ -389,6 +389,179 @@ const cases = [
     check: (r) => (r.fatal ? '不应 fatal（A1b 回归）: ' + r.fatal : null)
       || (!r.dropped.includes('life') ? '未知类型 life 应被记录为 dropped' : null)
       || (r.elements.filter((e) => e.type === 'rectangle').length !== 2 ? '两个矩形应保留，实际 ' + r.elements.filter((e) => e.type === 'rectangle').length : null),
+  },
+  {
+    // A1c 回归（2026-09-26）：32 组实测的高危缺陷 —— 箭头绑到 **embeddable / frame**
+    // 这类「目标存在但类型不可绑」的元素时，转换器走进 bindLinearElement() 时
+    // 拿到的端点元素是 undefined，下一行读 .id 就抛 TypeError，整批转换失败
+    // → 画布全空。
+    // A1b 只挡住了"目标不存在"，挡不住这种。修复后：绑定被摘掉、箭头降级为
+    // 自由箭头照常画出来，embeddable / frame 本身也必须在。
+    name: 'A1c 回归：箭头绑到 embeddable / frame 不得让整批转换失败（画布全空）',
+    input: [
+      { id: 'emb1', type: 'embeddable', x: 0, y: 0, width: 800, height: 500, url: 'https://example.com/features', link: 'https://example.com/features' },
+      { id: 'grp', type: 'frame', x: 870, y: 10, width: 220, height: 140, name: '功能概览', children: [] },
+      { id: 'n1', type: 'rectangle', x: 300, y: 640, width: 120, height: 60, label: { text: '节点' } },
+      { id: 'a1', type: 'arrow', start: { id: 'n1' }, end: { id: 'emb1' }, label: { text: '对应区域' } },
+      { id: 'a2', type: 'arrow', start: { id: 'n1' }, end: { id: 'grp' } },
+    ],
+    check: (r) => (r.fatal ? '不应 fatal（A1c 回归）: ' + r.fatal : null)
+      || (r.elements.length === 0 ? '画布不得为空（这是"生成成功但一片空白"的直接原因）' : null)
+      || (!r.elements.some((e) => e.id === 'emb1') ? 'embeddable 本身必须画得出来' : null)
+      || (!r.elements.some((e) => e.id === 'grp') ? 'frame 本身必须画得出来' : null)
+      || (r.elements.filter((e) => e.type === 'arrow').length !== 2
+        ? '两条箭头都应降级后画出来，实际 '
+          + r.elements.filter((e) => e.type === 'arrow').length : null)
+      || (getCommonBounds(r.elements).some((v) => !Number.isFinite(v))
+        ? '取景边界不应有 NaN' : null),
+  },
+  {
+    // 上面那条的对偶面：修完之后，**合法**绑定必须原样保留 —— 尤其别把
+    // 指向 text 的绑定误伤掉（text 是 Excalidraw 明确支持的绑定端点类型）。
+    name: 'A1c 边界：矩形 / text / 形状之间的合法绑定必须原样保留',
+    input: [
+      { id: 't1', type: 'text', x: 0, y: 0, text: '标题', fontSize: 20 },
+      { id: 'n1', type: 'ellipse', x: 0, y: 80, width: 120, height: 60, label: { text: '开始' } },
+      { id: 'n2', type: 'diamond', x: 240, y: 80, width: 120, height: 90, label: { text: '判断' } },
+      { id: 'a1', type: 'arrow', start: { id: 't1' }, end: { id: 'n1' } },
+      { id: 'a2', type: 'arrow', start: { id: 'n1' }, end: { id: 'n2' } },
+    ],
+    check: (r) => (r.fatal ? '不应 fatal: ' + r.fatal : null)
+      || (r.dropped.length ? '不应丢弃: ' + r.dropped.join(',') : null)
+      || (() => {
+        for (const id of ['a1', 'a2']) {
+          const a = r.elements.find((e) => e.id === id);
+          if (!a) return id + ' 未转换出来';
+          if (!a.startBinding || !a.endBinding) {
+            return id + ' 的合法绑定被误摘掉了';
+          }
+        }
+        return null;
+      })(),
+  },
+  {
+    // A1d 回归（2026-09-26 实测发现）：契约里 text.containerId 的合法目标是
+    // **图形**（rectangle / ellipse / diamond），指向 frame 是非法用法 ——
+    // 框的标题走 frame.name、框内归属走 frame.children。给 frame 填
+    // containerId 的文字在 Excalidraw 里不报错、也不可见（元素在场景里、
+    // 坐标正常，但一个像素都画不出来），观感又是"AI 生成了但内容缺一块"。
+    name: 'A1d 回归：text.containerId 指向 frame（非法目标）应摘掉，文字必须可见',
+    input: [
+      { id: 'grp', type: 'frame', x: 100, y: 50, width: 200, height: 120, name: '用户中心' },
+      { id: 'u1', type: 'text', x: 120, y: 65, text: '用户管理', containerId: 'grp' },
+      { id: 'ghost', type: 'text', x: 120, y: 115, text: '认证授权', containerId: 'nope' },
+      { id: 'n1', type: 'rectangle', x: 400, y: 50, width: 160, height: 80, label: { text: '下单' } },
+      { id: 't2', type: 'text', x: 420, y: 70, text: '内文字', containerId: 'n1' },
+    ],
+    check: (r) => (r.fatal ? '不应 fatal: ' + r.fatal : null)
+      || (() => {
+        // 指向 frame / 不存在元素的两条：containerId 必须被摘掉（否则不可见）
+        for (const id of ['u1', 'ghost']) {
+          const t = r.elements.find((e) => e.id === id);
+          if (!t) return id + ' 未被转换出来（文字会整块消失）';
+          if (t.containerId) {
+            return id + ' 的非法 containerId 未被摘掉（渲染时不可见）: ' + t.containerId;
+          }
+        }
+        // 指向图形的合法内文字：必须原样保留
+        const t2 = r.elements.find((e) => e.id === 't2');
+        if (!t2) return 't2 未转换出来';
+        if (t2.containerId !== 'n1') {
+          return '合法 containerId 被误摘: ' + t2.containerId;
+        }
+        return null;
+      })(),
+  },
+  {
+    // 能力覆盖盲区回归（v2-43，2026-09-26 全量 32 组实测的结论之一）：
+    // 契约 SCHEMA 里 fillStyle 有 **7** 个枚举值（hachure / cross-hatch /
+    // solid / zigzag / dots / dashed / diagonal），但 32 组真跑一遍下来，
+    // 模型一次都没用过非 diagonal 的纹理；同样从没被碰过的还有 angle、
+    // roughness、startArrowhead。也就是说这些能力**从没被验证过能活过适配层**。
+    //
+    // 盲区的成因值得记一笔：frontend/src/types.ts 里 fillStyle 只声明了
+    // 4 个字面量类型，比 Excalidraw 运行时（rough.js 实际宽得多）窄。
+    // TS 类型窄 ≠ 运行时不接受 —— 但"没人跑过"就是真风险，所以这里
+    // 用**契约的全量枚举**做一次覆盖，任何一项被适配层/转换器吞掉都算回归。
+    // ⚠️ 本注释块在模板字符串里，禁止出现反引号。
+    //
+    // 用例故意**不转成 .ts**：scene-smoke.mjs 不经 tsc，才能带上契约里
+    // 那几个类型声明外的取值（它们正是要验的东西）。
+    name: '能力覆盖盲区：7 种 fillStyle + angle + roughness + startArrowhead 全量透传',
+    input: [
+      { id: 'f_hachure', type: 'rectangle', x: 0, y: 0, width: 120, height: 60, fillStyle: 'hachure', label: { text: 'A' } },
+      { id: 'f_cross', type: 'rectangle', x: 160, y: 0, width: 120, height: 60, fillStyle: 'cross-hatch', label: { text: 'B' } },
+      { id: 'f_solid', type: 'rectangle', x: 320, y: 0, width: 120, height: 60, fillStyle: 'solid', label: { text: 'C' } },
+      { id: 'f_zigzag', type: 'rectangle', x: 480, y: 0, width: 120, height: 60, fillStyle: 'zigzag', label: { text: 'D' } },
+      { id: 'f_dots', type: 'rectangle', x: 640, y: 0, width: 120, height: 60, fillStyle: 'dots', label: { text: 'E' } },
+      { id: 'f_dashed', type: 'rectangle', x: 800, y: 0, width: 120, height: 60, fillStyle: 'dashed', label: { text: 'F' } },
+      { id: 'f_diagonal', type: 'rectangle', x: 960, y: 0, width: 120, height: 60, fillStyle: 'diagonal', label: { text: 'G' } },
+      // roughness = 0 是 Excalidraw 的" architects（工整）"档，与默认值 1 不同，
+      // 同样从没被真跑过；angle 同理，且它是 getCommonBounds 旋转数学的输入。
+      { id: 'r0', type: 'rectangle', x: 0, y: 120, width: 120, height: 60, roughness: 0, angle: 0.3, label: { text: 'H' } },
+      { id: 'n_end', type: 'ellipse', x: 300, y: 120, width: 100, height: 60, label: { text: '终点' } },
+      { id: 'a1', type: 'arrow', start: { id: 'f_hachure' }, end: { id: 'n_end' }, startArrowhead: 'dot', roughness: 0.5 },
+    ],
+    check: (r) => {
+      if (r.fatal) return '不应 fatal: ' + r.fatal;
+      if (r.dropped.length) return '不应丢弃: ' + r.dropped.join(',');
+      const got = new Map(r.elements.map((e) => [e.id, e]));
+      const fills = {
+        f_hachure: 'hachure', f_cross: 'cross-hatch', f_solid: 'solid',
+        f_zigzag: 'zigzag', f_dots: 'dots', f_dashed: 'dashed', f_diagonal: 'diagonal',
+      };
+      for (const [id, want] of Object.entries(fills)) {
+        const el = got.get(id);
+        if (!el) return id + ' 未转换出来';
+        if (el.fillStyle !== want) {
+          return id + ' 的 fillStyle 不是 ' + want + '，实际 ' + el.fillStyle;
+        }
+      }
+      const r0 = got.get('r0');
+      if (!r0) return 'r0（angle/roughness 用例）未转换出来';
+      if (r0.angle !== 0.3) return 'angle 被改写成 ' + r0.angle;
+      if (r0.roughness !== 0) return 'roughness 被改写成 ' + r0.roughness;
+      const a1 = got.get('a1');
+      if (!a1) return 'a1 未转换出来';
+      if (a1.startArrowhead !== 'dot') return 'startArrowhead 被吞: ' + a1.startArrowhead;
+      if (a1.roughness !== 0.5) return '箭头 roughness 被吞: ' + a1.roughness;
+      if (getCommonBounds(r.elements).some((v) => !Number.isFinite(v))) {
+        return '取景边界不应有 NaN（angle 参与旋转数学）';
+      }
+      return null;
+    },
+  },
+  {
+    // #1（line 闭合填充套装，2026-09-28）：闭合 line 应被当多边形渲染，
+    // closed / backgroundColor / fillStyle 必须透传到产物，且整批转换不 fatal。
+    // 这是"用线画填充形状 / 伪 3D"能力的回归锁：一旦适配层白名单漏掉 closed、
+    // 或契约 additionalProperties 堵死这些字段，这里立刻红。
+    name: 'line 闭合填充：closed / backgroundColor / fillStyle 必须透传且转换不 fatal',
+    input: [
+      { id: 'poly', type: 'line', x: 100, y: 100, points: [[0, 0], [120, 0], [60, 90]], closed: true, backgroundColor: '#ffd166', fillStyle: 'solid', strokeColor: '#1e1e1e' },
+      rect({ id: 'keep', x: 0, y: 0 }),
+    ],
+    check: (r) => {
+      if (r.fatal) return '不应 fatal: ' + r.fatal;
+      if (r.dropped.includes('poly')) return '闭合 line 不应被丢弃';
+      const el = r.elements.find((e) => e.id === 'poly');
+      if (!el) return '闭合 line 未转换出来';
+      // Excalidraw 0.18.1 靠 points 首末点重合（isPathALoop）判定填充，
+      // 没有 closed 布尔字段 —— 适配层负责把首点补到末尾形成闭环。
+      const pts = Array.isArray(el.points) ? el.points : [];
+      if (pts.length < 4) return '闭合多边形至少 4 个点（含闭合点），实际 ' + pts.length;
+      const first = pts[0];
+      const last = pts[pts.length - 1];
+      if (first[0] !== last[0] || first[1] !== last[1]) {
+        return '首末点未重合（Excalidraw 靠 isPathALoop 判定填充，未闭合则不填）: ' + JSON.stringify(pts);
+      }
+      if (el.backgroundColor !== '#ffd166') return 'backgroundColor 被吞: ' + el.backgroundColor;
+      if (el.fillStyle !== 'solid') return 'fillStyle 被吞: ' + el.fillStyle;
+      if (getCommonBounds(r.elements).some((v) => !Number.isFinite(v))) {
+        return '取景边界不应有 NaN';
+      }
+      return null;
+    },
   },
 ];
 

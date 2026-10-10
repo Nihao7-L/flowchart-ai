@@ -44,6 +44,9 @@ src/main/resources/application.yml
 .env.*
 !.env.example
 
+# Vite 配置的临时编译产物（含本机绝对路径，每次 dev/build 都会新生成）
+frontend/vite.config.ts.timestamp-*.mjs
+
 # WorkBuddy 项目记忆数据（非源码，禁止提交）
 .workbuddy/
 

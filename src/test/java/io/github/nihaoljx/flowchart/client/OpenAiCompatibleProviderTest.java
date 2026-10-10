@@ -1,5 +1,7 @@
 package io.github.nihaoljx.flowchart.client;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -10,6 +12,8 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -30,10 +34,30 @@ class OpenAiCompatibleProviderTest {
 
     private HttpServer server;
 
+    /** 最近一次请求体：用来断言"到底发出去了什么"（v2-41 多消息入口需要） */
+    private final AtomicReference<String> lastRequestBody = new AtomicReference<>();
+
     /** 起一个只回固定状态码 + 固定响应体的桩服务，返回它的完整 URL */
     private String startStub(int statusCode, String responseBody) throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v1/chat/completions", exchange -> {
+            byte[] body = responseBody.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(statusCode, body.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(body);
+            }
+        });
+        server.start();
+        return "http://127.0.0.1:" + server.getAddress().getPort() + "/v1/chat/completions";
+    }
+
+    /** 同上，但额外把请求体存下来，供断言"请求体长什么样" */
+    private String startStubCapturing(int statusCode, String responseBody) throws IOException {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            lastRequestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             byte[] body = responseBody.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(statusCode, body.length);
@@ -88,6 +112,58 @@ class OpenAiCompatibleProviderTest {
 
         String tricky = "他说\"你好\"\n第二行\\反斜杠";
         assertEquals("ok", newProvider(url, "sk-test").chat(tricky));
+    }
+
+    // ==================== 多消息入口（v2-41）====================
+
+    @Test
+    @DisplayName("多消息入口：system 与 user 两个角色都发出、顺序不变")
+    void chatSendsSystemAndUserRolesInOrder() throws Exception {
+        String ok = "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}";
+        String url = startStubCapturing(200, ok);
+
+        String result = newProvider(url, "sk-test").chat(
+                List.of(Message.system("我是规则"), Message.user("用户需求")), 5);
+
+        assertEquals("ok", result);
+        JsonNode sent = new ObjectMapper().readTree(lastRequestBody.get());
+        assertEquals("test-model", sent.get("model").asText());
+        JsonNode messages = sent.get("messages");
+        assertEquals(2, messages.size(), "应发出两条消息");
+        assertEquals("system", messages.get(0).get("role").asText());
+        assertEquals("我是规则", messages.get(0).get("content").asText());
+        assertEquals("user", messages.get(1).get("role").asText());
+        assertEquals("用户需求", messages.get(1).get("content").asText());
+    }
+
+    @Test
+    @DisplayName("旧入口仍等价于单条 user 消息（兼容性）")
+    void legacyChatSendsSingleUserMessage() throws Exception {
+        String url = startStubCapturing(
+                200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+
+        assertEquals("ok", newProvider(url, "sk-test").chat("老调用方"));
+
+        JsonNode sent = new ObjectMapper().readTree(lastRequestBody.get());
+        assertEquals(1, sent.get("messages").size());
+        assertEquals("user", sent.get("messages").get(0).get("role").asText());
+        assertEquals("老调用方", sent.get("messages").get(0).get("content").asText());
+    }
+
+    @Test
+    @DisplayName("多消息入口：空消息列表直接拒绝，不发请求")
+    void chatRejectsEmptyMessages() {
+        assertThrows(IllegalArgumentException.class,
+                () -> newProvider("http://127.0.0.1:1/x", "sk-test")
+                        .chat(List.of(), 5));
+    }
+
+    @Test
+    @DisplayName("Message 拒绝非法 role（预留角色可通过）")
+    void messageValidatesRole() {
+        assertThrows(IllegalArgumentException.class, () -> new Message("robot", "x"));
+        assertEquals("assistant", Message.assistant("x").role());
+        assertEquals("tool", Message.tool("x").role());
     }
 
     // ==================== 异常路径 ====================

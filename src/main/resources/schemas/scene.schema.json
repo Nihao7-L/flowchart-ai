@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "$id": "https://chartflow.local/schemas/scene.schema.json",
-  "title": "Diagram Scene（元素场景 IR）",
-  "description": "后端与前端共用的唯一真相源。场景=有序元素数组；数组顺序即 z 序（谁在后谁在上）。坐标为数据：生成时由布局算法确定性算出，用户拖拽后回写。元素是 Excalidraw skeleton（程序化创建元素的官方简化格式）的精简子集。",
+  "title": "Whiteboard Scene（白板元素场景 IR）",
+  "description": "后端与前端共用的唯一真相源。场景=有序元素数组；数组顺序即 z 序（谁在后谁在上）。坐标为 LLM 给出的元素落点（px）：v2-41 起后端不再整体重排，采用原生坐标（你画在哪就显示在哪儿）；用户拖拽后回写。元素是 Excalidraw skeleton（程序化创建元素的官方简化格式）的精简子集。",
   "type": "object",
   "required": ["elements"],
   "additionalProperties": false,
@@ -10,6 +10,10 @@
     "elements": {
       "type": "array",
       "items": { "$ref": "#/definitions/element" }
+    },
+    "schemaVersion": {
+      "type": "string",
+      "description": "IR 格式版本号（便于向前兼容）。后端生成时默认填 \"2.0\"；旧实例无此字段时按最新契约兼容处理。"
     }
   },
   "definitions": {
@@ -21,7 +25,7 @@
     },
     "point": {
       "type": "array",
-      "description": "相对坐标 [dx,dy]",
+      "description": "相对坐标 [dx,dy]：相对本元素 (x,y) 原点的偏移（Excalidraw skeleton 语义）",
       "items": { "type": "number" },
       "minItems": 2,
       "maxItems": 2
@@ -53,14 +57,14 @@
       "description": "超链接：点击该元素时跳转的 URL（可选）。给视觉元素指回文档 / 需求来源时用。"
     },
     "group": {
-      "description": "所属模块名（自由文本，如「订单域」「支付服务」）。语义层字段：后端据此做结构规划，把同模块的图形排在一起、并算出成员所属的画框。**只有图形较多的复杂图才需要填**（超过 12 个图形时，分成 2~5 个模块、每模块至少 2 个图形；该阈值与后端 `ScenePlanner.MODULE_THRESHOLD` 为同一处定义）；简单图一律不要填 —— 提示词里也写了这条规则，两处口径必须一致。模块下还有子模块时可写成数组，从内到外排列（如 [\"下单\",\"订单域\"]）。",
+      "description": "所属模块名（自由文本，如「订单域」「支付服务」）。语义层字段：后端据此做结构规划，把同模块的图形排在一起、并算出成员所属的画框。**只有图形较多的复杂图才需要填**（超过 15 个图形时，分成 2~5 个模块、每模块至少 2 个图形；该阈值与后端 `ScenePlanner.MODULE_THRESHOLD` 为同一处定义）；简单图一律不要填 —— 提示词里也写了这条规则，两处口径必须一致。模块下还有子模块时可写成数组，从内到外排列（如 [\"下单\",\"订单域\"]）。**只写在图形（rectangle / ellipse / diamond）上**：画框靠自己的 name 认领模块，箭头 / 直线 / 文字上都不写 group（校验器 2026-09-24 起会拒掉，见 GraphValidator.SHAPE_TYPES）。",
       "oneOf": [
         { "type": "string", "minLength": 1 },
         {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
-          "minItems": 1,
-          "maxItems": 3
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1,
+            "maxItems": 5
         }
       ]
     },
@@ -71,7 +75,10 @@
         { "$ref": "#/definitions/line" },
         { "$ref": "#/definitions/text" },
         { "$ref": "#/definitions/frame" },
-        { "$ref": "#/definitions/freedraw" }
+        { "$ref": "#/definitions/freedraw" },
+        { "$ref": "#/definitions/image" },
+        { "$ref": "#/definitions/embeddable" },
+        { "$ref": "#/definitions/magicframe" }
       ]
     },
     "shape": {
@@ -89,7 +96,7 @@
         "label": { "$ref": "#/definitions/label" },
         "strokeColor": { "type": "string" },
         "backgroundColor": { "type": "string" },
-        "fillStyle": { "enum": ["hachure", "cross-hatch", "solid", "zigzag"] },
+        "fillStyle": { "enum": ["hachure", "cross-hatch", "solid", "zigzag", "dots", "dashed", "diagonal"] },
         "strokeStyle": { "enum": ["solid", "dashed", "dotted"] },
         "strokeWidth": { "type": "number", "minimum": 0 },
         "roughness": { "type": "number", "minimum": 0 },
@@ -120,11 +127,7 @@
         "link": { "$ref": "#/definitions/link" },
         "opacity": { "type": "integer", "minimum": 0, "maximum": 100 },
         "relation": { "enum": ["flow", "call", "data", "async", "dependency", "one-to-one", "one-to-many", "many-to-many", "inherit", "block"] }
-      },
-      "oneOf": [
-        { "required": ["start", "end"] },
-        { "required": ["points"] }
-      ]
+      }
     },
     "line": {
       "type": "object",
@@ -136,7 +139,19 @@
         "x": { "type": "number" },
         "y": { "type": "number" },
         "points": { "type": "array", "items": { "$ref": "#/definitions/point" }, "minItems": 2 },
+        "closed": {
+          "type": "boolean",
+          "description": "闭合线 = 多边形。true 时适配层会把 points 的首点补到末尾形成闭合环（Excalidraw 0.18 靠 points 首末点重合判定填充，没有 closed 布尔字段）；闭合后线围出的区域可被 backgroundColor / fillStyle 填充。用于画任意填充多边形 / 插画 / 等轴测伪 3D 方块；points 至少 3 个才有面积（含闭合点共 4 个）。"
+        },
         "strokeColor": { "type": "string" },
+        "backgroundColor": {
+          "type": "string",
+          "description": "闭合线填充色（配合 closed:true）。未闭合或不需要填充可不写，默认透明空心。"
+        },
+        "fillStyle": {
+          "enum": ["hachure", "cross-hatch", "solid", "zigzag", "dots", "dashed", "diagonal"],
+          "description": "闭合线填充纹理，配合 backgroundColor 使用（solid 最常用作实心填充）。"
+        },
         "strokeWidth": { "type": "number", "minimum": 0 },
         "strokeStyle": { "enum": ["solid", "dashed", "dotted"] },
         "link": { "$ref": "#/definitions/link" },
@@ -163,7 +178,12 @@
         },
         "angle": { "type": "number" },
         "strokeColor": { "type": "string" },
-        "link": { "$ref": "#/definitions/link" }
+        "link": { "$ref": "#/definitions/link" },
+        "containerId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "容器绑定：把本文字挂进某图形内当内文字（Excalidraw containerId）。与 shape.label 二选一，优先用 label。前端 sceneAdapter 已支持按此回填。"
+        }
       }
     },
     "frame": {
@@ -200,6 +220,59 @@
         "strokeColor": { "type": "string" },
         "strokeWidth": { "type": "number", "minimum": 0 },
         "opacity": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "image": {
+      "type": "object",
+      "description": "图片元素（前向兼容：当前提示词不产出，需由带 fileId 的上传接口补充）。fileId 是后端已上传图片的文件引用，LLM 无法自行生成，缺了 Excalidraw 无法渲染。",
+      "required": ["id", "type", "x", "y", "width", "height", "fileId"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "type": { "const": "image" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "fileId": { "type": "string", "description": "已上传图片文件引用（上传接口返回，LLM 不能造）" },
+        "opacity": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "embeddable": {
+      "type": "object",
+      "description": "嵌入式网页（iframe；前向兼容）。需 url，当前提示词不产出。",
+      "required": ["id", "type", "x", "y", "width", "height", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "type": { "const": "embeddable" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "url": { "type": "string", "description": "要嵌入的外部网页地址" },
+        "link": { "$ref": "#/definitions/link" }
+      }
+    },
+    "magicframe": {
+      "type": "object",
+      "description": "魔法框（0.18 新增：可缩放视口 / 嵌入组；前向兼容，语义同 frame，但可被缩放）。children 由后端按分组与几何算出后填入；LLM 不要输出 children。",
+      "required": ["id", "type", "x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "type": { "const": "magicframe" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "name": { "type": "string", "description": "画框标题，可空" },
+        "children": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+          "description": "框内成员的 id 列表（渲染层字段：由后端填入，LLM 不要输出）"
+        },
+        "link": { "$ref": "#/definitions/link" }
       }
     }
   }

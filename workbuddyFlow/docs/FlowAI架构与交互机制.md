@@ -91,7 +91,7 @@ FlowAI 需要支持**"手绘白板 + AI 改图"双通道协作**：
 
 ### 2.1 定义
 
-IR 是图表数据的**唯一真相源**，包含图表的语义和坐标数据。
+IR 是白板内容的**唯一真相源**，包含白板元素的语义和坐标数据。
 
 ### 2.2 元素分层机制
 
@@ -528,7 +528,7 @@ LLM 调用耗时 30-300 秒，必须避免阻塞 Spring MVC 请求处理线程�
 
 | 操作 | 修改内容 | 方法名 |
 |------|----------|--------|
-| AI 生成图表 | 覆盖整个 IR | `sessionStore.setCurrentModel()` |
+| AI 生成白板内容 | 覆盖整个 IR | `sessionStore.setCurrentModel()` |
 | 用户拖拽 | 更新坐标 | `sessionStore.updatePositions()` |
 | 用户删除 | 移除元素 | `sessionStore.removeElements()` |
 | 用户手绘 | 存入 _userElements | `sessionStore.setUserElements()` |

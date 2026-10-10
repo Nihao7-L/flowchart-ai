@@ -33,7 +33,7 @@
   → graph 校验 (field/reason/hint)；不通过带 issues 再调 ≤3 轮
   → 落库 session：Redis 热层（当前会话，ms 读写 + TTL）+ PostgreSQL 冷层（历史 / 快照）+ pgvector（RAG 向量，G6 分层存储，见 M5 / M2 / M12）
   → SSE 回传：思考/工具/校验事件 + 结果
-       · S1 起只走**全量** `result`（元素场景，含坐标；坐标由后端布局算出）
+       · S1 起只走**全量** `result`（元素场景，含坐标；**坐标由 LLM 原生给出，v2-41 起后端不再整体重排** —— 原「后端布局算出」已作废）
        · 增量 `ops`（add/connect/update/delete）归 S3 / v2-25（Diagram Tools）
   → 前端用 `result` 全量替换镜像 → convert → updateScene 重绘（**前端不做布局**，见 ADR-4 / v2-36）
 人类拖拽：onChange（收敛为"坐标真变 + pointerup + 防抖"）→ `PUT /api/model/canvas` 回写后端 model
@@ -42,7 +42,7 @@
 ### 2.2 数据视图（唯一真相源）
 - IR（元素场景：elements 数组，含坐标）唯一真相源 = **后端 session**（**G6 分层存储**：Redis 热层 `flowai:session:<id>` 存当前 IR + 拖拽坐标 + 校验问题，TTL 自动过期、重启不丢；PostgreSQL 冷层存历史会话 / IR 快照，长期留；pgvector 存历史 IR + 提示词语义向量供 RAG 召回）。Redis 不可用时降级内存（热层丢、冷层不受影响）。
 - 前端只持**渲染镜像**；AI 改图与人手拖拽都汇到同一份后端 model，互不覆盖。
-- 坐标由**后端布局**（`graph/`：**先结构规划、再落几何** —— `ScenePlanner` 按 `group` 分模块 → 模块内交布局引擎 → 模块间网格打包，v2-39；引擎默认 Java 版 ELK 竖排，v2-38）**确定性生成**并作为数据存入 IR（scene 元素携带 x/y）；用户拖拽后经 `PUT /api/model/canvas` 回写；前端 `convert` 直接渲染 IR 携带的坐标 —— **前端不做任何布局**（原有的"前端兜底重排"已于 2026-09-17 按决定 A2 删除）。
+- 坐标由 **LLM 原生给出**（v2-41 起）并作为数据存入 IR（scene 元素携带 x/y）。原「后端确定性重排」已于 v2-41 取消 —— 实测后端布局引擎会把图收成一根窄条，远不如 LLM 原生布局；现在后端流水线只做 `bind → dedup → claimFramesOnly`（`ScenePlanner` 按 `group` 把画框认领给模块、填 `frame.children`），**不改动任何几何**。用户拖拽后经 `PUT /api/model/canvas` 回写；前端 `convert` 直接渲染 IR 携带的坐标 —— **前端不做任何布局**（"前端兜底重排"已于 2026-09-17 按决定 A2 删除）。
 
 ### 2.3 部署视图
 - 单进程 Spring Boot + 浏览器；Redis 可选（不可用时降级内存）。
@@ -53,10 +53,10 @@
 | 包 | 职责 | 允许调用 |
 |---|---|---|
 | `controller/` | REST+SSE，只做校验与编排 | `service/` |
-| `service/` | 生成编排：Prompt→LLM→解析→校验→修正 | `llm/ graph/ rag/ tools/ session/` |
+| `service/` | 生成编排：组装上下文→LLM→解析→校验→修正 | `context/ llm/ graph/ rag/ tools/ session/` |
 | `llm/` | Provider 抽象 + 网关（**M13** 加固：统一收口 + 指数退避重试 + 每调用 token/成本/延迟埋点；不含限流，单用户） | — |
-| `graph/` | 图模型、校验、**布局**（后端出元素场景 IR，含坐标；**布局是本包职责**，前端只做 `convert` 渲染，见 ADR-4 / v2-36） | — |
-| `context/` | 上下文组装（**S2**；`rank` 固定硬约束首尾 + token 预算 + 每轮回放，见 M10） | — |
+| `graph/` | 图模型、校验、画框认领（后端出元素场景 IR；**v2-41 起坐标由 LLM 原生给出、后端不再重排**，`LayoutEngine` / `SceneLayout` 保留但已不在运行时流水线里；前端只做 `convert` 渲染，见 ADR-4 / v2-36） | — |
+| `context/` | 上下文组装（**S2 / M10**；`rank` + token 预算 + 每轮回放。**v2-41 已落地 2026-09-24**：产出 `system`（静态：读 `prompts/whiteboard/system-prompt.md` + 注入契约）+ `user`（动态：当前场景 / 需求 / 修正块）双消息。**v2-42 同日落地**：大图编辑改走「结构摘要 + 被改元素全文 + 引用骨架」） | `client/`（`Message` 类型）· ⚠️ `service/`（`PromptService` —— **临时**的包级反向依赖，代码注释已标技术债；M10 收尾应把 `PromptService` 迁入本包） |
 | `rag/` | 检索增强（**S6**；向量库用 PostgreSQL + pgvector，基础设施见 M12） | `llm/` |
 | `tools/` | 工具注册与执行（**S3**） | `rag/ llm/` |
 | `agent/` | 真 ReAct 循环（LLM 持工具：`tool_calls`→Observation）：`LoopState` + `ReadabilityGate`（连美观一起查，**S4**；**G1** 已拍板，见 M4） | `tools/ llm/ graph/ rag/` |
@@ -114,7 +114,7 @@
 3. 校验问题带 field/reason/hint，不只报数量。
 4. Agent 每步必须回喂 LLM：Thought（含意图分类）决策 → Action(tools) → Observation 回喂，循环不得跳过分类。
 5. 新增跨包依赖先更新 2.4 包表；文档与代码不一致先改文档。
-6. LLM/Agent 只出元素场景 IR（简化 elements，见 `scene.schema.json`），坐标由布局确定性生成并存入 IR，禁 LLM 直出 Excalidraw 全量元素 JSON（含 seed/versionNonce/boundElements）。
+6. LLM/Agent 只出元素场景 IR（简化 elements，见 `scene.schema.json`），**坐标由 LLM 原生给出并存入 IR**（v2-41 起；原"由布局确定性生成"已作废），禁 LLM 直出 Excalidraw 全量元素 JSON（含 seed/versionNonce/boundElements）。
 7. IR 唯一真相源在后端 session，前端只持渲染镜像；AI 改图与人类拖拽汇同一份 model，禁前端自认权威。
 8. **布局产物 = 位置 + 尺寸，两者都要写回 IR** —— 布局必须按「渲染端最终尺寸」算间距（`LayoutSpec.nodeSize` 是镜像渲染端撑大公式的唯一入口），并把 `width`/`height` 一并回写，否则 frame 几何会按旧尺寸算、渲染端又会把容器撑出去（2026-09-18 电池实测：同模块内重叠 2 对）。`frame` 几何由布局算出、是契约值，**适配层不得让渲染器的默认值覆盖它**（Excalidraw 的 `frame?.y || minY` 把合法的 `y=0` 当成「未提供」，见 `constraint.md` 技术约束）。
 

@@ -1,5 +1,7 @@
 package io.github.nihaoljx.flowchart.client;
 
+import java.util.List;
+
 /**
  * LLM 提供商统一接口
  *
@@ -36,6 +38,24 @@ public interface LlmProvider {
      * @throws Exception 网络错误、API 错误、超时、解析失败等
      */
     String chat(String prompt, int timeoutSeconds)
+            throws Exception;
+
+    /**
+     * 发送多消息给 LLM —— system / user 角色由此真正生效（v2-41）
+     *
+     * <p>为什么需要它：{@code chat(String, int)} 只能发一条消息，而上下文组装
+     * 需要把「固定不变的规则」与「每轮变化的内容」分成 system / user 两条，
+     * 让模型分得清哪些是规则、哪些是本次的内容。
+     *
+     * <p>上面两个 {@code String} 重载**保留不动**（等价于"只有一条 user 消息"）：
+     * M13 网关加固（重试 / token 埋点）与它正交，可后续叠加。
+     *
+     * @param messages       有序消息列表（通常 system 在前、user 在后）
+     * @param timeoutSeconds 整次调用的硬上限，单位秒
+     * @return LLM 生成的文本内容（不是原始 JSON，与旧重载语义一致）
+     * @throws Exception 网络错误、API 错误、超时、解析失败等
+     */
+    String chat(List<Message> messages, int timeoutSeconds)
             throws Exception;
 
     /**

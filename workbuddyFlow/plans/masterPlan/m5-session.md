@@ -30,7 +30,7 @@
 
 ## 前置
 - **M1 v2-11 已交付内存版 session**（`SessionStore` 接口 + 内存实现 + 坐标回写入口），且自 S1 起已在真实链路里跑（多轮对话 + 人拖拽回写）
-- M4 已把 IR 作为核心数据结构，且 checkpoint 格式（v2-44）即本模块分层持久化的输入契约
+- M4 已把 IR 作为核心数据结构，且 checkpoint 格式（v2-56）即本模块分层持久化的输入契约
 - **M12 容器底座就绪**（S6/S7 硬前置）：`docker compose` 起 `redis:7.4-alpine` + `pgvector/pgvector:pg16`，替代本机 Windows Redis 3.0；应用连接信息走提交版 `application-docker.yml`，密钥走 `.env`（见 `plans/masterPlan/m12-docker-infra.md`）
 - Redis / PostgreSQL / pgvector 均为可选依赖，连不上降级（见 `constraint.md` §三）
 

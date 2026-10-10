@@ -5,7 +5,7 @@
 
 ## 一、核心能力（3~5 条，每条对应架构模块）
 
-1. **自然语言出图（NL → IR）**：用户输入自然语言 → 后端组装 Prompt 调 LLM → 产出结构化图 JSON（IR，元素场景）→ 校验 → **后端排版 + 布局补坐标**（v2-36 分层布局、v2-38 换 Java 版 ELK 竖排、**v2-39 先结构规划再落几何**）→ 渲染。对应模块：`controller` / `service` / `llm` / `graph`。
+1. **自然语言出图（NL → IR）**：用户输入自然语言 → 后端**组装上下文**（`context/ContextAssembler`：`system` 静态块「读 `prompts/whiteboard/system-prompt.md` + 注入契约」+ `user` 动态块，v2-41；大图编辑走 v2-42 结构摘要）调 LLM → 产出结构化图 JSON（IR，元素场景）→ 校验 → **坐标直接采用 LLM 原生值**（v2-41 起后端不再整体重排；后端只做 `bind → dedup → claimFramesOnly`，把画框认领给模块并填 `frame.children`。`graph/SceneLayout` / `ElkLayoutEngine` 保留为能力，已不在运行时流水线）→ 渲染。对应模块：`controller` / `service` / `context` / `llm` / `graph`。
 2. **双通道协作白板**：人类在画布拖拽/手绘 与 AI 聊天命令改图，二者改同一份图状态。对应模块：前端 `@excalidraw/excalidraw` 白板 + 后端 `session`（持有 model）+ `POST /api/chat`。
 3. **真 ReAct 循环改图（LLM 持工具 + Diagram Tools 自研 MCP）**：复杂意图下 LLM 以 `tool_calls` 提议动作（生成 / 检索 / 读 / 校验 / 修正），`service` 执行后把 Observation 回喂 LLM 再决策；`LoopState` 记每轮状态、`ReadabilityGate` 判"再跑 / 停"（连美观一起查）。工具（add / connect / update / delete / generate_full）在编辑模式直接改后端 model。**G1 已拍板为真 ReAct**（原「状态化 Graph Loop」草稿作废），见 M4 / `m4-loop-engineering.md`。对应模块：`agent` / `tools` / `service`。
 4. **校验与自修正**：图结构校验带 field / reason / hint，不通过带 issues 重调，最多 3 轮。对应模块：`graph`（GraphValidator）。
@@ -39,19 +39,20 @@
 | # | 功能 | 状态 | 任务 | 所属阶段 |
 |---|---|---|---|---|
 | 1 | 自然语言出图 | **已有**（v2-8~11 落盘：契约 + 校验 + 修正循环 + SSE；端到端实测出图） | v2-8~11 | S1 |
-| 2 | 图 JSON 契约 | **已有**（`scene.schema.json` 8 元素类型；v2-32 补全字段级校验） | v2-8 | S1 |
+| 2 | 图 JSON 契约 | **已有**（`scene.schema.json` **11 元素类型**（白板版，含 `freedraw` / `image` / `embeddable` / `magicframe`）；v2-32 补全字段级校验） | v2-8 | S1 |
 | 3 | 端到端校验 | **已有**（`GraphValidator` 手写；v2-32 补字段级、v2-37 补编辑模式几何保真） | v2-9 | S1 |
 | 4 | 生成→校验→修正循环 | **已有**（`GenerationService`：**通过即发**，仅在有 issue 时进修正轮，≤3 次 LLM） | v2-10 | S1 |
 | 5 | SSE 过程事件 | **已有**（thinking / validation / result / error 四类；画布现状回写 `PUT /api/model/canvas`） | v2-11 | S1 |
 | 6 | RAG 知识注入（向量库 PostgreSQL + pgvector，基础设施见 M12） | 待做 | v2-12~14 | S6 |
 | 7 | Tool Calling | 待做 | v2-15~17 | S3 |
-| 8 | 真 ReAct 循环（Loop Engineering；**G1 已拍板**还原为真 ReAct，2026-09-20） | 待做 | v2-43~44 | S4 |
+| 8 | 真 ReAct 循环（Loop Engineering；**G1 已拍板**还原为真 ReAct，2026-09-20） | 待做 | v2-55~56 | S4 |
 | 9 | 会话与历史（三层：Redis 热 + PostgreSQL 冷 + pgvector） | 部分（内存版随 v2-11 交付；分层持久化待做） | v2-21~23 | S7（内存版 S1） |
 | 10 | 前端 Excalidraw 双通道白板 | 部分（v2-23 设计稿 + v2-24a 画布/双通道/手绘上报已交付并实测；**布局已由 v2-36 交付**——后端 `graph/SceneLayout`，2026-09-18 真实大模型端到端复验通过；**增量 `ops`** 待 v2-25） | v2-23~26 | S1 渲染 / S3 交互 / S4 可视化 |
 | 11 | 可观测 | 留档（旧版有壳） | v2-27/28 | S8 |
 | 12 | Agent 可读探针 | 待做 | v2-30 | S8 |
 | 13 | 一键验证 | **已有**（M0 已闭合，v2-3 于 09-12 完成） | v2-3 | S0 ✅ |
-| 14 | 排版（结构规划：模块 → 成员 → 落几何） | **完成**（v2-39 已归档：三级降级 + 两级布局 + `frame` 当容器；离线 E2E 6/6、真实 LLM 电池两项 FAIL 归零、frame 三项指标按精确口径 0 / 0 / 0、门禁全绿） | v2-39 | S1b |
+| 14 | 排版（结构规划：模块 → 成员 → 落几何） | **完成 → 已从运行时流水线摘除**（v2-39 已归档：三级降级 + 两级布局 + `frame` 当容器；但 **v2-41 起坐标改用 LLM 原生值**，后端布局引擎因"把图收成窄条"被主动停用，代码保留为能力） | v2-39 / v2-41 | S1b |
+| 15 | 上下文组装（`system` + `user` 双消息 · `rank` · token 预算 · 每轮回放） | **完成**（**v2-41 已交付 2026-09-24**：双消息组装 + `rank` 框架 + 契约区不降级 + 每轮回放；**静态层正文改直读 md**；**v2-42 同日交付**：编辑模式 >30 元素走「结构摘要 + 被改元素全文 + 引用骨架」，`mvn -o test` 184/0；**未做**：`promptVersion` 进生成日志） | v2-41~43 | S2 |
 
 > 阶段列（S0~S8）是**执行顺序**，模块编号（M0~M14）与任务编号（v2-N）是**身份**，两套体系并存、互不替代（**M8 早于 M9，但 S1b 后于 S1a**）；`v2-30` 原先在 `masterPlan/` 下无归属模块，已于 2026-09-14 明确归入 M7（可观测与治理）。定义见 `plans/masterPlan/roadmap.md`。
 

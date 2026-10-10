@@ -84,7 +84,7 @@ class DiagramControllerTest {
     }
 
     @Test
-    @DisplayName("生成图表：POST /api/chat 以 SSE 异步开始，并透传 sessionId + message")
+    @DisplayName("生成白板内容：POST /api/chat 以 SSE 异步开始，并透传 sessionId + message")
     void chatStartsSseStreamAndForwardsMessage()
             throws Exception {
         mockMvc.perform(post("/api/chat")

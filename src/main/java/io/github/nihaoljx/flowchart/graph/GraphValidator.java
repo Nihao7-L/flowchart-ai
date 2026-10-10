@@ -5,8 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -40,11 +42,13 @@ public class GraphValidator {
     private static final Set<String> ALL_TYPES =
             Set.of("rectangle", "ellipse", "diamond",
                     "arrow", "line", "text",
-                    "frame", "freedraw");
+                    "frame", "freedraw",
+                    "image", "embeddable", "magicframe");
 
-    /** 契约允许的填充样式（{@code zigzag} 于 v2-40 P0 补入） */
+    /** 契约允许的填充样式（{@code zigzag} 于 v2-40 P0 补入；{@code dots/dashed/diagonal} 于 v2-41 放开 P1 补入） */
     private static final Set<String> FILL_STYLES =
-            Set.of("hachure", "cross-hatch", "solid", "zigzag");
+            Set.of("hachure", "cross-hatch", "solid", "zigzag",
+                    "dots", "dashed", "diagonal");
 
     /** 契约允许的描边样式 */
     private static final Set<String> STROKE_STYLES =
@@ -71,10 +75,8 @@ public class GraphValidator {
             "triangle", "triangle_outline", "diamond", "diamond_outline",
             "crowfoot_one", "crowfoot_many", "crowfoot_one_or_many");
 
-    /** 契约允许的连线关系语义（v2-40 P2）。与 ScenePlanner 的 {@code RELATION_STYLE}、schema 的 {@code arrow.relation} 三处同义 */
-    private static final Set<String> RELATIONS = Set.of(
-            "flow", "call", "data", "async", "dependency",
-            "one-to-one", "one-to-many", "many-to-many", "inherit", "block");
+    /** 契约允许的连线关系语义（v2-40 P2）。唯一来源见 {@link RelationCatalog#ALL_RELATIONS} */
+    private static final Set<String> RELATIONS = RelationCatalog.ALL_RELATIONS;
 
     /** 契约允许的字体族（1=手绘 2=Helvetica 3=等宽） */
     private static final Set<Integer> FONT_FAMILIES =
@@ -128,7 +130,9 @@ public class GraphValidator {
         // 第一遍：收集 id，顺带查重。
         // 箭头端点是否"悬空"必须等全集 id 齐了才能判断，
         // 所以引用完整性检查和字段校验分成两遍走。
+        // idTypes 记录「id → 元素类型」，供绑定/容器绑定排除 frame 用。
         Set<String> ids = new HashSet<>();
+        Map<String, String> idTypes = new HashMap<>();
         for (int i = 0; i < elements.size(); i++) {
             JsonNode elem = elements.get(i);
             if (!elem.isObject()) {
@@ -145,12 +149,16 @@ public class GraphValidator {
                         "id 重复: " + id,
                         "每个元素的 id 必须唯一（箭头靠它绑定端点）"));
             }
+            JsonNode typeNode = elem.get("type");
+            if (typeNode != null && typeNode.isTextual()) {
+                idTypes.put(id, typeNode.asText());
+            }
         }
 
         // 第二遍：逐元素字段校验
         for (int i = 0; i < elements.size(); i++) {
             validateElement(
-                    elements.get(i), i, ids, issues);
+                    elements.get(i), i, ids, idTypes, issues);
         }
     }
 
@@ -158,6 +166,7 @@ public class GraphValidator {
             JsonNode elem,
             int index,
             Set<String> ids,
+            Map<String, String> idTypes,
             List<ValidationIssue> issues) {
         String path = "elements[" + index + "]";
 
@@ -211,15 +220,32 @@ public class GraphValidator {
         if (SHAPE_TYPES.contains(type)) {
             validateShape(elem, path, issues);
         } else if ("arrow".equals(type)) {
-            validateArrow(elem, path, ids, issues);
+            validateArrow(elem, path, ids, idTypes, issues);
         } else if ("line".equals(type)) {
-            validateLine(elem, path, issues);
+            validateLine(elem, path, ids, idTypes, issues);
         } else if ("text".equals(type)) {
-            validateText(elem, path, issues);
+            validateText(elem, path, ids, issues);
         } else if ("frame".equals(type)) {
             validateFrame(elem, path, issues);
         } else if ("freedraw".equals(type)) {
             validateFreedraw(elem, path, issues);
+        } else if ("image".equals(type)) {
+            validateImage(elem, path, issues);
+        } else if ("embeddable".equals(type)) {
+            validateEmbeddable(elem, path, issues);
+        } else if ("magicframe".equals(type)) {
+            validateMagicFrame(elem, path, issues);
+        }
+
+        // md v5.8.0 约束6：group 只能贴在矩形/椭圆/菱形上。
+        // 2026-09-24 口径反转（以 system-prompt.md 为准）：
+        // v2-41 曾放开 group 到任意元素（含 text / arrow / line / frame），现收回。
+        if (elem.has("group") && !elem.get("group").isNull()
+                && !SHAPE_TYPES.contains(type)) {
+            issues.add(new ValidationIssue(
+                    path + ".group",
+                    "group 只能贴在矩形/椭圆/菱形上，当前类型: " + type,
+                    "把 group 移到图形（rectangle/ellipse/diamond）上"));
         }
     }
 
@@ -248,6 +274,7 @@ public class GraphValidator {
             JsonNode elem,
             String path,
             Set<String> ids,
+            Map<String, String> idTypes,
             List<ValidationIssue> issues) {
         boolean hasStart = elem.has("start")
                 && elem.get("start").has("id");
@@ -257,28 +284,49 @@ public class GraphValidator {
                 && elem.get("points").isArray()
                 && elem.get("points").size() >= 2;
 
-        if (!(hasStart && hasEnd) && !hasPoints) {
+        boolean hasBinding = hasStart && hasEnd;
+
+        if (!hasBinding && !hasPoints) {
             issues.add(new ValidationIssue(
                     path,
                     "arrow 必须有 start+end 绑定 或 points 路径",
                     "二选一: start.id+end.id 或 points 数组"));
         }
+        // 2026-10-09（v10.0.0）放开「绑定 + points」并存。
+        //
+        // <p>为什么原来禁：v5.9.0 起按「md 为准」把共存判错，md / 契约段 /
+        // 修正文案三处口径一致地写着「别既绑两端又画折线」，形成闭环封锁 ——
+        // 代价是「会转弯的箭头」这个能力从产品里消失了，而它本来是 Excalidraw
+        // 原生就支持的形态（编辑器里拖中点加拐点，产出的元素同时带
+        // startBinding/endBinding 与多点 points）。
+        //
+        // <p>为什么现在能放开：① Excalidraw 的数据模型里 points 是折线顶点、
+        // startBinding/endBinding 只标端点，两者本来就不冲突；② 前端
+        // sceneAdapter.withArrowGeometry 对 hasXY && hasPoints 是原样透传，
+        // 适配层完全吃得住；③ 点形状仍有 checkPointsShape 兜底（每个点必须是
+        // [数字, 数字]），非法点照样打回。
+        //
+        // <p>残留风险：绑定时路径端点由两端元素位置推导，模型给的 points 会以
+        // 路径起点为原点解释 —— 它算不准时折线会歪。这属于"模型看不见渲染结果"
+        // 的固有限制，靠提示词指导（首点写 [0,0]）+ 实测校准，不在这里一刀切禁掉。
 
         // 端点引用必须落在本场景内。Excalidraw 对悬空绑定不报错，
         // 只是箭头不再跟随目标、退化成一段孤立线段 —— 视觉上就是"箭头没了"。
-        checkBinding(elem, path, "start", ids, issues);
-        checkBinding(elem, path, "end", ids, issues);
-        // D3: 自环箭头（start.id == end.id）无意义且会渲染出零长度线段，
-        // 2026-09-16 实测：LLM 删图后为消除悬挂引用把箭头全改绑成 end→end。
-        if (hasStart && hasEnd) {
-            String startId = elem.get("start").get("id").asText();
-            String endId = elem.get("end").get("id").asText();
-            if (startId.equals(endId)) {
-                issues.add(new ValidationIssue(
-                        path,
-                        "自环箭头: start.id == end.id == " + startId,
-                        "箭头必须连接两个不同元素"));
-            }
+        checkBinding(elem, path, "start", ids, idTypes, issues);
+        checkBinding(elem, path, "end", ids, idTypes, issues);
+        // md v5.8.0 约束3：箭头两端不能是同一元素（自环）。
+        // 2026-09-24 口径反转（用户拍板「以 system-prompt.md 为准」）：
+        // v2-41 曾放开自环，现收回 —— 需要自循环请改用 points 画回到原点的路径。
+        if (hasStart && hasEnd
+                && elem.get("start").get("id").isTextual()
+                && elem.get("end").get("id").isTextual()
+                && elem.get("start").get("id").asText()
+                        .equals(elem.get("end").get("id").asText())) {
+            issues.add(new ValidationIssue(
+                    path,
+                    "箭头两端不能是同一元素（自环）",
+                    "start.id 与 end.id 必须指向不同元素；"
+                            + "需要自循环可改用 points 路径"));
         }
         checkOptionalPoints(elem, path, issues);
         checkOptionalNumber(elem, path, "x", issues);
@@ -300,10 +348,42 @@ public class GraphValidator {
     private void validateLine(
             JsonNode elem,
             String path,
+            Set<String> ids,
+            Map<String, String> idTypes,
             List<ValidationIssue> issues) {
         checkRequiredNumber(elem, path, "x", issues);
         checkRequiredNumber(elem, path, "y", issues);
-        checkRequiredPoints(elem, path, issues);
+        boolean hasStart = elem.has("start")
+                && elem.get("start").has("id");
+        boolean hasEnd = elem.has("end")
+                && elem.get("end").has("id");
+        boolean hasPoints = elem.has("points")
+                && elem.get("points").isArray()
+                && elem.get("points").size() >= 2;
+        // md v5.8.0 约束7：连图形一律用箭头，line 不用端点绑定。
+        // ⚠️ 2026-10-07 措辞修正：原文写"line 只当装饰分隔线"是**过头**了 ——
+        // 契约 closed 的 description 明写 line 也用来画填充多边形 / 等轴测伪 3D 面。
+        // 那句"只"会与「能力与边界」里的"伪 3D 用闭合直线拼面"打架，把模型
+        // 推去用旋转矩形糊 3D（矩形斜切不出平行四边形，实测糊成一团）。
+        // 2026-09-24 口径反转（以 system-prompt.md 为准）：
+        // v2-41 曾放开 line 的 start/end 端点绑定，现收回。
+        if (hasStart || hasEnd) {
+            issues.add(new ValidationIssue(
+                    path,
+                    "line 不能用 start/end 绑定（连图形用 arrow；"
+                            + "line 是装饰线或闭合多边形）",
+                    "连图形请改用 arrow；line 只写 points，"
+                            + "要画填充多边形 / 伪 3D 面就加 closed:true + backgroundColor"));
+        }
+        if (!hasPoints) {
+            issues.add(new ValidationIssue(
+                    path,
+                    "line 必须有 points 路径",
+                    "line 只写 points 当装饰分隔线（连图形用 arrow）"));
+        }
+        checkBinding(elem, path, "start", ids, idTypes, issues);
+        checkBinding(elem, path, "end", ids, idTypes, issues);
+        checkOptionalPoints(elem, path, issues);
         checkOptionalEnum(
                 elem, path, "strokeStyle", STROKE_STYLES, issues);
         checkOptionalNonNegative(
@@ -314,6 +394,7 @@ public class GraphValidator {
     private void validateText(
             JsonNode elem,
             String path,
+            Set<String> ids,
             List<ValidationIssue> issues) {
         checkRequiredNumber(elem, path, "x", issues);
         checkRequiredNumber(elem, path, "y", issues);
@@ -333,6 +414,24 @@ public class GraphValidator {
         checkOptionalEnum(
                 elem, path, "verticalAlign", VERTICAL_ALIGNS, issues);
         checkOptionalNumber(elem, path, "angle", issues);
+        // 容器绑定（前向兼容字段）：把本文字挂进某图形内当内文字。
+        // 指向不存在的元素会退化成孤立文字，必须拦下。
+        if (elem.has("containerId") && !elem.get("containerId").isNull()) {
+            JsonNode cid = elem.get("containerId");
+            if (!cid.isTextual()
+                    || !cid.asText().matches(ID_PATTERN)) {
+                issues.add(new ValidationIssue(
+                        path + ".containerId",
+                        "containerId 非法",
+                        "必须是合法 id 字符串（字母数字下划线连字符）"));
+            } else if (!ids.contains(cid.asText())) {
+                issues.add(new ValidationIssue(
+                        path + ".containerId",
+                        "containerId 指向不存在的元素: "
+                                + cid.asText(),
+                        "containerId 必须指向本场景中已存在的图形 id"));
+            }
+        }
     }
 
     /**
@@ -385,6 +484,58 @@ public class GraphValidator {
         checkOptionalPercent(elem, path, "opacity", issues);
     }
 
+    /**
+     * image（图片元素，前向兼容）：必须有 fileId 指向已上传的图片文件，
+     * 否则 Excalidraw 无法渲染。
+     */
+    private void validateImage(
+            JsonNode elem, String path,
+            List<ValidationIssue> issues) {
+        checkRequiredNumber(elem, path, "x", issues);
+        checkRequiredNumber(elem, path, "y", issues);
+        checkRequiredPositive(elem, path, "width", issues);
+        checkRequiredPositive(elem, path, "height", issues);
+        if (!elem.has("fileId") || !elem.get("fileId").isTextual()) {
+            issues.add(new ValidationIssue(
+                    path + ".fileId",
+                    "image 缺少 fileId",
+                    "image 必须带 fileId（由上传接口返回，LLM 不能自行生成）"));
+        }
+        checkOptionalPercent(elem, path, "opacity", issues);
+    }
+
+    /**
+     * embeddable（嵌入式网页 iframe，前向兼容）：必须有 url。
+     */
+    private void validateEmbeddable(
+            JsonNode elem, String path,
+            List<ValidationIssue> issues) {
+        checkRequiredNumber(elem, path, "x", issues);
+        checkRequiredNumber(elem, path, "y", issues);
+        checkRequiredPositive(elem, path, "width", issues);
+        checkRequiredPositive(elem, path, "height", issues);
+        if (!elem.has("url") || !elem.get("url").isTextual()
+                || elem.get("url").asText().isBlank()) {
+            issues.add(new ValidationIssue(
+                    path + ".url",
+                    "embeddable 缺少 url",
+                    "embeddable 必须带 url（要嵌入的外部网页地址）"));
+        }
+    }
+
+    /**
+     * magicframe（魔法框，前向兼容）：语义同 frame，children 由
+     * 后端填入，不在此校验（与 frame 一致，避免白耗一轮重试）。
+     */
+    private void validateMagicFrame(
+            JsonNode elem, String path,
+            List<ValidationIssue> issues) {
+        checkRequiredNumber(elem, path, "x", issues);
+        checkRequiredNumber(elem, path, "y", issues);
+        checkRequiredPositive(elem, path, "width", issues);
+        checkRequiredPositive(elem, path, "height", issues);
+    }
+
     // ===== 语义检查（schema 表达不了的部分）=====
 
     /**
@@ -425,13 +576,18 @@ public class GraphValidator {
 
     /**
      * 端点绑定的引用完整性：{@code start.id} / {@code end.id}
-     * 必须指向本场景里真实存在的元素。
+     * 必须指向本场景里真实存在的元素，且**不能是 frame（画框）**。
+     *
+     * <p>md v5.8.0 约束3「两端不能绑 frame」；2026-09-24 口径反转
+     * （用户拍板「以 system-prompt.md 为准」）—— v2-41 曾放开画框绑定，
+     * 现收回：端点只能绑到图形 / 文字，画框不能当端点。
      */
     private void checkBinding(
             JsonNode elem,
             String path,
             String field,
             Set<String> ids,
+            Map<String, String> idTypes,
             List<ValidationIssue> issues) {
         if (!elem.has(field) || elem.get(field).isNull()) {
             return;
@@ -452,6 +608,15 @@ public class GraphValidator {
                     path + "." + field + ".id",
                     field + ".id 指向不存在的元素: " + target,
                     "端点必须绑定到本场景中已存在的图形 id"));
+            return;
+        }
+        String targetType = idTypes.get(target);
+        if ("frame".equals(targetType) || "magicframe".equals(targetType)) {
+            issues.add(new ValidationIssue(
+                    path + "." + field + ".id",
+                    field + " 不能绑定到" + targetType
+                            + "（画框）: " + target,
+                    "端点只能绑到图形 / 文字，画框不能当端点"));
         }
     }
 

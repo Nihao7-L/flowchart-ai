@@ -53,7 +53,7 @@ import java.util.Set;
  * <ol>
  *   <li>编辑模式（{@code fixedIds} 非空）：既有坐标一个不许动，否则与
  *       {@link SceneDrift} 当场打架；</li>
- *   <li>图形数 ≤ {@link #MODULE_THRESHOLD}（默认 12）：小图不该为不存在的
+ *   <li>图形数 ≤ {@link #MODULE_THRESHOLD}（默认 15）：小图不该为不存在的
  *       复杂度买单，也避免把"加一个审批节点"这类图排变样；</li>
  *   <li>模块数 &lt; 2：只有"有分组"才谈得上分区。</li>
  * </ol>
@@ -72,34 +72,17 @@ public class ScenePlanner {
             Set.of("rectangle", "ellipse", "diamond");
 
     /** 图形数超过它才做分区（**唯一真相源**：PromptService 的提示词与契约描述都引用它） */
-    public static final int MODULE_THRESHOLD = 12;
+    public static final int MODULE_THRESHOLD = 15;
 
     /**
      * 关系语义 → 视觉样式（v2-40 P2）。
      *
      * <p>LLM 用 {@code relation} 表达连线的业务含义，后端据此推导线型
      * （strokeStyle）与端点形状（startArrowhead / endArrowhead），免去 LLM
-     * 自己拼 Excalidraw 细节。与 schema 的 {@code arrow.relation} 枚举、
-     * GraphValidator 的 {@code RELATIONS} 三处同义——扩值必须四处同改。
+     * 自己拼 Excalidraw 细节。唯一来源见 {@link RelationCatalog}
+     * （关系清单 + 样式映射合并为代码单源）；schema 的 {@code arrow.relation}
+     * 枚举与提示词仍各手抄一份，扩值时须与 {@link RelationCatalog} 同步。
      */
-    private record RelationStyle(
-            String strokeStyle, String startArrowhead, String endArrowhead) {}
-
-    private static final Map<String, RelationStyle> RELATION_STYLE;
-    static {
-        Map<String, RelationStyle> m = new LinkedHashMap<>();
-        m.put("flow",          new RelationStyle("solid", null, "triangle"));
-        m.put("call",          new RelationStyle("solid", null, "triangle"));
-        m.put("data",          new RelationStyle("dotted", null, null));
-        m.put("async",         new RelationStyle("dashed", null, "triangle_outline"));
-        m.put("dependency",    new RelationStyle("dashed", null, null));
-        m.put("one-to-one",    new RelationStyle(null, "crowfoot_one", "crowfoot_one"));
-        m.put("one-to-many",   new RelationStyle(null, "crowfoot_one", "crowfoot_many"));
-        m.put("many-to-many",  new RelationStyle(null, "crowfoot_many", "crowfoot_many"));
-        m.put("inherit",       new RelationStyle("solid", null, "triangle_outline"));
-        m.put("block",         new RelationStyle(null, "bar", null));
-        RELATION_STYLE = Map.copyOf(m);
-    }
 
     /** 一个模块至少要有几个图形（兜底聚类用；1 个图形的"模块"没有意义） */
     private static final int MIN_CLUSTER_SIZE = 2;
@@ -178,6 +161,58 @@ public class ScenePlanner {
         }
     }
 
+    /**
+     * 原生坐标模式（v2-41）：<b>不调布局引擎</b>、直接采用 LLM 给的种子坐标，
+     * 仅保留「画框认领」—— 把 frame 的成员 id 填进 {@code children}，
+     * 这样画框在渲染端拖动 / 删除时会带上成员（与改造前一致的交互）。
+     *
+     * <p><b>为什么不再重排</b>：后端布局引擎会把所有图形尺寸抹平成统一大小、
+     * 再把整图竖排成一根窄条（实测 c01 长宽比 2.83→0.33、c06 17.67→0.26），
+     * 远不如 LLM 原生布局好看。原生模式下「摆哪、多大」全交给 LLM，
+     * 后端只做结构补全（frame.children）与样式编译（relation → 线型）。
+     *
+     * <p><b>零回归保证</b>：本方法不改动任何几何（x/y/width/height 原样返回），
+     * 因此编辑模式也安全 —— 既有坐标一个字节都不动，不会触发 {@link SceneDrift}。
+     *
+     * @param json bind + dedup 之后的场景 JSON
+     * @return 仅补全 frame.children（与 relation 样式）的场景 JSON
+     */
+    public String claimFramesOnly(String json) {
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode elementsNode = root.get("elements");
+            if (elementsNode == null || !elementsNode.isArray()) {
+                return json;
+            }
+            List<JsonNode> elements = new ArrayList<>();
+            elementsNode.forEach(elements::add);
+            // relation → 视觉样式：只增不删，不动几何（与 arrange 同口径）
+            compileRelations(elements);
+            // 建模块树 + 按名字把 frame 认领给模块（matchFrames 在 partition 内执行）
+            Partition partition = partition(elements);
+            writeFrameChildrenOnly(partition.root);
+            return root.toString();
+        } catch (Exception e) {
+            LOG.warn("原生坐标模式：框认领跳过（{}），原样返回", e.getMessage());
+            return json;
+        }
+    }
+
+    /**
+     * 只把成员 id 填进 frame 的 {@code children}，<b>不重写画框几何</b>
+     * （原生坐标模式下画框尺寸 / 位置由 LLM 给出，后端不该覆盖）。
+     * 递归处理嵌套模块树。
+     */
+    private void writeFrameChildrenOnly(Block block) {
+        if (block.frame != null) {
+            ArrayNode children = block.frame.putArray("children");
+            collectChildren(block, children);
+        }
+        for (Block child : block.children) {
+            writeFrameChildrenOnly(child);
+        }
+    }
+
     // ==================== relation 编译（v2-40 P2） ====================
 
     /**
@@ -201,7 +236,8 @@ public class ScenePlanner {
             if (rel == null || !rel.isTextual()) {
                 continue;
             }
-            RelationStyle style = RELATION_STYLE.get(rel.asText());
+            RelationCatalog.RelationStyle style =
+                    RelationCatalog.STYLE.get(rel.asText());
             if (style == null) {
                 continue;
             }
@@ -259,7 +295,9 @@ public class ScenePlanner {
         }
 
         matchFrames(root, elements);
-        boolean active = nodes.size() > MODULE_THRESHOLD
+        // 有 frame 也要进分区：否则 frame 会留在 LLM 给的旧位置、成员却被重排到别处
+        // （恰好 15 个图形时 15>MODULE_THRESHOLD 不成立，会漏掉带 frame 的图）
+        boolean active = (nodes.size() > MODULE_THRESHOLD || hasFrame(elements))
                 && moduleCount >= 2;
         return new Partition(
                 root, elements, nodes, active, moduleCount);

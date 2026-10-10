@@ -68,7 +68,7 @@ public class DiagramController {
      * 本次请求按"改这张图"处理（当前场景会进 prompt）；否则为新建。
      * 空 sessionId = 无状态生成，只为兼容，不参与上下文与落库。
      */
-    @Operation(summary = "生成图表（SSE）",
+    @Operation(summary = "生成白板内容（SSE）",
             description = "发送用户需求，实时推送 "
                     + "thinking/validation/result/error")
     @PostMapping(value = "/api/chat",
