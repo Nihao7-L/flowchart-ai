@@ -1,6 +1,7 @@
 package io.github.nihaoljx.flowchart.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.nihaoljx.flowchart.client.LlmProvider;
 import io.github.nihaoljx.flowchart.client.Message;
@@ -1116,5 +1117,99 @@ class GenerationServiceTest {
     void issueDigestHandlesEmpty() {
         assertEquals("0 个问题", service.issueDigest(null));
         assertEquals("0 个问题", service.issueDigest(List.of()));
+    }
+
+    // ================= 解析闸门（2026-10-10，v10.4.0） =================
+    //
+    // 这组用例守的是"空白画布"那条通路：模型在 JSON 后面补一句收尾话时，
+    // Jackson 默认宽容（FAIL_ON_TRAILING_TOKENS=false）判它合法，
+    // 而前端 JSON.parse / Python json.loads 都是严格口径、直接报错。
+    // 前端解析一失败就渲染不出场景 = 用户看到空白画布。
+
+    /** 一段合法场景：闸门必须放行 */
+    private static final String GOOD_SCENE =
+            "{\"elements\":[{\"id\":\"n1\",\"type\":\"rectangle\","
+            + "\"x\":0,\"y\":0,\"width\":100,\"height\":60}]}";
+
+    @Test
+    @DisplayName("解析闸门：合法场景放行")
+    void parseGateAcceptsGoodScene() {
+        assertNull(service.parseGate(GOOD_SCENE),
+                "合法 JSON 不该被闸门拦下");
+    }
+
+    @Test
+    @DisplayName("解析闸门：JSON 后面跟一句收尾话必须拦下（后端宽容、前端不宽容）")
+    void parseGateRejectsTrailingProse() {
+        // 这就是模型最常见的收尾习惯。先证明默认解析器会放过它 ——
+        // 否则本用例就失去了意义（闸门拦的是一个后端本来就会拦的东西）。
+        assertDoesNotThrow(
+                () -> new ObjectMapper().readTree(
+                        GOOD_SCENE + "\n希望对你有帮助"),
+                "前提：默认 ObjectMapper 对尾随内容是宽容的");
+
+        ValidationIssue issue = service.parseGate(
+                GOOD_SCENE + "\n希望对你有帮助");
+
+        assertNotNull(issue, "尾随散文必须被闸门拦下");
+        assertEquals("$", issue.field(),
+                "应报在根节点上");
+        assertTrue(issue.reason().contains("不是合法 JSON"),
+                "原因要说清是 JSON 读不通: " + issue.reason());
+    }
+
+    @Test
+    @DisplayName("解析闸门：代码块包裹 / 空内容 / 非对象顶层都要拦")
+    void parseGateRejectsOtherMalformed() {
+        assertNotNull(service.parseGate(null), "null 必须拦下");
+        assertNotNull(service.parseGate("   "), "空白必须拦下");
+        assertNotNull(service.parseGate("[1,2,3]"),
+                "顶层是数组必须拦下（契约要求对象）");
+        assertNotNull(service.parseGate(
+                        "```json\n" + GOOD_SCENE + "\n```"),
+                "``` 包裹必须拦下（extractJson 只剥以 ``` 开头的整体包裹，"
+                        + "这里刻意留一层没剥掉的）");
+    }
+
+    @Test
+    @DisplayName("解析闸门：读不通的内容绝不能当成 result 下发给前端")
+    void malformedPayloadNeverReachesFrontend() throws Exception {
+        // 模型三轮都吐「JSON + 收尾话」：旧实现在这里会把这段谁都读不出来
+        // 的文本当"可解析场景"记进 lastParseable，兜底时原样下发。
+        String garbage = GOOD_SCENE + "\n希望对你有帮助";
+        when(llmProvider.chat(anyList(), anyInt()))
+                .thenReturn(garbage);
+
+        SseEmitter emitter = mock(SseEmitter.class);
+        service.generate(null, "画个方块", emitter);
+
+        String result = resultPayload(emitter);
+        assertNotNull(result, "无论如何都要给前端一份结果");
+        // 关键断言：下发的那一份必须能被严格解析器读出来
+        assertDoesNotThrow(
+                () -> new ObjectMapper()
+                        .enable(DeserializationFeature
+                                .FAIL_ON_TRAILING_TOKENS)
+                        .readTree(result),
+                "下发的 result 必须是严格合法的 JSON: " + result);
+        assertFalse(result.contains("希望对你有帮助"),
+                "收尾散文绝不能混进 result: " + result);
+        verify(emitter).complete();
+    }
+
+    /** 取出最后一个 result 事件的载荷；没有则返回 null */
+    private static String resultPayload(SseEmitter emitter)
+            throws Exception {
+        ArgumentCaptor<ChatEvent> captor =
+                ArgumentCaptor.forClass(ChatEvent.class);
+        verify(emitter, atLeastOnce())
+                .send(captor.capture());
+        String payload = null;
+        for (ChatEvent event : captor.getAllValues()) {
+            if ("result".equals(event.type())) {
+                payload = event.data();
+            }
+        }
+        return payload;
     }
 }

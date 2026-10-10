@@ -23,6 +23,7 @@ import org.springframework.web.servlet.mvc.method
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -213,6 +214,25 @@ public class GenerationService {
 
     /** 会话模型的序列化/反序列化（后端持 IR 唯一真相源，见 ADR-2） */
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * 解析闸门专用的**严格**解析器（2026-10-10）
+     *
+     * <p>为什么要跟 {@link #objectMapper} 分开：默认的 ObjectMapper 走
+     * {@code FAIL_ON_TRAILING_TOKENS=false} —— 读到一个合法值就收工，
+     * 后面剩什么一概不管。而模型最常见的收尾习惯就是在 JSON 后面补一句
+     * "希望对你有帮助"。于是出现口径分裂：**后端判它合法、前端判它非法**
+     * （JS 的 JSON.parse 是严格口径，Python 的 json.loads 同理）。
+     *
+     * <p>后果正好落在最高危的那一类：前端解析一失败就渲染不出场景，
+     * 用户看到的是**空白画布**，而日志这边一切"正常"。
+     *
+     * <p>所以闸门必须对齐**下游**的解析口径，而不是顺着 Jackson 的宽容。
+     * 这里开 FAIL_ON_TRAILING_TOKENS，把"多一个字符"也算成读不通。
+     */
+    private static final ObjectMapper STRICT_JSON =
+            new ObjectMapper().enable(
+                    DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
     public GenerationService(
             LlmProvider llmProvider,
@@ -491,35 +511,54 @@ public class GenerationService {
             // 去重要先丢掉与用户手绘撞端点的线）。
             json = scenePlanner.claimFramesOnly(json);
 
-            // 已能解析出合法结构：记下来，兜底时优先下发它（不丢进度）
-            lastParseable = json;
+            // 解析闸门（2026-10-10）：上面这四环对坏 JSON 都是"原样透传"
+            // （宽容是它们的设计纪律 —— 能修就修，不把关），所以"链路跑完"
+            // **不代表读得通**。原先这里直接 `lastParseable = json`，注释写着
+            // "已能解析出合法结构"，可依据只有"链路跑完了" —— 这个变量名
+            // 一直在说谎。坏内容被记成"可解析场景"以后，某一轮超时走兜底时
+            // 会优先把它下发出去，前端解析失败 = 空白画布。
+            // 现在先真读一次：读不通就当 issue 交给修正轮（对模型来说
+            // "整份重发一个合法 JSON"几乎必成），并且不记进 lastParseable。
+            ValidationIssue malformed = parseGate(json);
+            if (malformed == null) {
+                // 已能解析出合法结构：记下来，兜底时优先下发它（不丢进度）
+                lastParseable = json;
+            }
 
             sendEvent(emitter, "validation",
                     "第 " + round + " 轮校验中...");
-            List<ValidationIssue> issues =
-                    new ArrayList<>(
-                            graphValidator
-                                    .validate(json));
-            // 几何体检（v10.0.0）：结构合法不等于画得能看 —— 连线交叉 /
-            // 穿身 / 标签被压只有量出来才知道。体检器只报告、绝不改坐标
-            // （怎么挪由 LLM 在修正轮里自己决定），所以这里只是追加 issue。
-            issues.addAll(geometryAudit.audit(json));
-            if (editMode && !takeOver && round == 1) {
-                // 只在第一轮提醒"别把用户的图换成新图"：它是一条提醒、
-                // 不是门禁 —— 第二轮 LLM 仍坚持重画就放行，
-                // 用户本来就可能明确要求"重新画一张"
-                ValidationIssue rewrite =
-                        detectRewrite(previousJson, json);
-                if (rewrite != null) {
-                    issues.add(rewrite);
-                }
-                // v2-37：id 全换看 detectRewrite，**保留 id 但整图重排**
-                // 归这里。两者合起来才覆盖 PromptService 那句
-                // "没有要求改动的元素必须原样保留 id / 几何"。
-                ValidationIssue drift =
-                        sceneDrift.check(previousJson, json);
-                if (drift != null) {
-                    issues.add(drift);
+            List<ValidationIssue> issues = new ArrayList<>();
+            if (malformed != null) {
+                // 读不通就无所谓"结构"了：结构校验 / 几何体检 / 改图保真
+                // 对着一段读不出来的文本都说不出更有用的话，全跑一遍只会
+                // 让修正 prompt 里堆满互相矛盾的提示。只报这一条，让模型
+                // 把注意力全放在"重发一份合法 JSON"上。
+                issues.add(malformed);
+            } else {
+                issues.addAll(
+                        graphValidator
+                                .validate(json));
+                // 几何体检（v10.0.0）：结构合法不等于画得能看 —— 连线交叉 /
+                // 穿身 / 标签被压只有量出来才知道。体检器只报告、绝不改坐标
+                // （怎么挪由 LLM 在修正轮里自己决定），所以这里只是追加 issue。
+                issues.addAll(geometryAudit.audit(json));
+                if (editMode && !takeOver && round == 1) {
+                    // 只在第一轮提醒"别把用户的图换成新图"：它是一条提醒、
+                    // 不是门禁 —— 第二轮 LLM 仍坚持重画就放行，
+                    // 用户本来就可能明确要求"重新画一张"
+                    ValidationIssue rewrite =
+                            detectRewrite(previousJson, json);
+                    if (rewrite != null) {
+                        issues.add(rewrite);
+                    }
+                    // v2-37：id 全换看 detectRewrite，**保留 id 但整图重排**
+                    // 归这里。两者合起来才覆盖 PromptService 那句
+                    // "没有要求改动的元素必须原样保留 id / 几何"。
+                    ValidationIssue drift =
+                            sceneDrift.check(previousJson, json);
+                    if (drift != null) {
+                        issues.add(drift);
+                    }
                 }
             }
 
@@ -709,6 +748,68 @@ public class GenerationService {
             }
         }
         return trimmed.strip();
+    }
+
+    /**
+     * 解析闸门：确认**即将下发的那一份**真的能被标准解析器读出来（2026-10-10）
+     *
+     * <p><b>为什么"链路走完了"不等于"读得通"：</b>bind / dedup / sanitize /
+     * claimFramesOnly 这四环的设计纪律都是**宽容**的 —— 遇到坏 JSON 一律
+     * 原样透传（见 SceneBinder / SceneSanitizer 的 catch 分支），因为它们的
+     * 职责是"能修就修"，不是"把关"。所以一段谁都不认识的文本可以安然穿过
+     * 整条链，一路走到下发。
+     *
+     * <p>原代码在这里直接 `lastParseable = json`，注释写的是"已能解析出合法
+     * 结构" —— 这个变量名一直在说谎。它被赋值的唯一依据是"链路跑完了"。
+     * 于是坏内容被记成"可解析场景"，等到某一轮超时 / LLM 掉线走兜底时，
+     * 兜底优先下发的就是它（见 {@link #DELIVER_LAST_PARSEABLE_ON_FAILURE}），
+     * 前端解析失败 = 空白画布。
+     *
+     * <p><b>闸门怎么用：</b>失败不直接丢弃，而是转成一条 issue 交给修正轮 ——
+     * 这类问题的修法对模型来说极其简单（"重新输出一遍合法 JSON"），给一轮
+     * 几乎必成；同时**不再记进 lastParseable**，把兜底那条通路也堵上。
+     *
+     * <p>只做"读得通"这一个判断，不重复 GraphValidator 的结构校验：
+     * 结构对不对由校验器说，这里只回答"下游解析器能不能读"。
+     *
+     * @param json 链路处理完、准备交给校验器的场景 JSON
+     * @return 读不通时返回一条 issue；读得通返回 null
+     */
+    ValidationIssue parseGate(String json) {
+        if (json == null || json.isBlank()) {
+            LOG.warn("解析闸门拦下空内容");
+            return new ValidationIssue(
+                    "$",
+                    "交付内容为空",
+                    "必须输出一个包含 elements 的 JSON 对象");
+        }
+        try {
+            JsonNode root = STRICT_JSON.readTree(json);
+            if (root == null || !root.isObject()) {
+                LOG.warn("解析闸门拦下非对象顶层: {}",
+                        root == null ? "null"
+                                : root.getNodeType());
+                return new ValidationIssue(
+                        "$",
+                        "顶层不是 JSON 对象"
+                                + "（实际是 "
+                                + (root == null ? "空" : root.getNodeType())
+                                + "）",
+                        "必须输出一个对象：{\"elements\":[…]}");
+            }
+            return null;
+        } catch (Exception e) {
+            // 最常见的就是"JSON 后面还跟着一句话"：Jackson 默认容忍尾随
+            // 内容，前端不容忍。这里如实报出来，让模型知道要整份重发。
+            LOG.warn("解析闸门拦下不可解析的交付内容: {}",
+                    e.getMessage());
+            return new ValidationIssue(
+                    "$",
+                    "交付内容不是合法 JSON: " + e.getMessage(),
+                    "只输出一个 JSON 对象：前后不要任何多余字符、"
+                            + "不要写注释、不要用 ``` 包裹、"
+                            + "不要加「以上」之类的收尾话");
+        }
     }
 
     private void sendEvent(
