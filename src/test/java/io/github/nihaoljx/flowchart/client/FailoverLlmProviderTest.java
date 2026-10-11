@@ -285,7 +285,7 @@ class FailoverLlmProviderTest {
     }
 
     @Test
-    @DisplayName("429 两种语义：额度不足(1113)长冷却，真限流(1305)短冷却")
+    @DisplayName("429 两种语义：额度不足(1113)冷却 30s 上限，真限流(1305)冷却 15s")
     void quota429CoolsDownLonger() throws Exception {
         AtomicInteger hitsQuota = new AtomicInteger();
         AtomicInteger hitsRate = new AtomicInteger();
@@ -307,11 +307,12 @@ class FailoverLlmProviderTest {
 
         long quotaCool = r.cooldownRemainingSeconds("quota");
         long rateCool = r.cooldownRemainingSeconds("rate");
-        assertTrue(quotaCool > 500,
-                "额度类 429 应按 10 分钟冷却，实际 " + quotaCool + "s");
-        // 60s 冷却 + 最多 10% 抖动（防同时恢复造成二次冲击）→ 上限放到 70s
-        assertTrue(rateCool > 0 && rateCool <= 70,
-                "限流类 429 应按 60 秒冷却（含抖动），实际 " + rateCool + "s");
+        // 2026-10-11：冷却整体改短并加了上限 —— 额度类 30s、限流类 15s，
+        // 双向抖动 ±30% 后仍必须落在 ≤30s 内（上限是硬约束，抖动不许突破它）。
+        assertTrue(quotaCool > 0 && quotaCool <= 30,
+                "额度类 429 应按 30 秒封顶冷却（含抖动），实际 " + quotaCool + "s");
+        assertTrue(rateCool > 0 && rateCool <= 30,
+                "限流类 429 应按 15 秒冷却（含抖动、且不超上限），实际 " + rateCool + "s");
     }
 
     @Test
@@ -342,7 +343,7 @@ class FailoverLlmProviderTest {
     void substringDigitsDoNotTriggerQuotaCooldown() throws Exception {
         AtomicInteger hitsA = new AtomicInteger();
         // request_id 里带 "1113"：旧实现用 body.contains("1113") 会误判成余额不足，
-        // 把健康候选冷却 10 分钟。真因是 code=1305（限流），应只冷却 60s。
+        // 把健康候选冷却 10 分钟。真因是 code=1305（限流），应只冷却 15s（±抖动）。
         String a = startStub(hitsA, 429,
                 "{\"error\":{\"code\":\"1305\",\"message\":"
                         + "\"该模型当前访问量过大\"},"
@@ -353,9 +354,9 @@ class FailoverLlmProviderTest {
 
         assertEquals("OK", r.chat(List.of(Message.user("hi")), 10));
         long cool = r.cooldownRemainingSeconds("a");
-        assertTrue(cool > 0 && cool <= 70,
-                "code=1305 应按限流 60s(+抖动) 冷却，而不是因为 request_id "
-                        + "含 1113 就被当余额不足冷却 10 分钟，实际 "
+        assertTrue(cool > 0 && cool <= 30,
+                "code=1305 应按限流 15s(+抖动、不超 30s 上限) 冷却，而不是因为"
+                        + " request_id 含 1113 就被当余额不足冷却 10 分钟，实际 "
                         + cool + "s");
     }
 

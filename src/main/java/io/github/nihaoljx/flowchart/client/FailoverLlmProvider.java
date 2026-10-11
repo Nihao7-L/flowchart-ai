@@ -42,12 +42,31 @@ public class FailoverLlmProvider implements LlmProvider {
     private static final Logger LOG =
             LoggerFactory.getLogger(FailoverLlmProvider.class);
 
-    /** 额度 / 权限类：冷却 10 分钟（短时间内重试没意义） */
-    private static final long COOL_QUOTA_MS = 10 * 60_000L;
-    /** 限流 / 过载：冷却 60 秒 */
-    private static final long COOL_RATE_MS = 60_000L;
-    /** 5xx / 超时 / 网络：冷却 120 秒 */
-    private static final long COOL_TEMP_MS = 120_000L;
+    /**
+     * 额度 / 权限类冷却：30 秒（2026-10-11 由 10 分钟改短）。
+     *
+     * <p>改短的理由是一次实测事故：一个复杂请求把 5 个候选全部打失败，
+     * 每个候选各吃 120s~10min 冷却 ⇒ 后续每次请求进来时候选表**全在冷却**，
+     * 3 轮重试在 <b>47 毫秒</b>内空转完毕 —— 日志明写"剩余预算 869s 仍够"，
+     * 却只能吐兜底占位符。冷却的作用是"让下游喘口气"，不该变成"把整条链锁死"。
+     */
+    private static final long COOL_QUOTA_MS = 30_000L;
+
+    /** 限流 / 过载（429）：15 秒（原 60 秒） */
+    private static final long COOL_RATE_MS = 15_000L;
+
+    /** 5xx / 超时 / 网络 / 空正文：20 秒（原 120 秒） */
+    private static final long COOL_TEMP_MS = 20_000L;
+
+    /**
+     * 任何非永久冷却的**硬上限**：30 秒。
+     *
+     * <p>它保证"冷却时长"永远远小于一轮重试的量级（单轮上限 420 秒）——
+     * 于是同一请求的第 2、3 轮重试时候选必然已恢复，这才是"三轮重试"该有的语义。
+     * 只要这个上限被突破（历史上是 10 分钟），三轮重试就退化成"3 次瞬间空转"。
+     */
+    private static final long COOL_MAX_MS = 30_000L;
+
     /** 永久停用（模型被删、key 无效） */
     private static final long STOP_FOREVER = Long.MAX_VALUE;
 
@@ -57,10 +76,23 @@ public class FailoverLlmProvider implements LlmProvider {
     /**
      * 单个候选最多能占用"当前剩余预算"的比例。
      *
-     * <p>防的是"一个慢候选吃掉整轮"：留出余量给后面的候选，
-     * 也留出余量给下一轮（不然首轮全超时 = 后面两轮都没钱跑）。
+     * <p>2026-10-11 实测改口径：原值 0.6 的目的是"防一个慢候选吃掉整轮"，
+     * 但对付费主力（glm-5.3-flash，复杂图实测要 380s）来说，0.6 把首候选窗口
+     * 压到 {@code 420×0.6 = 252s} ⇒ 每轮都在它还没写完时被掐断
+     * （实测 2_order_flow：849s、三轮全灭、只剩占位符）。
+     *
+     * <p>提到 0.95 后（配合 MAX_ROUND_SECONDS=900）：首候选拿到
+     * {@code min(900, 900×0.95) = 855s} ⇒ 主力一次能连续写 14 分钟，
+     * 只要 120 秒内有新内容就永不判死（空闲判死见 OpenAiCompatibleProvider）。
+     *
+     * <p>代价：备用候选在单轮里基本分不到时间。在复杂图上这个代价为 0 ——
+     * 备用（deepseek-v4.1-flash）自身需要 131s，分到 100s 本来也注定 0 产出。
+     *
+     * <p>⚠️ 注意本值处在 {@code min} 的最内层，它**只能往下压窗口**。
+     * 候选自身的 {@code timeout-seconds}（application.yml）在更外层，
+     * 无论写多大都抬不过本值算出的 fairShare —— 所以调窗口只能调本常量。
      */
-    private static final double MAX_BUDGET_SHARE = 0.6;
+    private static final double MAX_BUDGET_SHARE = 0.95;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -414,17 +446,21 @@ public class FailoverLlmProvider implements LlmProvider {
         return null;
     }
 
-    /** 冷却时长只看错误性质，不看状态码。 */
+    /** 冷却时长只看错误性质，不看状态码；结果统一受 {@link #COOL_MAX_MS} 封顶。 */
     private static long cooldownOf(LlmFailureKind kind, boolean rateLimit) {
         if (kind == LlmFailureKind.QUOTA && rateLimit) {
             return COOL_RATE_MS;
         }
-        return switch (kind) {
+        long ms = switch (kind) {
             case DETERMINISTIC -> 0L;
             case TRANSIENT -> COOL_TEMP_MS;
             case QUOTA -> COOL_QUOTA_MS;
             case PERMANENT -> STOP_FOREVER;
         };
+        // 统一封顶：只有"永久停用"能突破上限，其余一律 ≤ COOL_MAX_MS。
+        // 放在这里而不是各常量上，是为了让"上限"只有一个来源 ——
+        // 以后调任何一档的时长都不会不小心越过它。
+        return ms >= STOP_FOREVER ? ms : Math.min(ms, COOL_MAX_MS);
     }
 
     /**
@@ -489,16 +525,23 @@ public class FailoverLlmProvider implements LlmProvider {
     }
 
     /**
-     * 冷却时长加正向抖动（0~10%）。
+     * 冷却时长加**双向抖动**（±30%）。
      *
-     * <p>防的是"冷却一结束，所有候选同时恢复、一起冲向下游"造成二次故障。
-     * 只加不减，保证不会因为抖动提前恢复。
+     * <p>为什么要抖动：多个候选被同时冷却时，若时长完全一致，它们会在**同一时刻**
+     * 一起恢复、又被下一次请求一起打中，形成二次冲击。
+     * 把恢复时刻抖开，这次冲击就被摊平了。
+     *
+     * <p>2026-10-11 由"只加不减的 0~10%"改成"双向 ±30%"：配合总量封顶 30 秒之后，
+     * 需要的相对错开幅度更大；且正向抖动本来就会被 {@link #COOL_MAX_MS} 截断，
+     * 只有双向才能让"接近上限"的那一档也有真实错开。下限保 1 秒。
      */
     private static long withJitter(long coolMs) {
         if (coolMs <= 0 || coolMs >= STOP_FOREVER) {
             return coolMs;
         }
-        long span = Math.max(1_000L, coolMs / 10);
-        return coolMs + ThreadLocalRandom.current().nextLong(span);
+        long span = Math.max(1_000L, (long) (coolMs * 0.3));
+        long jittered = coolMs
+                + ThreadLocalRandom.current().nextLong(-span, span + 1);
+        return Math.max(1_000L, Math.min(COOL_MAX_MS, jittered));
     }
 }

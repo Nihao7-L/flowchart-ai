@@ -71,8 +71,31 @@ public class GenerationService {
      * 在第一轮就把 300 秒预算耗光、连第 2 轮都开不起来）。现在真正的
      * 防挂死手段是**每候选的空闲判死**（见 OpenAiCompatibleProvider），
      * 总预算只当兜底，所以可以放宽。
+     *
+     * <p>2026-10-11 再由 900 秒上调到 1800 秒：付费主力 glm-5.3-flash 实测画
+     * 复杂图需要约 380 秒，而 0.6 的候选份额把首候选窗口压到 252 秒 ⇒ 每轮都在
+     * 它还没写完时掐断（实测 2_order_flow：849 秒三轮全灭、只剩占位符）。
+     * 现在给到 30 分钟，让主力在一次生成里能拿到**两次 850 秒级**的机会。
+     * 注意这是**上限**不是固定等待——正常请求 30~400 秒即返回。
      */
-    public static final long TOTAL_BUDGET_MS = 900_000L;
+    public static final long TOTAL_BUDGET_MS = 1_800_000L;
+
+    /**
+     * 总预算的运行时读数（2026-10-11）。
+     *
+     * <p>为什么需要它：{@code TOTAL_BUDGET_MS} 是 {@code static final} 字面量，
+     * 别的类若写 {@code GenerationService.TOTAL_BUDGET_MS + 20_000L} 就是一个
+     * **编译期常量表达式**，javac 会把它**内联**成字面量写进调用方的 class 文件，
+     * 运行时不再回读本类。于是"只改本文件、调用方源码没动"时，增量编译不会
+     * 重编译调用方 ⇒ 两边的值**静默失配**（曾经的真实事故形态：SSE 通道先于
+     * 生成结束被掐断，前端只收到一条腰斩的流）。
+     *
+     * <p>方法调用不是编译期常量 ⇒ 不会被内联 ⇒ 调用方永远读到当前值。
+     * 需要与本值恒等对齐的地方一律调本方法，不要直接引用常量。
+     */
+    public static long totalBudgetMs() {
+        return TOTAL_BUDGET_MS;
+    }
 
     /** 留给"发结果 + 关闭流"的收尾余量（毫秒），不参与 LLM 调用 */
     private static final long TAIL_RESERVE_MS = 30_000L;
@@ -118,8 +141,12 @@ public class GenerationService {
      *
      * <p>2026-10-07 由 300 秒上调到 420 秒，且**判死主依据已换成流式空闲
      * 判据**：该值现在只是"兜底总时限"，不会在模型还在稳定吐字时把它掐掉。
+     *
+     * <p>2026-10-11 由 420 秒上调到 900 秒：要真正让"模型没停就不中断"生效，
+     * 单轮必须容得下一次完整的慢生成。配合 MAX_BUDGET_SHARE=0.95，
+     * 首候选窗口 = min(900, 900×0.95=855) = 855 秒，远大于实测所需的 380 秒。
      */
-    private static final int MAX_ROUND_SECONDS = 420;
+    private static final int MAX_ROUND_SECONDS = 900;
 
     /** 低于这个秒数就不再开新一轮：开也跑不完，不如早点如实报错 */
     private static final int MIN_ROUND_SECONDS = 10;

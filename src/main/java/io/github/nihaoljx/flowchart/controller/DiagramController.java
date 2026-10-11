@@ -34,13 +34,19 @@ public class DiagramController {
     /**
      * SSE 通道存活上限（毫秒）
      *
-     * 由 {@link GenerationService#TOTAL_BUDGET_MS} 推导，两者必须恒等对齐：
+     * 由 {@link GenerationService#totalBudgetMs()} 推导，两者必须恒等对齐：
      * 通道若先于生成结束被 Spring 掐断，前端只能收到一条被腰斩的流
      * （现象：聊天栏说"已生成 N 个元素"却看不到图，或干脆毫无提示）。
      * 旧版写死 120 秒，而实测单轮 LLM 调用就要约 100 秒——第 2 轮必然撞墙。
+     *
+     * <p>⚠️ 2026-10-11 改：原来直接写 {@code GenerationService.TOTAL_BUDGET_MS + 20_000L}，
+     * 那是**编译期常量表达式**，javac 会内联成字面量写进本 class，运行时不再回读
+     * GenerationService。后果是"只改了 TOTAL_BUDGET_MS、本文件没动"时增量编译
+     * 不会重编译本类 ⇒ 通道上限静默停在旧值（例如预算 30 分钟、通道 15 分钟，
+     * 第 15 分钟被腰斩）。改成**方法调用**后不再是编译期常量，不会内联。
      */
     private static final long SSE_TIMEOUT_MS =
-            GenerationService.TOTAL_BUDGET_MS + 20_000L;
+            GenerationService.totalBudgetMs() + 20_000L;
 
     private final GenerationService generationService;
     private final SessionStore sessionStore;
