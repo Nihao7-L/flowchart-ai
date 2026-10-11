@@ -249,4 +249,61 @@ class OpenAiCompatibleProviderTest {
     void isConfiguredAcceptsRealKey() {
         assertTrue(newProvider("http://127.0.0.1:1/x", "sk-abcdef123456").isConfigured());
     }
+
+    // ==================== max_tokens（2026-10-10）====================
+
+    @Test
+    @DisplayName("请求体：配了 max-tokens 就必须真的发出去（截断的解药）")
+    void sendsMaxTokensWhenConfigured() throws Exception {
+        String url = startStubCapturing(
+                200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+        OpenAiCompatibleProvider provider = newProvider(url, "sk-test");
+        ReflectionTestUtils.setField(provider, "maxTokens", 8192);
+
+        assertEquals("ok", provider.chat("hi"));
+
+        JsonNode sent = new ObjectMapper().readTree(lastRequestBody.get());
+        assertTrue(sent.has("max_tokens"),
+                "配了 max-tokens 却没发出去 = 大图仍会被厂商默认上限截断");
+        assertEquals(8192, sent.get("max_tokens").asInt());
+    }
+
+    @Test
+    @DisplayName("请求体：没配 max-tokens 就不要凭空加这个字段")
+    void omitsMaxTokensWhenNotConfigured() throws Exception {
+        String url = startStubCapturing(
+                200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+
+        assertEquals("ok", newProvider(url, "sk-test").chat("hi"));
+
+        JsonNode sent = new ObjectMapper().readTree(lastRequestBody.get());
+        assertFalse(sent.has("max_tokens"),
+                "默认不设：各厂商对越界的 max_tokens 会直接 400");
+    }
+
+    // ==================== 流式逐帧 usage 占位（2026-10-10 实测现场）====================
+
+    @Test
+    @DisplayName("流式：每帧都带全 0 的 usage 占位 → 正文仍完整拼接")
+    void streamingToleratesZeroUsagePlaceholders() throws Exception {
+        // 复刻魔搭的实测行为：每一帧都塞一份全 0 的 usage 对象。
+        // 原先代码在逐帧回调里直接 println 这份占位，一次 3000+ 字符的输出
+        // 会刷出几百行 "prompt=0, completion=0, total=0"（本次修的就是它）。
+        // 这里守住数据面：占位值不得污染正文拼接。
+        String zeroUsage = "\"usage\":{\"prompt_tokens\":0,"
+                + "\"completion_tokens\":0,\"total_tokens\":0},";
+        String sse = "data: {" + zeroUsage + "\"choices\":[{\"finish_reason\":null,"
+                + "\"delta\":{\"content\":\"{\\\"elements\\\":\"}}]}\n\n"
+                + "data: {" + zeroUsage + "\"choices\":[{\"finish_reason\":null,"
+                + "\"delta\":{\"content\":\"[]}\"}}]}\n\n"
+                + "data: {" + zeroUsage + "\"choices\":[{\"finish_reason\":\"stop\","
+                + "\"delta\":{}}]}\n\n"
+                + "data: [DONE]\n\n";
+        String url = startStub(200, sse);
+        OpenAiCompatibleProvider provider = newProvider(url, "sk-test");
+        ReflectionTestUtils.setField(provider, "streamMode", true);
+
+        assertEquals("{\"elements\":[]}", provider.chat("hi"),
+                "逐帧零值 usage 不得影响正文拼接");
+    }
 }

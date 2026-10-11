@@ -268,15 +268,21 @@ class PromptServiceContractTest {
     }
 
     @Test
-    @DisplayName("v5.8.0 核心条文在位：两形态契约 / freedraw 默认不开 / 增量全量场景 / relation")
+    @DisplayName("v5.8.0 核心条文在位：两形态契约 / freedraw 类型口径 / relation")
     void v580EssentialRulesKept() throws IOException {
         String block = promptService.buildSystemBlock();
 
-        // 这四条是 v5.8.0 时代的「硬护栏」，回退到该版本后必须原样在 md 里；
-        // 一旦被合并或精简误删，出图质量会无声下降（没有断言兜底就发现不了）。
+        // 这几条是 v5.8.0 时代的「硬护栏」，被合并或精简误删会让出图质量无声下降
+        //（没有断言兜底就发现不了）。
         assertTrue(block.contains("SYSTEM_ERROR"), "静态层缺少两形态契约（正常 elements / 系统错误）");
-        assertTrue(block.contains("freedraw"), "静态层缺少 freedraw 默认不开的约束");
-        assertTrue(block.contains("全量 elements"), "静态层缺少增量输出全量场景的约束");
+        // v10.9.0：freedraw 的使用边界已按用户决策从 md 正文删除（不做限制）。
+        // 这里只守住「静态层必须提到它」—— 该词由契约段（scene.schema.json 的 freedraw
+        // 分支）提供，属于**类型口径**，与"允不允许用"无关。
+        assertTrue(block.contains("freedraw"), "静态层缺少 freedraw 的类型口径（契约段应列出该类型）");
+        // v10.9.0：「全量 elements」断言已删除 —— 用户精简版 md 去掉了「增量保护」规则，
+        // 该约束改由 PromptService.modifyRulesBlock() 在运行期注入（PromptService:497
+        // 「你输出的是**修改后的完整场景**（全量 elements），不是差异片段」），
+        // 静态层不再有此文案，继续断言等于逼 md 把这条规则写回来。
         assertTrue(block.contains("relation"), "静态层缺少 relation 关系建模指引");
     }
 

@@ -1,5 +1,6 @@
 package io.github.nihaoljx.flowchart.client;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -7,11 +8,15 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 多候选故障转移链（best-first + 每候选独立冷却）。
@@ -22,6 +27,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>触发切换的"硬失败"：HTTP 401 / 402 / 403（额度 / 权限）、429（限流 / 过载）、
  * 5xx、超时、网络错误，以及"输出被截断"。2xx 但内容不合格**不在此列** ——
  * 那是 GenerationService 校验轮的事，混在一起会让问题难定位。
+ *
+ * <p><b>2026-10-10 重构：错误先分类、再决定冷却。</b>
+ * 之前冷却时长直接由 HTTP 状态码决定，导致"请求本身有问题"
+ * （如上下文超长，厂商可能返回 400 甚至 429）被当成候选故障，
+ * 把健康的候选冷却掉、甚至拖垮整条候选链。现在统一走
+ * {@link LlmFailureKind} 分类，冷却时长按分类查表，见 {@link #cooldownOf}。
  */
 @Component
 @Primary
@@ -51,19 +62,47 @@ public class FailoverLlmProvider implements LlmProvider {
      */
     private static final double MAX_BUDGET_SHARE = 0.6;
 
-    /** 429 到底是"没额度"还是"太挤"——各家都用 429，只能读 body */
-    private static boolean isQuotaError(String body) {
-        if (body == null) {
-            return false;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** 命中即判"请求太大"：这类错换任何候选都一样，必须最早判，见 {@link #classify} */
+    private static final String[] CONTEXT_OVERFLOW_HINTS = {
+            "context_length", "context length", "maximum context",
+            "too many tokens", "too many input tokens",
+            "input is too long", "prompt is too long",
+            "reduce the length", "字符串超长", "输入长度超"};
+
+    /** 命中即判"这个候选不支持该请求"：只停它，不停整条链（换家可能行） */
+    private static final String[] CANDIDATE_DEAD_HINTS = {
+            "has no permission", "does not exist", "model_not_found",
+            "unsupported model", "permission denied"};
+
+    /** 一次失败的完整判定结果 */
+    static final class Verdict {
+        final LlmFailureKind kind;
+        final long cooldownMs;
+        /** true = 立刻中断整条候选链（同一份 messages 再发给谁都一样的错） */
+        final boolean abortChain;
+        final String reason;
+
+        Verdict(LlmFailureKind kind, boolean rateLimit,
+                boolean abortChain, String reason) {
+            this.kind = kind;
+            // 冷却时长统一由 cooldownOf 查表得出，不在各处散写魔法数字
+            this.cooldownMs = cooldownOf(kind, rateLimit);
+            this.abortChain = abortChain;
+            this.reason = reason;
         }
-        String b = body.toLowerCase();
-        return b.contains("1113")
-                || b.contains("余额不足")
-                || b.contains("请充值")
-                || b.contains("insufficient")
-                || b.contains("quota")
-                || b.contains("exceeded your current quota")
-                || b.contains("no available resource");
+    }
+
+    /**
+     * 请求被拒（确定性失败）：上层收到它应改需求 / 缩规模，而不是继续重试。
+     *
+     * <p>单独一个类型是为了让调用方能把"该改需求"和"该等一会儿"分开。
+     */
+    public static class LlmRequestRejectedException extends Exception {
+        public LlmRequestRejectedException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     private final LlmProperties properties;
@@ -77,6 +116,7 @@ public class FailoverLlmProvider implements LlmProvider {
     /** 一个候选 = 一个独立的 OpenAI 兼容客户端 + 排序 / 能力元数据 */
     private static final class Entry {
         final String name;
+        final String vendor;
         final int tier;
         final int minRound;
         final int timeoutSeconds;
@@ -85,6 +125,7 @@ public class FailoverLlmProvider implements LlmProvider {
 
         Entry(LlmProperties.Candidate c) {
             this.name = c.getName();
+            this.vendor = vendorOf(c.getBaseUrl());
             this.tier = c.getTier();
             this.minRound = c.getMinRound();
             this.timeoutSeconds = c.getTimeoutSeconds();
@@ -92,7 +133,26 @@ public class FailoverLlmProvider implements LlmProvider {
             this.client = new OpenAiCompatibleProvider(
                     c.getBaseUrl(), c.getApiKey(), c.getModel(),
                     c.getTimeoutSeconds(), false, "127.0.0.1", 7890,
-                    c.isStream(), c.getIdleTimeoutSeconds());
+                    c.isStream(), c.getIdleTimeoutSeconds(),
+                    c.getMaxTokens());
+        }
+    }
+
+    /**
+     * 按 host 归厂商。
+     *
+     * <p>用途：同一家的多个候选在限流时往往一起倒（共享同一份账号配额），
+     * 逐个重试纯属浪费一轮预算，见 {@link #chat} 里的同厂商跳过。
+     */
+    private static String vendorOf(String baseUrl) {
+        if (isBlank(baseUrl)) {
+            return "";
+        }
+        try {
+            String host = URI.create(baseUrl).getHost();
+            return host == null ? baseUrl : host;
+        } catch (Exception e) {
+            return baseUrl;
         }
     }
 
@@ -161,7 +221,16 @@ public class FailoverLlmProvider implements LlmProvider {
             }
         }
         if (order.isEmpty()) {
-            order = new ArrayList<>(entries);
+            // 兜底不能是 order = entries —— 那会把 minRound 过滤整个撤销，
+            // 限量强模型在第 1 轮就被放行（"首轮不烧额度"的意图当场作废）。
+            // 正确语义：退到本表门槛最低的那一档，而不是无视门槛。
+            int lowest = entries.stream()
+                    .mapToInt(e -> e.minRound).min().orElse(1);
+            order = new ArrayList<>(entries.stream()
+                    .filter(e -> e.minRound == lowest).toList());
+            LOG.warn("[Failover] effort={} 把所有候选都筛掉了，"
+                            + "退到 minRound={} 档（{} 个候选）",
+                    effort, lowest, order.size());
         }
         LOG.info("[Failover] 本轮难度档 effort={}（轮次={}，规模={}），"
                         + "可用候选 {} 个: {}",
@@ -170,8 +239,21 @@ public class FailoverLlmProvider implements LlmProvider {
 
         Exception last = null;
         boolean truncated = false;
+        // 本次调用内已被判"额度/限流"的厂商：同家剩余候选一起跳过
+        Set<String> deadVendors = new HashSet<>();
+        Verdict abort = null;
 
         while (!order.isEmpty()) {
+            if (!deadVendors.isEmpty() && order.stream()
+                    .anyMatch(e -> !deadVendors.contains(e.vendor))) {
+                // 只在"还剩别家可试"时才跳，否则宁可把同家候选再试一遍
+                int before = order.size();
+                order.removeIf(e -> deadVendors.contains(e.vendor));
+                if (order.size() < before) {
+                    LOG.info("[Failover] 跳过厂商 {} 的剩余候选 {} 个",
+                            deadVendors, before - order.size());
+                }
+            }
             Entry e = pick(order, truncated);
             order.remove(e);
 
@@ -216,23 +298,36 @@ public class FailoverLlmProvider implements LlmProvider {
                         + "改换「大输出」候选重试", e.name);
             } catch (OpenAiCompatibleProvider.LlmHttpException he) {
                 last = he;
-                // 429 有两种语义、只能靠 body 分（2026-10-07 实测）：
-                //   智谱 code=1113「余额不足或无可用资源包」= 额度问题 → 长冷却
-                //   智谱 code=1305「该模型当前访问量过大」= 真限流     → 短冷却
-                boolean quota = isQuotaError(he.body);
-                long cool = switch (he.status) {
-                    case 401, 402, 403 -> COOL_QUOTA_MS;
-                    case 429 -> quota ? COOL_QUOTA_MS : COOL_RATE_MS;
-                    case 404 -> STOP_FOREVER;
-                    default -> COOL_TEMP_MS;
-                };
-                applyCooldown(e, cool, "HTTP " + he.status
-                        + (quota ? "(额度)" : ""));
+                Verdict v = classify(he.status, he.body);
+                if (v.cooldownMs > 0) {
+                    applyCooldown(e, withJitter(v.cooldownMs),
+                            v.reason + "(" + v.kind + ")");
+                } else {
+                    LOG.warn("[Failover] 候选 {} 失败({})，不冷却："
+                                    + "误冷却等同于凭空摘掉一个健康候选",
+                            e.name, v.reason);
+                }
+                if (v.kind == LlmFailureKind.QUOTA) {
+                    deadVendors.add(e.vendor);
+                }
+                if (v.abortChain) {
+                    abort = v;
+                    LOG.warn("[Failover] 判定为确定性失败({})，中断候选链："
+                                    + "同一份请求换任何候选都是一样的错，"
+                                    + "继续试只会白烧时间窗",
+                            v.reason);
+                    break;
+                }
             } catch (Exception ex) {
                 last = ex;
-                applyCooldown(e, COOL_TEMP_MS,
+                applyCooldown(e, withJitter(COOL_TEMP_MS),
                         ex.getClass().getSimpleName());
             }
+        }
+        if (abort != null) {
+            throw new LlmRequestRejectedException(
+                    "LLM 请求被拒：" + abort.reason
+                            + "（重试无用，请缩短需求或降低规模）", last);
         }
         throw new Exception("所有模型候选均不可用（truncated="
                 + truncated + "）", last);
@@ -282,5 +377,128 @@ public class FailoverLlmProvider implements LlmProvider {
             LOG.warn("[Failover] 候选 {} 失败({})，冷却 {} 秒",
                     e.name, reason, coolMs / 1000);
         }
+    }
+
+    private static boolean containsAny(String body, String... keys) {
+        for (String k : keys) {
+            if (body.contains(k)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 取厂商错误码（如智谱 1113 余额不足 / 1305 过载）。
+     *
+     * <p>刻意不用 {@code body.contains("1113")}：那是**全文子串匹配**，
+     * request_id、时间戳、token 计数里出现这四个数字就会被误判成余额不足，
+     * 从而把健康候选冷却 10 分钟。只认 {@code error.code} 字段。
+     *
+     * @return 厂商 code；取不到返回 null（调用方按"认不出"保守处理）
+     */
+    private static String vendorCode(String body) {
+        if (body == null || body.isBlank()) {
+            return null;
+        }
+        try {
+            var root = MAPPER.readTree(body);
+            var err = root.path("error");
+            var code = err.has("code") ? err.get("code") : root.get("code");
+            if (code != null && !code.isNull()) {
+                return code.asText();
+            }
+        } catch (Exception ignored) {
+            // 非 JSON 错误体（网关 HTML 错误页之类）→ 当认不出处理
+        }
+        return null;
+    }
+
+    /** 冷却时长只看错误性质，不看状态码。 */
+    private static long cooldownOf(LlmFailureKind kind, boolean rateLimit) {
+        if (kind == LlmFailureKind.QUOTA && rateLimit) {
+            return COOL_RATE_MS;
+        }
+        return switch (kind) {
+            case DETERMINISTIC -> 0L;
+            case TRANSIENT -> COOL_TEMP_MS;
+            case QUOTA -> COOL_QUOTA_MS;
+            case PERMANENT -> STOP_FOREVER;
+        };
+    }
+
+    /**
+     * 唯一的错误分类入口（2026-10-10）。
+     *
+     * <p>顺序是刻意的：<b>先读 body 语义、再按状态码兜底</b>。
+     * 厂商常把"上下文超长"返回成 400 甚至 429，若按状态码先判，
+     * 就会被误归到限流 / 额度，整条候选链被误冷却 —— 这正是 P0 级事故。
+     *
+     * @param status HTTP 状态码
+     * @param body   响应体（可能为 null）
+     * @return 判定结果：性质 + 冷却时长 + 是否中断整条链
+     */
+    static Verdict classify(int status, String body) {
+        String b = body == null ? "" : body.toLowerCase();
+
+        // ① 请求本身太大：换谁都不行，且绝不能冷却任何候选
+        if (containsAny(b, CONTEXT_OVERFLOW_HINTS)) {
+            return new Verdict(LlmFailureKind.DETERMINISTIC, false, true,
+                    "上下文超长(HTTP " + status + ")");
+        }
+        // ② 这个候选不支持该请求：只停它（换家可能行），不停整条链
+        if (containsAny(b, CANDIDATE_DEAD_HINTS)) {
+            return new Verdict(LlmFailureKind.PERMANENT, false, false,
+                    "候选不支持该请求(HTTP " + status + ")");
+        }
+        if (status == 404) {
+            return new Verdict(LlmFailureKind.PERMANENT, false, false,
+                    "模型不存在(404)");
+        }
+        if (status == 401 || status == 402 || status == 403) {
+            return new Verdict(LlmFailureKind.QUOTA, false, false,
+                    "鉴权/额度(HTTP " + status + ")");
+        }
+        if (status == 429) {
+            // 429 有两种语义、只能靠厂商 code 分（2026-10-07 实测）：
+            //   智谱 code=1113「余额不足或无可用资源包」= 额度问题 → 长冷却
+            //   智谱 code=1305「该模型当前访问量过大」= 真限流     → 短冷却
+            String code = vendorCode(body);
+            if ("1113".equals(code)) {
+                return new Verdict(LlmFailureKind.QUOTA, false, false,
+                        "余额不足(code=1113)");
+            }
+            if ("1305".equals(code)) {
+                return new Verdict(LlmFailureKind.QUOTA, true, false,
+                        "访问量过大(code=1305)");
+            }
+            // 认不出厂商 code：保守当瞬时错误，宁可多试一次
+            return new Verdict(LlmFailureKind.TRANSIENT, false, false,
+                    "429 未知语义(code=" + code + ")");
+        }
+        if (status >= 500) {
+            return new Verdict(LlmFailureKind.TRANSIENT, false, false,
+                    "服务端错误(HTTP " + status + ")");
+        }
+        // 其余 4xx：重试通常没用，所以不冷却候选；但**不中断整条链** ——
+        // 因为 4xx 里混着"厂商特性差异"（如某家不吃 max_tokens 这个值、
+        // 某家不支持某个可选参数），换一家可能就通了。只有"上下文超长"
+        // 那种与候选无关的错才值得直接中断（见上面第 ① 条）。
+        return new Verdict(LlmFailureKind.DETERMINISTIC, false, false,
+                "请求被拒(HTTP " + status + ")");
+    }
+
+    /**
+     * 冷却时长加正向抖动（0~10%）。
+     *
+     * <p>防的是"冷却一结束，所有候选同时恢复、一起冲向下游"造成二次故障。
+     * 只加不减，保证不会因为抖动提前恢复。
+     */
+    private static long withJitter(long coolMs) {
+        if (coolMs <= 0 || coolMs >= STOP_FOREVER) {
+            return coolMs;
+        }
+        long span = Math.max(1_000L, coolMs / 10);
+        return coolMs + ThreadLocalRandom.current().nextLong(span);
     }
 }

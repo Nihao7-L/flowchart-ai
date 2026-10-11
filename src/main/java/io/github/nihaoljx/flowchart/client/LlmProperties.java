@@ -56,6 +56,14 @@ public class LlmProperties {
         private boolean vision = false;
         /** 是否"大输出"候选（发生截断时优先换到它） */
         private boolean largeOutput = false;
+        /**
+         * 单次输出上限（token）；0 = 不设，走厂商默认值（2026-10-10）。
+         *
+         * <p>截断（{@code finish_reason=length}）的<b>真正解药</b>是这个值，
+         * 而不是"换一个更大输出的模型"—— 换模型只是赌对面的默认上限更高。
+         * 大图任务应显式给足（如 16384）。
+         */
+        private int maxTokens = 0;
         /** 该候选单次调用上限（秒）—— 流式下是"兜底总时限"，不是判死主依据 */
         private int timeoutSeconds = 120;
         /**
@@ -136,6 +144,14 @@ public class LlmProperties {
 
         public void setLargeOutput(boolean largeOutput) {
             this.largeOutput = largeOutput;
+        }
+
+        public int getMaxTokens() {
+            return maxTokens;
+        }
+
+        public void setMaxTokens(int maxTokens) {
+            this.maxTokens = maxTokens;
         }
 
         public int getTimeoutSeconds() {

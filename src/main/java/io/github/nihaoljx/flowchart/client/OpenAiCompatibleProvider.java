@@ -3,6 +3,8 @@ package io.github.nihaoljx.flowchart.client;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -40,6 +42,9 @@ import java.util.concurrent.TimeoutException;
 @ConditionalOnProperty(name = "llm.provider", havingValue = "openai", matchIfMissing = true)
 public class OpenAiCompatibleProvider implements LlmProvider {
 
+    private static final Logger LOG =
+            LoggerFactory.getLogger(OpenAiCompatibleProvider.class);
+
     @Value("${llm.base-url}")
     private String apiUrl;
 
@@ -76,6 +81,15 @@ public class OpenAiCompatibleProvider implements LlmProvider {
 
     /** 空闲（多久没有新内容）判死阈值，单位秒；仅流式模式生效 */
     private int idleTimeoutSeconds = DEFAULT_IDLE_TIMEOUT_SECONDS;
+
+    /**
+     * 单次输出上限（token）；0 = 不设，走厂商默认值（2026-10-10）。
+     *
+     * <p>不设时厂商默认上限往往很小（实测大图会被截断成半份 JSON），
+     * 而截断的日志表现是 {@code finish_reason=length}，容易被误当成
+     * "模型能力不够"。真正解药就是这个参数。
+     */
+    private int maxTokens = 0;
 
     /** 空闲判死的默认阈值：推理模型"想"的阶段可能静止较久，别定太紧 */
     private static final int DEFAULT_IDLE_TIMEOUT_SECONDS = 120;
@@ -115,18 +129,21 @@ public class OpenAiCompatibleProvider implements LlmProvider {
      *
      * @param streamMode         true = 流式（空闲判死，推荐）；false = 非流式（总时限）
      * @param idleTimeoutSeconds 空闲判死阈值，秒；streamMode=false 时忽略
+     * @param maxTokens          单次输出上限（token）；0 = 不设，走厂商默认
      */
     public OpenAiCompatibleProvider(String apiUrl, String apiKey, String model,
                                     int timeoutSeconds, boolean proxyEnabled,
                                     String proxyHost, int proxyPort,
                                     boolean streamMode,
-                                    int idleTimeoutSeconds) {
+                                    int idleTimeoutSeconds,
+                                    int maxTokens) {
         this(apiUrl, apiKey, model, timeoutSeconds,
                 proxyEnabled, proxyHost, proxyPort);
         this.streamMode = streamMode;
         if (idleTimeoutSeconds > 0) {
             this.idleTimeoutSeconds = idleTimeoutSeconds;
         }
+        this.maxTokens = maxTokens;
     }
 
     /** 非 200 的 HTTP 错误，带状态码便于失败分类（冷却 / 永久停用） */
@@ -221,6 +238,11 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         if (streamMode) {
             root.put("stream", true);
         }
+        // 输出上限（2026-10-10）：不设时用厂商默认，默认值常常小到把大图
+        // 截断成半份 JSON。截断的排查入口是 finish_reason=length。
+        if (maxTokens > 0) {
+            root.put("max_tokens", maxTokens);
+        }
         var array = root.putArray("messages");
         for (Message message : messages) {
             ObjectNode item = array.addObject();
@@ -264,10 +286,9 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         long costMs = System.currentTimeMillis() - startedAt;
 
         // 打印日志方便排查（带上耗时：这是判断"要不要收紧单轮上限"的依据）
-        System.out.println("=== LLM HTTP 状态码: "
-                + response.statusCode()
-                + "，耗时 " + costMs + " ms");
-        System.out.println("=== LLM 原始响应: " + response.body());
+        LOG.info("=== LLM HTTP 状态码: {}，耗时 {} ms",
+                response.statusCode(), costMs);
+        LOG.info("=== LLM 原始响应: {}", response.body());
 
         if (response.statusCode() != 200) {
             throw new LlmHttpException(response.statusCode(),
@@ -358,19 +379,29 @@ public class OpenAiCompatibleProvider implements LlmProvider {
             if (response.statusCode() != 200) {
                 String errBody = new String(
                         in.readAllBytes(), StandardCharsets.UTF_8);
-                System.out.println("=== LLM HTTP 状态码: "
-                        + response.statusCode());
-                System.out.println("=== LLM 原始响应: " + errBody);
+                LOG.info("=== LLM HTTP 状态码: {}", response.statusCode());
+                LOG.info("=== LLM 原始响应: {}", errBody);
                 throw new LlmHttpException(response.statusCode(), errBody);
             }
 
             StringBuilder content = new StringBuilder();
+            // token 账：整次调用一份，跨帧累加（见 TokenUsage 的说明）
+            TokenUsage usage = new TokenUsage();
             String finish = collectSse(
-                    in, content, callTimeoutSeconds);
+                    in, content, usage, callTimeoutSeconds);
             long costMs = System.currentTimeMillis() - startedAt;
-            System.out.println("=== LLM 流式完成: 耗时 " + costMs
-                    + " ms，正文 " + content.length()
-                    + " 字符，finish_reason=" + finish);
+            // 只在流结束时打一行：原先打在 mergeChunk 里逐帧打印，
+            // 而部分厂商（实测魔搭）每帧都带一份全 0 的 usage 占位，
+            // 一次调用能刷出几百行，还会阻塞流式读取线程（2026-10-10）
+            if (usage.isEmpty()) {
+                LOG.info("[LLM] 流式完成: 耗时 {} ms，正文 {} 字符，"
+                                + "finish_reason={}（厂商未提供 token 用量）",
+                        costMs, content.length(), finish);
+            } else {
+                LOG.info("[LLM] 流式完成: 耗时 {} ms，正文 {} 字符，"
+                                + "finish_reason={}，token 用量 {}",
+                        costMs, content.length(), finish, usage);
+            }
 
             if ("length".equals(finish)) {
                 throw new TruncatedResponseException(
@@ -394,7 +425,8 @@ public class OpenAiCompatibleProvider implements LlmProvider {
      * @return finish_reason（读不到时按 stop 处理）
      */
     private String collectSse(InputStream in, StringBuilder out,
-                              int hardSeconds) throws Exception {
+                              TokenUsage usage, int hardSeconds)
+            throws Exception {
         java.util.concurrent.atomic.AtomicLong lastData =
                 new java.util.concurrent.atomic.AtomicLong(
                         System.currentTimeMillis());
@@ -449,7 +481,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                 if ("[DONE]".equals(payload)) {
                     break;
                 }
-                finish = mergeChunk(payload, out, finish);
+                finish = mergeChunk(payload, out, finish, usage);
             }
         } catch (IOException e) {
             long idleSec =
@@ -476,20 +508,19 @@ public class OpenAiCompatibleProvider implements LlmProvider {
      * <p>只取 {@code delta.content}：推理模型会先吐一大段
      * {@code delta.reasoning_content}（思维链），那是模型"想"的过程，
      * 不是要交付的内容，拼进来会污染 JSON 解析。
+     *
+     * <p>usage 只<b>喂给</b> {@code usage} 账本、不在这里打印 ——
+     * 本方法每帧调用一次，打印会刷屏（2026-10-10）。
      */
     @SuppressWarnings("unchecked")
     private String mergeChunk(String payload, StringBuilder out,
-                              String finish) {
+                              String finish, TokenUsage usage) {
         try {
             Map<String, Object> root =
                     objectMapper.readValue(payload, Map.class);
-            Object usage = root.get("usage");
-            if (usage instanceof Map) {
-                Map<String, Object> u = (Map<String, Object>) usage;
-                System.out.println("=== Token 用量: prompt="
-                        + u.get("prompt_tokens") + ", completion="
-                        + u.get("completion_tokens") + ", total="
-                        + u.get("total_tokens"));
+            Object u = root.get("usage");
+            if (u instanceof Map) {
+                usage.accept((Map<?, ?>) u);
             }
             List<Map<String, Object>> choices =
                     (List<Map<String, Object>>) root.get("choices");
@@ -524,6 +555,63 @@ public class OpenAiCompatibleProvider implements LlmProvider {
     }
 
     /**
+     * 整次调用的 token 账（跨帧累加，2026-10-10）。
+     *
+     * <p>为什么需要它：<b>部分厂商（实测魔搭）在流式的每一帧都塞一份全 0 的
+     * usage 占位对象</b>。原先代码在 {@code mergeChunk} 里逐帧 {@code System.out}
+     * 打印，一次 3000+ 字符的输出会刷出几百行 "prompt=0, completion=0, total=0"，
+     * 而且 {@code System.out} 是同步流，打在流式读取线程上白占时间。
+     *
+     * <p>现在的规矩两条：① 只认<b>非零</b>字段（零值占位一律忽略，
+     * 避免把最后一帧的真值覆盖成 0）；② 整次调用只在流结束时打印一次。
+     */
+    private static final class TokenUsage {
+        private long prompt;
+        private long completion;
+        private long total;
+
+        /** 喂一帧的 usage；非零才覆盖，避免被零值占位抹掉真值 */
+        void accept(Map<?, ?> u) {
+            long p = asLong(u.get("prompt_tokens"));
+            long c = asLong(u.get("completion_tokens"));
+            long t = asLong(u.get("total_tokens"));
+            if (p != 0) {
+                prompt = p;
+            }
+            if (c != 0) {
+                completion = c;
+            }
+            if (t != 0) {
+                total = t;
+            }
+        }
+
+        private static long asLong(Object o) {
+            if (o instanceof Number n) {
+                return n.longValue();
+            }
+            if (o instanceof String s) {
+                try {
+                    return Long.parseLong(s.trim());
+                } catch (NumberFormatException ignored) {
+                    return 0L;
+                }
+            }
+            return 0L;
+        }
+
+        boolean isEmpty() {
+            return prompt == 0 && completion == 0 && total == 0;
+        }
+
+        @Override
+        public String toString() {
+            return "prompt=" + prompt + ", completion=" + completion
+                    + ", total=" + total;
+        }
+    }
+
+    /**
      * 从 OpenAI 兼容格式的响应中提取文本
      *
      * 响应格式：
@@ -540,11 +628,11 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         Map<String, Object> root = objectMapper.readValue(rawResponse, Map.class);
 
         // ===== 提取 usage（成本统计用，目前只打日志）=====
-        Map<String, Object> usage = (Map<String, Object>) root.get("usage");
-        if (usage != null) {
-            System.out.println("=== Token 用量: prompt=" + usage.get("prompt_tokens")
-                    + ", completion=" + usage.get("completion_tokens")
-                    + ", total=" + usage.get("total_tokens"));
+        Object usageNode = root.get("usage");
+        if (usageNode instanceof Map) {
+            TokenUsage tu = new TokenUsage();
+            tu.accept((Map<?, ?>) usageNode);
+            LOG.info("[LLM] token 用量: {}", tu);
         }
 
         // ===== 提取 choices[0].message.content =====

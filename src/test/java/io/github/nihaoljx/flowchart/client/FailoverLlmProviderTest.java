@@ -35,7 +35,20 @@ class FailoverLlmProviderTest {
 
     private String startStub(AtomicInteger hits, int statusCode, String body)
             throws IOException {
-        HttpServer s = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        return startStub("127.0.0.1", hits, statusCode, body);
+    }
+
+    /**
+     * 指定绑定地址的桩。
+     *
+     * <p>用于验证"同厂商跳过"：厂商按 URL 的 host 归类，所以需要两个
+     * host 不同的 stub。Windows 上整个 127.0.0.0/8 都是环回地址
+     * （实测 127.0.0.2 可 bind 可 connect）。
+     */
+    private String startStub(String bindIp, AtomicInteger hits,
+                             int statusCode, String body)
+            throws IOException {
+        HttpServer s = HttpServer.create(new InetSocketAddress(bindIp, 0), 0);
         s.createContext("/v1/chat/completions", ex -> {
             hits.incrementAndGet();
             byte[] b = body.getBytes(StandardCharsets.UTF_8);
@@ -50,7 +63,7 @@ class FailoverLlmProviderTest {
         });
         s.start();
         servers.add(s);
-        return "http://127.0.0.1:" + s.getAddress().getPort()
+        return "http://" + bindIp + ":" + s.getAddress().getPort()
                 + "/v1/chat/completions";
     }
 
@@ -296,7 +309,78 @@ class FailoverLlmProviderTest {
         long rateCool = r.cooldownRemainingSeconds("rate");
         assertTrue(quotaCool > 500,
                 "额度类 429 应按 10 分钟冷却，实际 " + quotaCool + "s");
-        assertTrue(rateCool > 0 && rateCool <= 61,
-                "限流类 429 应按 60 秒冷却，实际 " + rateCool + "s");
+        // 60s 冷却 + 最多 10% 抖动（防同时恢复造成二次冲击）→ 上限放到 70s
+        assertTrue(rateCool > 0 && rateCool <= 70,
+                "限流类 429 应按 60 秒冷却（含抖动），实际 " + rateCool + "s");
+    }
+
+    @Test
+    @DisplayName("上下文超长(伪装成 429) → 不冷却候选，且立刻中断候选链")
+    void contextOverflowAbortsChainWithoutCooldown() throws Exception {
+        AtomicInteger hitsA = new AtomicInteger();
+        AtomicInteger hitsB = new AtomicInteger();
+        String a = startStub(hitsA, 429,
+                "{\"error\":{\"code\":\"1301\",\"message\":\"This model's "
+                        + "maximum context length is 32768 tokens, however "
+                        + "your messages resulted in 45000 tokens.\"}}");
+        String b = startStub(hitsB, 200, ok("SHOULD_NOT_REACH"));
+        FailoverLlmProvider r = router(
+                cand("a", a, "m1", 1), cand("b", b, "m2", 2));
+
+        assertThrows(FailoverLlmProvider.LlmRequestRejectedException.class,
+                () -> r.chat(List.of(Message.user("hi")), 10));
+        assertEquals(1, hitsA.get(),
+                "只该打 1 次：判定为请求侧问题后立即中断");
+        assertEquals(0, hitsB.get(),
+                "不该把同一份超长请求再原样发给下一个候选（白烧时间窗）");
+        assertEquals(0, r.cooldownRemainingSeconds("a"),
+                "请求侧问题不得冷却候选：误冷却 = 凭空摘掉一个健康候选");
+    }
+
+    @Test
+    @DisplayName("回归：body 里出现 1113 这类数字，不得被误判成余额不足")
+    void substringDigitsDoNotTriggerQuotaCooldown() throws Exception {
+        AtomicInteger hitsA = new AtomicInteger();
+        // request_id 里带 "1113"：旧实现用 body.contains("1113") 会误判成余额不足，
+        // 把健康候选冷却 10 分钟。真因是 code=1305（限流），应只冷却 60s。
+        String a = startStub(hitsA, 429,
+                "{\"error\":{\"code\":\"1305\",\"message\":"
+                        + "\"该模型当前访问量过大\"},"
+                        + "\"request_id\":\"req-20261010-1113-abcd\"}");
+        String b = startStub(new AtomicInteger(), 200, ok("OK"));
+        FailoverLlmProvider r = router(
+                cand("a", a, "m1", 1), cand("b", b, "m2", 2));
+
+        assertEquals("OK", r.chat(List.of(Message.user("hi")), 10));
+        long cool = r.cooldownRemainingSeconds("a");
+        assertTrue(cool > 0 && cool <= 70,
+                "code=1305 应按限流 60s(+抖动) 冷却，而不是因为 request_id "
+                        + "含 1113 就被当余额不足冷却 10 分钟，实际 "
+                        + cool + "s");
+    }
+
+    @Test
+    @DisplayName("同厂商限流 → 跳过该厂商剩余候选，直接换另一家")
+    void skipsRemainingCandidatesOfSameVendorOnQuota() throws Exception {
+        AtomicInteger hitsA1 = new AtomicInteger();
+        AtomicInteger hitsA2 = new AtomicInteger();
+        AtomicInteger hitsB = new AtomicInteger();
+        String a1 = startStub("127.0.0.1", hitsA1, 429,
+                "{\"error\":{\"code\":\"1113\",\"message\":"
+                        + "\"余额不足或无可用资源包,请充值。\"}}");
+        // 与 a1 同 host（同厂商）：本轮应被跳过，而不是白试一次
+        String a2 = startStub("127.0.0.1", hitsA2, 200, ok("SAME_VENDOR"));
+        String b = startStub("127.0.0.2", hitsB, 200, ok("OTHER_VENDOR"));
+
+        FailoverLlmProvider r = router(
+                cand("a1", a1, "m1", 1),
+                cand("a2", a2, "m2", 2),
+                cand("b", b, "m3", 3));
+
+        assertEquals("OTHER_VENDOR",
+                r.chat(List.of(Message.user("hi")), 10));
+        assertEquals(1, hitsA1.get());
+        assertEquals(0, hitsA2.get(), "同厂商候选应被跳过");
+        assertEquals(1, hitsB.get());
     }
 }

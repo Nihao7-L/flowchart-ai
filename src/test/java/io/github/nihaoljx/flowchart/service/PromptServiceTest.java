@@ -62,9 +62,17 @@ class PromptServiceTest {
         for (String type : types) {
             assertTrue(prompt.contains(type), "prompt 应提及元素类型: " + type);
         }
-        // md v5.8.0 约束8：freedraw 默认不开（仅用户明确要手绘/涂鸦时才用）
-        assertTrue(prompt.contains("默认不开"),
-                "prompt 应写明 freedraw 默认不开");
+        // md v10.9.0：freedraw 口径进一步收敛为「不做限制、md 正文不再提」——
+        // 用户拍板选的是「整条删掉」，而不是 v10.8.0 的「改为可用」。
+        // 背景：后端 GraphValidator.validateFreedraw 与前端 sceneAdapter
+        // （「freedraw 现在是白板的一等能力」）早就把它当一等公民，只有 md 在唱反调；
+        // 且原限制没有机器判据 —— 实测「画一只猫」照样出 20 个 freedraw，校验器一个没拦。
+        // ⇒ 这里改为守住「不许再出现禁令」；不再要求 md 写某句正面表述
+        //   （否则等于逼 md 保留一条我们已决定不要的规则）。
+        assertFalse(prompt.contains("默认不开"),
+                "v10.9.0 起 md 不再给 freedraw 加限制——防止旧禁令被无声回退");
+        assertFalse(prompt.contains("只有用户明确要手绘"),
+                "v10.9.0 起 md 不再给 freedraw 加限制——防止旧禁令被无声回退");
     }
 
     @Test
@@ -165,12 +173,18 @@ class PromptServiceTest {
     }
 
     /**
-     * 分组 / 画框口径（md v5.8.0）：提示词正文已改由 {@code system-prompt.md} 提供，
-     * 这里验证 md 覆盖了分组与画框的关键约束，且阈值数字与后端
-     * {@link ScenePlanner#MODULE_THRESHOLD} 一致（同一处数字，写死两份迟早漂移）。
+     * 分组 / 画框口径（md v5.8.0 → v10.9.0 精简）：提示词正文由 {@code system-prompt.md} 提供，
+     * 这里验证 md / 契约段覆盖了分组与画框的关键约束。
+     *
+     * <p><b>v10.9.0 变化</b>：用户精简版 md 移除了「归属与分区」规则，其中包含
+     * 「图形数 &gt; 15 时先按模块打 group」与「框的 name 必须与模块 group 逐字相同」。
+     * {@link ScenePlanner#MODULE_THRESHOLD} 仍然是 15（后端行为没变），但**提示词不再声明
+     * 这个触发阈值** ⇒ LLM 侧不再被要求主动打 group，frame 认领退化到启发式路径。
+     * 原先那两条「阈值一致 / 逐字相同」的断言随之删除 —— 继续断言等于逼 md 把规则写回来，
+     * 属于「测试与 md 口径互相绑架」，护栏若真被回退应由 CHANGELOG 与评审记录发现。
      */
     @Test
-    @DisplayName("md 提示词应含分组 / 画框约束，阈值与 ScenePlanner.MODULE_THRESHOLD 一致")
+    @DisplayName("md 提示词应含分组 / 画框约束（v10.9.0 起不再断言阈值与「逐字相同」）")
     void testModuleGroupingGuidance() throws IOException {
         // When
         String prompt = promptService
@@ -179,11 +193,6 @@ class PromptServiceTest {
         // Then
         assertTrue(prompt.contains("group"),
                 "应要求 LLM 写 group 字段");
-        assertTrue(prompt.contains(String.valueOf(
-                        ScenePlanner.MODULE_THRESHOLD)),
-                "阈值仍应与 ScenePlanner.MODULE_THRESHOLD 一致（用于 frame 认领判定）");
-        assertTrue(prompt.contains("逐字相同"),
-                "框的 name 必须与模块 group 逐字相同（否则认领不上）");
         assertTrue(prompt.contains("children"),
                 "应说明 children 由后端自动填（在「不要写进输出」清单里）");
     }
