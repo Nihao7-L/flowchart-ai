@@ -318,6 +318,17 @@ public class FailoverLlmProvider implements LlmProvider {
             try {
                 long t0 = System.currentTimeMillis();
                 String out = e.client.chat(messages, attempt);
+                // 2026-10-12 修复「空内容不判失败」：模型返回 null / 空白正文时，
+                // 绝不能当成功回给上层（否则前端拿到空画布）。
+                // 按失败处理并冷却，让坏候选被隔离，下一轮重试优先选别家。
+                if (out == null || out.isBlank()) {
+                    last = new IllegalStateException(
+                            "候选 " + e.name + " 返回空内容");
+                    LOG.warn("[Failover] 候选 {} 返回空内容，"
+                            + "按失败处理并冷却，改换下一候选", e.name);
+                    applyCooldown(e, withJitter(COOL_TEMP_MS), "空内容");
+                    continue;
+                }
                 LOG.info("[Failover] 候选 {} 命中（round={}），耗时 {} ms",
                         e.name, round,
                         System.currentTimeMillis() - t0);
@@ -326,8 +337,14 @@ public class FailoverLlmProvider implements LlmProvider {
                     .TruncatedResponseException te) {
                 truncated = true;
                 last = te;
-                LOG.warn("[Failover] 候选 {} 输出被截断，"
+                // 2026-10-12 修复「截断分支不打冷却」：finish_reason=length
+                // （如 deepseek 把额度全花在草稿上、正文 0 字符的"白纸"）走这里，
+                // 原实现只置 truncated 标、不冷却 ⇒ 坏候选下次仍第一个上、重复白烧。
+                // 现在同样冷却，使其在下个请求里被隔离
+                // （本轮仍优先换「大输出」候选重试）。
+                LOG.warn("[Failover] 候选 {} 输出被截断，按失败冷却并"
                         + "改换「大输出」候选重试", e.name);
+                applyCooldown(e, withJitter(COOL_TEMP_MS), "输出截断");
             } catch (OpenAiCompatibleProvider.LlmHttpException he) {
                 last = he;
                 Verdict v = classify(he.status, he.body);

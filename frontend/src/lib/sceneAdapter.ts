@@ -147,11 +147,11 @@ const normalize = (
   }
 
   if (out.type === 'frame') {
-    // 2026-10-10：剥离 frame.name —— 分区底板本不该带 Excalidraw 默认的小灰字
-    // 标题：模型给分区框起了 name（agent-loop / hooks / extensions）又额外写了
-    // text 分区标题，两者叠加重叠。目标图里分区标题由独立 text 承担，这里统一
-    // 剥离 name，让 frame 退化为纯底板。
-    delete out.name;
+    // 2026-10-12 修复「frame 删名 bug」：停止无条件 delete out.name。
+    // 分区框的标题就写在 name 上（Excalidraw 把 frame.name 渲染为框内居中标题），
+    // 之前一律剥掉导致所有分区框显示成灰色默认 "Frame"。
+    // 现在保留 name；由提示词约束「分区用 frame：标题写进 name，不再额外画独立标题」
+    // 来避免叠字。name 仅作展示，不影响下方 children 成员表逻辑。
     // 成员表由**后端**算出（v2-40 P1，见上方"补丁一"）：
     //   1. 不是数组就补空数组 —— 转换器对 frame 强制 `children.forEach`，
     //      undefined 会让整批转换抛错、画布全空；
