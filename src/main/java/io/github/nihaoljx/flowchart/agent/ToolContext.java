@@ -21,12 +21,54 @@ public final class ToolContext {
 
     private final String userText;
     private final List<Map<String, Object>> userElements;
+
+    /**
+     * 编辑模式的"修改前场景"（v2-55 步骤 3 补，与 legacy 口径对齐）。
+     *
+     * <p>非 null = 本次是"改这张图"。改图保真检查（防整图重画 /
+     * 防保留 id 但整图重排）需要拿提交结果与它对比 —— 只比对提交
+     * 的场景与这个基线，缺了它，"删掉节点X"就可能被模型理解成
+     * 整图重画（Bug A 同类事故）。
+     */
+    private final String previousJson;
+
+    /**
+     * 改图保真检查是否已做过（v2-55）。
+     *
+     * <p>legacy 只在第 1 轮做（2026-09-17 拍板：它是提醒不是门禁，
+     * 第 2 轮 LLM 坚持重画就放行 —— 用户本来就可能明确要求重画）。
+     * agent 循环没有"轮"的概念，对齐语义用"只看首次提交"：
+     * 首次提交过后即标记，后续提交不再拦。
+     */
+    private boolean rewriteChecked;
+
     private String processedScene;
     private String validScene;
 
     public ToolContext(String userText, List<Map<String, Object>> userElements) {
+        this(userText, userElements, null);
+    }
+
+    public ToolContext(String userText, List<Map<String, Object>> userElements,
+                       String previousJson) {
         this.userText = userText == null ? "" : userText;
         this.userElements = userElements == null ? List.of() : List.copyOf(userElements);
+        this.previousJson = previousJson;
+    }
+
+    /** 编辑基线（修改前场景 JSON）；新建模式为 null */
+    public String previousJson() {
+        return previousJson;
+    }
+
+    /** 改图保真检查是否已做过（只做一次，对齐 legacy 第 1 轮口径） */
+    public boolean rewriteChecked() {
+        return rewriteChecked;
+    }
+
+    /** 标记改图保真检查已执行 */
+    public void markRewriteChecked() {
+        this.rewriteChecked = true;
     }
 
     /** 用户本次的原始需求（工具组提示/兜底文案时用） */

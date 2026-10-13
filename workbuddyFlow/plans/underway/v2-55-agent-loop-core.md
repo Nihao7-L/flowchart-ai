@@ -1,10 +1,14 @@
 # v2-55（前置核）· Agent Loop 最小核：messages 单线积累 + 工具派发
 
-> 状态：**进行中 —— 步骤 1、2 完成，真实 smoke 通过（2026-10-13）**：
-> ① `agent/` 四件套 + 4 工具 + 21 单测全绿（297/0 + checkstyle 0）；
-> ② 探针 `tools/e2e/probe_tool_calls.py` 实测 4 候选：glm-5.3-flash / deepseek-v4.1-flash / grok-4.7 **全部支持 tool_calls**（并行 + 中文参数保真），gpt-6.1-sol 502（本就欠费）⇒ agent 模式候选子集 = 现有前三，无需砍人（报告 `probe_tool_calls_report.json`）；
-> ③ 真实 smoke（`AgentLoopRealLlmIT` + `OpenAiToolClient`，deepseek）：**steps=1 一轮直通 COMPLETED**，32 元素流程图（含支付分支菱形/失败分支/起止椭圆/边标注）21.8s 出图零丢弃，效果图 `shots/agent_loop_smoke_2026-10-13.png`。
-> 下一步 = 步骤 3：AgentLoop 接线 GenerationService + feature flag `chartflow.agent-loop.enabled` + SSE 两类新事件（OpenAiToolClient 现为单候选非流式最小件，故障转移/流式随接线一并处理）。
+> 状态：**步骤 1–3 全部完成并实测通过（2026-10-13，用户授权"提交→下一步→刁难测试→有问题再改"）**：
+> ① `agent/` 四件套 + 4 工具 + 21 单测全绿；
+> ② 探针 `tools/e2e/probe_tool_calls.py` 实测 4 候选 tool_calls 支持度（glm / deepseek / grok 全过，gpt-6.1-sol 欠费）→ agent 模式候选子集 = 现有前三，无需砍人；
+> ③ 真实 smoke（deepseek）：steps=1 一轮直通 COMPLETED，32 元素流程图零丢弃；
+> ④ **接线完成并实测**：`AgentLoopService`（flag `chartflow.agent-loop.enabled`，yml 已显式 true）+ `GenerationService.generateViaAgent`（会话状态/落库/兜底与 legacy 同纪律）+ SSE `tool_call`/`tool_result`（前端忽略未知类型，零前端改动）+ `AgentLoopListener`（观测回调异常不打穿生成）。
+> **实测补丁 2 个（E2E 中发现并修复）**：`FailoverAgentClient`（glm 大图实测 502 ⇒ 单候选一步失败=整次兜底；一步内按序切候选+粘性主选，正式冷却/分类归 M13）；编辑保真缺口（SceneGate 移植 detectRewrite + 注入 SceneDrift，只拦首次提交 = legacy 第 1 轮口径）。
+> **E2E 刁难 7/7（8082 真实 LLM，工装 `%TEMP%\chartflow_render\agent_e2e.py`）**：大图四层分区 179s ✓ / 契约违规诱导触发修正轮 ✗→✓ / 模糊需求出示例+【AI 备注】✓ / 编辑改名保真 ✓ / 重画诱导首提交被拦（预期）→二次放行 ✓ / 时序图 read_contract 按需加载被模型真实调用 ✓。截图 `shots/agent_e2e_*.png` 7 张。
+> **遗留（如实）**：契约违规组观感差（模型顺"纯文字节点"违规要求、连线混乱）= 校验器不查观感，归 ReadabilityGate（M4 后半）；SceneGate 与 GenerationService 双份管线待收口（步骤 4 对照后"谁存活删谁"）。
+> 下一步 = 步骤 4：电池题双路径对照（agent vs legacy），指标入 activeLog；步骤 5 归档 + m4 状态行。
 > 来源：用户 2026-10-13 拍板「先把 messages 和 tool 做起来，就像 learn-claude-code 的 s01+s02」——即把 M4（G1 真 ReAct，2026-09-20 已拍板）的**核**提前先行，其余（编辑工具/无进展检测/checkpoint/NDJSON）保持后置。
 > 上级计划：`plans/masterPlan/m4-loop-engineering.md`（本文件是其 v2-55 的工作台副本，收窄范围）。
 > 参照：learn-claude-code s01（messages[] + while 循环 + tool_use 驱动）、s02（TOOL_HANDLERS 派发表）。

@@ -1,5 +1,10 @@
 package io.github.nihaoljx.flowchart.service;
 
+import io.github.nihaoljx.flowchart.agent.AgentLoopListener;
+import io.github.nihaoljx.flowchart.agent.AgentLoopService;
+import io.github.nihaoljx.flowchart.agent.AgentResult;
+import io.github.nihaoljx.flowchart.agent.Observation;
+import io.github.nihaoljx.flowchart.agent.ToolCall;
 import io.github.nihaoljx.flowchart.client.LlmProvider;
 import io.github.nihaoljx.flowchart.client.Message;
 import io.github.nihaoljx.flowchart.context.AssembleInput;
@@ -16,6 +21,7 @@ import io.github.nihaoljx.flowchart.model.ChatEvent;
 import io.github.nihaoljx.flowchart.session.SessionStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method
         .annotation.SseEmitter;
@@ -228,6 +234,16 @@ public class GenerationService {
     }
 
     private final LlmProvider llmProvider;
+
+    /**
+     * Agent Loop 运行入口（v2-55 步骤 3）—— **可选**依赖。
+     *
+     * <p>仅当 {@code chartflow.agent-loop.enabled=true} 时容器里才有
+     * {@link AgentLoopService} 这个 bean；{@code getIfAvailable()} 拿不到
+     * 就走 legacy 管线 —— "flag 默认关、老管线保底"的落点。测试里直接
+     * 传 null 等价于 flag 关。
+     */
+    private final ObjectProvider<AgentLoopService> agentLoops;
     private final GraphValidator graphValidator;
     private final SceneBinder sceneBinder;
     private final SceneDeduper sceneDeduper;
@@ -287,7 +303,35 @@ public class GenerationService {
             ContextAssembler contextAssembler,
             GeometryAudit geometryAudit,
             PromptService promptService) {
+        this(llmProvider, null, graphValidator,
+                sceneBinder, sceneDeduper, sceneSanitizer,
+                sceneDrift, scenePlanner, sessionStore,
+                contextAssembler, geometryAudit,
+                promptService);
+    }
+
+    /**
+     * 完整构造器（Spring 用这个）：agent 依赖为可选注入。
+     *
+     * <p>两个构造器并存时 Spring 要求显式指定用哪个 —— @Autowired 标这里。
+     * 11 参构造器只是给单测的便捷入口（agentLoops=null = flag 关）。
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public GenerationService(
+            LlmProvider llmProvider,
+            ObjectProvider<AgentLoopService> agentLoops,
+            GraphValidator graphValidator,
+            SceneBinder sceneBinder,
+            SceneDeduper sceneDeduper,
+            SceneSanitizer sceneSanitizer,
+            SceneDrift sceneDrift,
+            ScenePlanner scenePlanner,
+            SessionStore sessionStore,
+            ContextAssembler contextAssembler,
+            GeometryAudit geometryAudit,
+            PromptService promptService) {
         this.llmProvider = llmProvider;
+        this.agentLoops = agentLoops;
         this.graphValidator = graphValidator;
         this.sceneBinder = sceneBinder;
         this.sceneDeduper = sceneDeduper;
@@ -314,10 +358,21 @@ public class GenerationService {
             SseEmitter emitter) {
         long deadline = System.currentTimeMillis()
                 + TOTAL_BUDGET_MS;
+        // v2-55 步骤 3：flag 开（且 bean 装配成功）才走 agent loop，
+        // 否则 legacy 原样服务 —— 两条路径在 generate() 一层分流，
+        // 各自完整拥有自己的兜底语义，不互相嵌套。
+        AgentLoopService agent = agentLoops == null
+                ? null : agentLoops.getIfAvailable();
         try {
-            generateInternal(
-                    sessionId, userText,
-                    emitter, deadline);
+            if (agent != null) {
+                generateViaAgent(
+                        agent, sessionId, userText,
+                        emitter, deadline);
+            } else {
+                generateInternal(
+                        sessionId, userText,
+                        emitter, deadline);
+            }
         } catch (RuntimeException e) {
             // 生成本身跑在独立线程里：异常一旦不接住就直接打穿线程，
             // 前端什么反馈都收不到（曾因 emitter 已被容器关闭而裸崩）
@@ -680,6 +735,154 @@ public class GenerationService {
                 return;
             }
         }
+    }
+
+    /**
+     * Agent Loop 路径（v2-55 步骤 3）：messages 单线积累 + 4 工具派发
+     *
+     * <p>会话状态（当前图 / 手绘旁路 / take-over）的读取逻辑与
+     * {@link #generateInternal} 完全一致；差别只在"怎么跟模型打交道"：
+     * <ul>
+     *   <li>user 消息复用 {@link PromptService#buildUserBlock}（当前场景
+     *       + 修改规则 + 需求），system 复用 {@link PromptService#buildSystemBlock}
+     *       —— smoke（AgentLoopRealLlmIT）已验证 3 家候选对"这套提示词
+     *       + tools 定义"都能正确走 tool_calls，不另造一份会漂移的文案；</li>
+     *   <li>过程经 {@link AgentLoopListener} 翻译成 SSE 事件：
+     *       {@code tool_call}/{@code tool_result} 两类新事件，前端当前
+     *       忽略未知类型，属"可先忽略"的设计；</li>
+     *   <li>终态处置与 legacy 同纪律：COMPLETED 落库下发；PARTIAL 走
+     *       {@link #deliverFallback}（最后一份可解析进度优先，不伪装成功）。</li>
+     * </ul>
+     */
+    private void generateViaAgent(
+            AgentLoopService agent,
+            String sessionId,
+            String userText,
+            SseEmitter emitter,
+            long deadline) {
+        // 会话状态读取：与 generateInternal 相同的口径（含 Bug A take-over）
+        String previousJson = currentModelJson(sessionId);
+        boolean editMode = previousJson != null;
+        String effectiveSceneJson = previousJson;
+        boolean takeOver = false;
+        List<Map<String, Object>> userElements =
+                currentUserElements(sessionId);
+        if (previousJson != null) {
+            String seeded = buildSeedScene(previousJson);
+            if (seeded != null) {
+                takeOver = true;
+                effectiveSceneJson = seeded;
+                userElements = List.of();
+            }
+        }
+
+        String systemBlock;
+        String userBlock;
+        try {
+            systemBlock = promptService.buildSystemBlock();
+            userBlock = promptService.buildUserBlock(
+                    userText, effectiveSceneJson);
+        } catch (IOException e) {
+            // 与 legacy 同口径：读不到提示词资源是后端自己的故障，
+            // 保持 error 语义，不下发假图
+            sendError(emitter,
+                    "加载 schema 失败: " + e.getMessage());
+            return;
+        }
+
+        sendEvent(emitter, "thinking",
+                "Agent 模式（候选 " + agent.candidateName()
+                        + "），messages 单线积累 + 工具循环");
+        AgentLoopListener listener = new AgentLoopListener() {
+            @Override
+            public void onStep(int step, int maxSteps) {
+                sendEvent(emitter, "thinking",
+                        "Agent 第 " + step + "/" + maxSteps
+                                + " 步思考中...");
+            }
+
+            @Override
+            public void onToolCall(ToolCall call) {
+                sendEvent(emitter, "tool_call",
+                        call.name() + " " + briefArgs(call));
+            }
+
+            @Override
+            public void onToolResult(
+                    ToolCall call, Observation obs) {
+                sendEvent(emitter, "tool_result",
+                        call.name() + " → "
+                                + (obs.ok() ? "✓ " : "✗ ")
+                                + obs.summary());
+            }
+        };
+
+        AgentResult result;
+        try {
+            result = agent.run(systemBlock, userBlock,
+                    userElements, previousJson,
+                    deadline, listener);
+        } catch (Exception e) {
+            // LLM 是外部依赖：与 legacy"候选全挂"同路径兜底
+            String note = "LLM 调用失败: " + e.getMessage()
+                    + "；" + fallbackOutcome(editMode)
+                    + "，可稍后重试";
+            if (deliverFallback(emitter, note,
+                    fallbackScene(previousJson,
+                            effectiveSceneJson, takeOver,
+                            null, note))) {
+                return;
+            }
+            sendError(emitter, "兜底场景合成失败");
+            return;
+        }
+
+        LOG.info("Agent run 终态 {} steps={} reason={}",
+                result.status(), result.steps(),
+                result.reason());
+        if (result.status() == AgentResult.Status.COMPLETED
+                && result.sceneJson() != null) {
+            String json = stampSchemaVersion(
+                    result.sceneJson());
+            saveModel(sessionId, json, !takeOver);
+            sendEvent(emitter, "result", json);
+            try {
+                emitter.complete();
+            } catch (IllegalStateException e) {
+                LOG.warn("SSE 通道已结束，跳过收尾: {}",
+                        e.getMessage());
+            }
+            return;
+        }
+
+        // PARTIAL：与 legacy"多轮修不动"同纪律 —— 最后一份可解析
+        // 进度优先（fallbackScene 的 lastParseable 槽位），
+        // 说明文案如实（几步、为什么停），不伪装成功
+        String note = "Agent 循环未能通过校验（"
+                + result.reason() + "，共 "
+                + result.steps() + " 步）；"
+                + fallbackOutcome(editMode)
+                + "，请把图形拆小后重试";
+        if (deliverFallback(emitter, note,
+                fallbackScene(previousJson,
+                        effectiveSceneJson, takeOver,
+                        result.sceneJson(), note))) {
+            return;
+        }
+        sendError(emitter,
+                "Agent 循环未能产出可用场景: "
+                        + result.reason());
+    }
+
+    /** 工具参数摘要（SSE 文案用）：单行、有界，超长截断 */
+    private static String briefArgs(ToolCall call) {
+        if (call.arguments() == null) {
+            return "";
+        }
+        String text = call.arguments().toString()
+                .replace('\n', ' ');
+        return text.length() <= 80
+                ? text : text.substring(0, 80) + "…";
     }
 
     /**

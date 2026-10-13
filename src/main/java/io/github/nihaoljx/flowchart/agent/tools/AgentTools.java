@@ -6,6 +6,7 @@ import io.github.nihaoljx.flowchart.graph.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.SceneBinder;
 import io.github.nihaoljx.flowchart.graph.SceneDeduper;
+import io.github.nihaoljx.flowchart.graph.SceneDrift;
 import io.github.nihaoljx.flowchart.graph.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.SceneSanitizer;
 import io.github.nihaoljx.flowchart.service.PromptService;
@@ -33,15 +34,17 @@ public final class AgentTools {
      * @param planner       场景规划器（只用 claimFramesOnly，现有 bean）
      * @param validator     结构校验器（现有 bean）
      * @param audit         几何体检（现有 bean）
+     * @param drift         改图保真（v2-37 现有 bean；编辑模式首次提交用）
      * @param promptService 提示词服务（契约片段派生）
      */
     public static ToolRegistry defaultRegistry(
             SceneBinder binder, SceneDeduper deduper,
             SceneSanitizer sanitizer, ScenePlanner planner,
             GraphValidator validator, GeometryAudit audit,
-            PromptService promptService) {
+            SceneDrift drift, PromptService promptService) {
         SceneGate gate = new SceneGate(
-                binder, deduper, sanitizer, planner, validator, audit);
+                binder, deduper, sanitizer, planner,
+                validator, audit, drift);
         List<AgentTool> tools = List.of(
                 new SubmitSceneTool(gate),
                 new ValidateSceneTool(gate),

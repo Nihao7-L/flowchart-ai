@@ -61,14 +61,37 @@ public final class AgentLoop {
     public AgentResult run(String systemBlock, String userRequest,
                            List<Map<String, Object>> userElements,
                            long deadlineMs) throws Exception {
+        return run(systemBlock, userRequest, userElements,
+                deadlineMs, null);
+    }
+
+    public AgentResult run(String systemBlock, String userRequest,
+                           List<Map<String, Object>> userElements,
+                           long deadlineMs,
+                           AgentLoopListener listener) throws Exception {
+        return run(systemBlock, userRequest, userElements,
+                null, deadlineMs, listener);
+    }
+
+    /**
+     * 全参入口（v2-55 步骤 3）：previousJson 非空 = 编辑模式，
+     * 场景闸门对首次提交跑改图保真检查（对齐 legacy 第 1 轮口径）。
+     */
+    public AgentResult run(String systemBlock, String userRequest,
+                           List<Map<String, Object>> userElements,
+                           String previousJson,
+                           long deadlineMs,
+                           AgentLoopListener listener) throws Exception {
         AgentMessages messages = AgentMessages.seed(systemBlock, userRequest);
-        ToolContext ctx = new ToolContext(userRequest, userElements);
+        ToolContext ctx = new ToolContext(
+                userRequest, userElements, previousJson);
         int steps = 0;
         while (steps < MAX_STEPS) {
             if (System.currentTimeMillis() >= deadlineMs) {
                 return partial(ctx, steps, "总预算耗尽");
             }
             steps++;
+            safeStep(listener, steps);
             AgentTurn turn = client.respond(
                     messages.snapshot(), registry.schemas(),
                     remainingSeconds(deadlineMs));
@@ -80,8 +103,10 @@ public final class AgentLoop {
             }
             Observation submitted = null;
             for (ToolCall call : turn.toolCalls()) {
+                safeToolCall(listener, call);
                 Observation obs = registry.dispatch(call, ctx);
                 messages.appendToolResult(call, obs);
+                safeToolResult(listener, call, obs);
                 if (SubmitSceneTool.NAME.equals(call.name())) {
                     submitted = obs;
                 }
@@ -96,6 +121,41 @@ public final class AgentLoop {
             }
         }
         return partial(ctx, steps, "步数上限 " + MAX_STEPS + " 轮未通过校验");
+    }
+
+    private static void safeStep(AgentLoopListener listener, int step) {
+        if (listener == null) {
+            return;
+        }
+        try {
+            listener.onStep(step, MAX_STEPS);
+        } catch (RuntimeException e) {
+            // 观测失败不能打断生成：记一条就继续
+        }
+    }
+
+    private static void safeToolCall(AgentLoopListener listener,
+                                     ToolCall call) {
+        if (listener == null) {
+            return;
+        }
+        try {
+            listener.onToolCall(call);
+        } catch (RuntimeException e) {
+            // 同上：观测失败不打断生成
+        }
+    }
+
+    private static void safeToolResult(AgentLoopListener listener,
+                                       ToolCall call, Observation obs) {
+        if (listener == null) {
+            return;
+        }
+        try {
+            listener.onToolResult(call, obs);
+        } catch (RuntimeException e) {
+            // 同上：观测失败不打断生成
+        }
     }
 
     /** PARTIAL 终态：交出最后一份读得通的进度（可能为 null），如实说明原因 */

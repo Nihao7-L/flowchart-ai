@@ -5,6 +5,7 @@ import io.github.nihaoljx.flowchart.graph.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.SceneBinder;
 import io.github.nihaoljx.flowchart.graph.SceneDeduper;
+import io.github.nihaoljx.flowchart.graph.SceneDrift;
 import io.github.nihaoljx.flowchart.graph.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.SceneSanitizer;
 import io.github.nihaoljx.flowchart.service.PromptService;
@@ -54,7 +55,7 @@ class AgentLoopRealLlmIT {
         ToolRegistry registry = AgentTools.defaultRegistry(
                 new SceneBinder(), new SceneDeduper(), new SceneSanitizer(),
                 new ScenePlanner(), new GraphValidator(),
-                new GeometryAudit(), promptService);
+                new GeometryAudit(), new SceneDrift(), promptService);
         AgentLlmClient client = new OpenAiToolClient(
                 cand.get("base-url"), cand.get("api-key"),
                 cand.get("model"), 65536);

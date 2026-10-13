@@ -1,9 +1,11 @@
 package io.github.nihaoljx.flowchart.agent.tools;
 
+import io.github.nihaoljx.flowchart.agent.ToolContext;
 import io.github.nihaoljx.flowchart.graph.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.SceneBinder;
 import io.github.nihaoljx.flowchart.graph.SceneDeduper;
+import io.github.nihaoljx.flowchart.graph.SceneDrift;
 import io.github.nihaoljx.flowchart.graph.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.SceneSanitizer;
 import io.github.nihaoljx.flowchart.graph.ValidationIssue;
@@ -13,8 +15,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 
 /**
  * 场景闸门（v2-55）：把 legacy 管线的"管线四环 + 校验"原样包装给工具用
@@ -52,15 +55,30 @@ public final class SceneGate {
     private final GraphValidator validator;
     private final GeometryAudit audit;
 
+    /**
+     * 改图保真检查（v2-37，可选）。编辑模式首次提交时跑
+     * {@code check(基线, 提交结果)}，防"保留 id 但整图重排"。
+     * null = 不做（新建模式 / 单测省事）。
+     */
+    private final SceneDrift drift;
+
     public SceneGate(SceneBinder binder, SceneDeduper deduper,
                      SceneSanitizer sanitizer, ScenePlanner planner,
                      GraphValidator validator, GeometryAudit audit) {
+        this(binder, deduper, sanitizer, planner, validator, audit, null);
+    }
+
+    public SceneGate(SceneBinder binder, SceneDeduper deduper,
+                     SceneSanitizer sanitizer, ScenePlanner planner,
+                     GraphValidator validator, GeometryAudit audit,
+                     SceneDrift drift) {
         this.binder = binder;
         this.deduper = deduper;
         this.sanitizer = sanitizer;
         this.planner = planner;
         this.validator = validator;
         this.audit = audit;
+        this.drift = drift;
     }
 
     /**
@@ -78,14 +96,13 @@ public final class SceneGate {
      * 全管线 + 校验（submit_scene 的门）。
      *
      * @param rawSceneJson 模型提交的原始场景 JSON
-     * @param userElements 用户手绘旁路元素（去重比对用，可空表）
+     * @param ctx          运行上下文（手绘旁路 / 编辑基线都从这里取）
      */
-    public Outcome process(String rawSceneJson,
-                           List<Map<String, Object>> userElements) {
+    public Outcome process(String rawSceneJson, ToolContext ctx) {
         String json;
         try {
             json = binder.bind(rawSceneJson);
-            json = deduper.dedup(json, userElements);
+            json = deduper.dedup(json, ctx.userElements());
             json = sanitizer.sanitize(json);
             json = planner.claimFramesOnly(json);
         } catch (RuntimeException parseFailure) {
@@ -109,7 +126,107 @@ public final class SceneGate {
                             + "（不要返回 {\"elements\":[]}）",
                     "至少输出一个可见元素"));
         }
+        // 编辑保真（v2-55 步骤 3 补）：与 legacy 第 1 轮同口径 ——
+        // 只做一次（首次提交），之后坚持重画就放行
+        if (issues.isEmpty() && ctx.previousJson() != null
+                && !ctx.rewriteChecked()) {
+            ctx.markRewriteChecked();
+            ValidationIssue rewrite =
+                    detectRewrite(ctx.previousJson(), json);
+            if (rewrite != null) {
+                issues.add(rewrite);
+            } else if (drift != null) {
+                ValidationIssue drifted =
+                        drift.check(ctx.previousJson(), json);
+                if (drifted != null) {
+                    issues.add(drifted);
+                }
+            }
+        }
         return new Outcome(json, List.copyOf(issues), true);
+    }
+
+    /**
+     * 「改图」保真检查（从 GenerationService.detectRewrite 移植的保守版）
+     *
+     * <p>判据刻意一致：只在"旧元素一个都没留下"或"id 保留率过低"时报警，
+     * 用户合法地删掉一半元素不该被拦。解析失败不报（结构校验会给更准的
+     * issue），不因自己读不懂而阻断提交。
+     */
+    static ValidationIssue detectRewrite(
+            String previousJson, String json) {
+        try {
+            JsonNode beforeRoot = STRICT_JSON.readTree(previousJson);
+            Set<String> before = idsOf(beforeRoot.get("elements"));
+            if (before.size() < 2) {
+                // 单元素场景不做判断：只画了一个框时说"换个颜色"，
+                // id 变化属于正常（与 legacy 同判据）
+                return null;
+            }
+            JsonNode after = STRICT_JSON.readTree(json)
+                    .get("elements");
+            if (after == null || !after.isArray()
+                    || after.isEmpty()) {
+                return new ValidationIssue(
+                        "elements",
+                        "修改后的场景一个元素都没有（原场景有 "
+                                + before.size() + " 个）",
+                        "必须在原场景基础上修改：只去掉用户要求"
+                                + "删除的元素，其余元素原样保留");
+            }
+            Set<String> afterIds = idsOf(after);
+            Set<String> kept = new HashSet<>(afterIds);
+            kept.retainAll(before);
+            if (before.size() >= 3) {
+                double overlapRatio =
+                        (double) kept.size() / before.size();
+                if (overlapRatio < 0.3) {
+                    return new ValidationIssue(
+                            "elements[].id",
+                            "original " + before.size()
+                                    + " elements, only "
+                                    + kept.size() + " ids kept"
+                                    + " (overlap " + String.format(
+                                            "%.0f", overlapRatio * 100)
+                                    + "%) - looks like a new diagram",
+                            "keep unmodified elements id/geometry/style,"
+                                    + " only change what user asked;"
+                                    + " only discard all when user"
+                                    + " explicitly asks to redraw");
+                }
+                return null;
+            }
+            // 旧图 < 3 个元素：id 全换 ≠ 一定出错（可能就是"另画一张"），
+            // 再要求新场景规模明显缩水才报警（与 legacy 同判据）
+            if (afterIds.size() * 2 >= before.size()) {
+                return null;
+            }
+            return new ValidationIssue(
+                    "elements[].id",
+                    "原场景 " + before.size()
+                            + " 个元素的 id 全部被换掉了，"
+                            + "看起来是重新画了一张图",
+                    "保留未涉及元素的 id / 几何 / 样式，"
+                            + "只改用户要求改的部分；"
+                            + "只有用户明确要求重画时才可全部丢弃");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 收集一份场景（elements 数组节点）里所有元素的 id */
+    private static Set<String> idsOf(JsonNode elements) {
+        Set<String> result = new HashSet<>();
+        if (elements == null || !elements.isArray()) {
+            return result;
+        }
+        for (JsonNode elem : elements) {
+            JsonNode id = elem.get("id");
+            if (id != null && id.isTextual()) {
+                result.add(id.asText());
+            }
+        }
+        return result;
     }
 
     /**

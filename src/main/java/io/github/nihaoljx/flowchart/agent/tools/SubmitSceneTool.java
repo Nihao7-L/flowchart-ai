@@ -81,7 +81,7 @@ public final class SubmitSceneTool implements AgentTool {
             return Observation.fail(
                     "scene 参数无法序列化: " + e.getMessage(), null, null);
         }
-        SceneGate.Outcome out = gate.process(raw, ctx.userElements());
+        SceneGate.Outcome out = gate.process(raw, ctx);
         if (!out.parseable()) {
             return Observation.fail(
                     "场景读不通，未受理", payload(out.issues()), out.issues());
