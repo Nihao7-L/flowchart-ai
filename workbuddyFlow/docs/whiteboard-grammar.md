@@ -136,3 +136,21 @@
 | frame ↔ 内容归属的行为证据（A/B 对照） | `workbuddyFlow/tools/e2e/probe_frame_membership.py` |
 | frame 几何/成员精度的离线确定性闸门 | `workbuddyFlow/tools/e2e/probe_frame_audit.py` |
 | 契约几何 → 浏览器渲染几何的漂移探针 | `workbuddyFlow/tools/e2e/probe_frontend_geom.py` |
+
+## 七、2026-10-13 补充：CJK 宽度源码真值与官方 Skeleton API（外部调研）
+
+> 来源：2026-10-13 开源项目对标与源码深挖（详见 `.workbuddy/reports/2026-10-13-*`）。
+
+### 7.1 CJK 宽度：从"经验公式"升级到"源码真值"
+
+- **源码权威**：Excalidraw `packages/element/src/textWrapping.ts`（约 740 行）——`containsCJK` 正则、unicode 感知分词、与浏览器一致的软换行模拟；`charWidth` 按字体缓存每字符宽度。
+- **可执行数字**（fontSize 20 时，实测口径）：Latin ≈ **9px/字**、CJK ≈ **18px/字**、混合逐字累加、容器宽度下限 `max(160, …)`。比"中文算 1、英文算 0.5"的比例公式（axtonliu 提示词口径）更可执行。
+- **机器真值通路**：渲染页可运行时直读 `charWidth` 缓存 / `computeContainerDimensionForBoundText` / `redrawTextBoundingBox`，量具不必手工估算。
+- **潜在自愈**：模型给的字框不精确时，`restore` / `refreshTextDimensions` 可从 originalText 重算——待验证 `updateScene` 路径是否触发。
+- **用途**：M11 提示词工程的候选素材——把宽度公式写进契约段，让模型**提前**算好框宽（比"画完再量再改"便宜）；比渲染后 GeometryAudit 再点名修正少烧轮次。
+
+### 7.2 官方 Skeleton API：sceneAdapter 的"官方版"（评估级，勿直接动手）
+
+- `convertToExcalidrawElements(skeletons, {regenerateIds})`：**最少属性骨架 → 完整元素**，未提供的尺寸/坐标官方自动计算；`label:{text}` 官方自动定位；箭头绑定关系自动建立。
+- 对本项目的意义：sceneAdapter（手写转换层，曾有删 `frame.name` 的前科，已修 `70e501b`）的理论上位替代 = gitdiagram"确定性编译器"思想的官方实现。
+- ⚠️ **重构级选项，前置验证两件事再决定**：① 与后端 `start:{id}`/`end:{id}` 绑定契约是否兼容；② 与 appliedSignature 增量更新链路是否兼容。验证前不动现有 sceneAdapter。

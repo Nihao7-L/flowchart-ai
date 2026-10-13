@@ -31,6 +31,18 @@
 - 安全边界：`MAX_ROUNDS=3`、`TOTAL_BUDGET_MS=420_000`、`MAX_ROUND_SECONDS=300`、`MIN_ROUND_SECONDS=10`。**无 LoopState、无无进展检测、issue 只报数量不报内容**（`roadmap.md` 发现 5）。
 - **八段⑦「校验只查契约」**：今天钩子只判契约合法即停，标签压叠 / 文字互叠这类美观问题不归循环管 —— G4 拍板后纳入 `ReadabilityGate`。
 
+> **⚠️ 本节数字已过时（2026-10-13 对账，保留作 2026-09-20 快照）**：`MAX_ROUNDS` 已改 `BACKSTOP_MAX_ROUNDS=5`（达标即停 + 硬上限兜底）、`TOTAL_BUDGET_MS=3600_000`、`MAX_ROUND_SECONDS=900`（提交 `2feca53`/`8d661b9`）；链路现为 `bind→dedup→sanitize→claimFramesOnly→validate`（**不再调 `scenePlanner.arrange` / 布局引擎**，坐标由 LLM 原生给出）；issue 已**点名化**（`GeometryAudit` NAMED_CAP=8，含局部改法）；**修正轮机制已存在**（issue 结构化三元组回喂 + issue 摘要压缩）。本模块开工时按新现状重估差距，其中「无独立需求评估器 / 无 checkpoint / 无 run journal」仍是真实缺口。
+
+## 调研输入（2026-10-13，learn-claude-code 课程 + 24 篇 agent 工程文献）
+
+> 来源：《learn-claude-code 对照进度表》《Agent 工程研读报告》（`.workbuddy/reports/2026-10-13-*`）。本节是**设计输入**，不改上面已拍板的 G1/G4 决策。
+
+1. **ReadabilityGate 可叠加「独立需求评估器」（s17 Goal Loop，杠杆最大）**：G4 的闸门是**确定性指标复算**（NaN/重叠/互叠），s17 补的是另一维——**另起一次小模型调用**（候选表单列便宜模型），只读「用户需求 + 渲染层元素摘要 + GeometryAudit 结果」，判 `{ok, issues[], impossible}`：需求是否被满足、还有没有点名问题。`ok=false` → issues 转点名化修正 issue 进下一轮（复用现有修正轮通道，新增代码仅一个评估器类 + 一处接线）。配套两道出口（s17 原则）：连续拦截 N 轮强制放行（防打转）、评估器调用失败=放行（不伪装成功也不卡死）。治「第 1 轮 schema 通过即落库、第 2 轮与换模型永不发生」——校验器只查合法性不查观感/需求满足度。
+2. **checkpoint 具体化为 run journal JSONL（s16 journal）**：每轮追加 `{round, promptHash, candidate, response, verdict, tokens, durationMs}`；中断可恢复、且直接作为 M7 观测与 M14 `--baseline` 的数据源（一个落点喂三处）。
+3. **修正轮 previousJson 分级压缩（s08 四级管线）**：治「模型每轮从零重画 + 一份判决书、看不见自己上一轮画了什么」（违背 Manus"保留错误"/12-factor#9）。做法：**被本轮 issue 点名的元素保留全量**，其余元素替换为一行摘要（类型+label+坐标桶），完整 JSON 落盘留恢复路径——确定性字符串操作，零 API 成本。与 `ContextBudget` 的刻意留白对接。
+4. **NDJSON 流式输出建议挂本阶段**（S4 过程可视化同族）：模型一行一个完整元素 JSON，后端逐行轻校验 + 逐元素 SSE 推送 + 前端增量追加，终局全量校验；截断时保留已上屏部分走修正轮补齐。⚠️ 与 json_schema 结构化输出互斥，按候选模型分流配置。rough.js seed 确定性已具备（追加不闪烁）。
+5. **文献背书（本计划方向正确）**：无进展检测≈s17"连续拦截上限"；issue 点名化 = 文献标准结论「non-actionable feedback → 装饰性变化不收敛」（已落地 ✓）；单线程循环不拆子代理 = Cognition/MAST 结论（写一致性产物）。
+
 ## 前置
 - M3 双通道工具可用（v2-15~17，S3）——循环在编辑模式要能回写被改元素
 - M10 上下文 assembler 可用（S2）——每轮窗口由 assembler 装

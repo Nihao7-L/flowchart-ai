@@ -62,6 +62,15 @@
 ## 完成后
 移入 `state/completed/masterPlan/`；`state/activeLog/<YYYY-MM-DD>.md` 追加一行带证据；`docs/workflow.md` 第六节"下一步（未做）"标记已落地（指向本模块）。
 
+## 调研输入（2026-10-13，三源调研对账）
+
+> 来源：`.workbuddy/reports/2026-10-13-*`。不改变已拍板的 Q1-A 决策（轻量、无新框架），只补设计输入。
+
+1. **建集流程按 Hamel《Evals》**：评测的第一性原理是**错误分析先行**——先人工读 30~50 条真实生成轨迹（含失败），归纳**失败分类表**（如：绑定丢失 / frame 逃逸 / 文字溢出 / group 错贴 / 交白纸），再据此定二元硬指标与补题。不要先想指标再找数据。
+2. **promptfoo 为候选方案（待拍板，与本模块"无新框架"决策有冲突点）**：现有守卫测试锁的是提示词**字符串**（如 `v580EssentialRulesKept` 检查 md 里有没有那句话），锁不了**模型行为**。promptfoo（23k+，OpenAI 收购）做 prompt × 厂商 × 测试用例的断言矩阵（`is-json`/`javascript`/`llm-rubric`），提示词每次升版让全部候选过一遍出成绩单，行为退化当场可见。若引入，与 M11（提示词工程）联动最紧。
+3. **数据源衔接**：M4 的 run journal JSONL（若落地）每轮已带 `promptHash/verdict/tokens/durationMs`——`--baseline` 对比可直接消费它，不必重复采集；`e2e_prompt_battery.py` 的落盘格式向该字段集靠拢。
+4. **指标口径补充**：除图形硬指标外，候选增补三条**过程曲线**（解析通过率 / 修正轮收敛率=几轮达标 / 每张图成本）——它们对"改提示词/改循环"比单帧硬指标更敏感。
+
 ## 状态跟踪
 - [ ] v2-53 Golden Set 建集（10~20 题，含边界/失败回填）+ 硬指标阈值 + capability/full 标记（`docs/eval-golden.md`）
 - [ ] v2-54 回归门禁（`run-eval.ps1` + `--golden/--seed/--baseline`）+ `run-verify.ps1 -Eval` 开关

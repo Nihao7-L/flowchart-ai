@@ -60,6 +60,22 @@
 ## 完成后
 移入 `state/completed/masterPlan/`；`state/activeLog/<YYYY-MM-DD>.md` 追加一行带证据。
 
+## 调研输入（2026-10-13，三源调研对账）
+
+> 来源：`.workbuddy/reports/2026-10-13-*`（绘图开源调研精华终版 / Agent 工程研读 / learn-claude-code 对照）。
+
+- **已提前落地（开工前对账，勿重做）**：
+  - 空内容 / 截断按失败处理并冷却（`70e501b`：`out==null||isBlank()` 判失败 + `TruncatedResponseException` 也冷却）；
+  - 429 冷却口径统一（30s/15s/20s，jitter ±30%，30s 封顶）+ 超时预算口径（`8d661b9`）；
+  - 纯故障转移路由（取消 effort/minRound 升档，候选按健康度排序，`2feca53`）；
+  - 错误先分类再冷却（`LlmFailureKind` + `classify(status,body)`，先读 body 语义再按状态码兜底）。
+- **新增候选（本模块开工时评估纳入）**：
+  1. **parseGate 前置 JSON 修复兜底**（P0 小修，可先行）：JSON 语法闸门失败时先用修复库（Python `json-repair` / Node `jsonrepair`，支持截断自动闭合、尾逗号、围栏）自救，救回即省一整轮模型调用；⚠️ 修复 ≠ 校验，救回的 JSON 仍走全量契约校验；装依赖须经用户同意；
+  2. **采样参数入口**：当前不传任何采样参数 → 厂商默认温度方差极大（同模型同 prompt 实测 10 倍输出长度差）；修正轮低温采样归这里；
+  3. **连续失败 N 次再冷却**：冷却表是进程内存单例，3 路并发实测 12 请求中 5 个拿到「候选均不可用」占位符；
+  4. **多实例提醒**：冷却表重启即忘、多实例被稀释——维持单进程单实例口径（与 §边界一致），文档化即可。
+- **口径更新**：实际调用链已是 `candidates[] → FailoverLlmProvider（冷却+分类）→ per-call 空闲超时`，本计划"8 段调用链"以现状为基线做收口，不是从零建链。
+
 ## 状态跟踪
 - [ ] v2-51 `LLMGateway` 统一收口 + `RetryPolicy`(指数退避 max2) + `SseErrorHandler`(取消/超时/断流/重连)
 - [ ] v2-52 `CallMetrics` 每调用 token/成本/延迟埋点（含 promptVersion，供 M7 消费）
