@@ -133,6 +133,34 @@ class PromptServiceTest {
     }
 
     /**
+     * 追加 ≠ 重画（2026-10-12 事故归因）：用户说「再画一个 X / 加一个 X」时，
+     * X 是具体要新增的对象，模型极易误判成「重新画一张」从而丢弃全部旧元素、
+     * 整图重吐（实测好图被 112 元素退化版覆盖）。锁死「追加」口径与「再画一个 X」
+     * 这类踩在歧义区的说法必须被显式点名。
+     */
+    @Test
+    @DisplayName("修改规则：「再画一个 X / 加一个 X」必须被识别为追加，而非重画")
+    void testAppendNotRedraw() throws IOException {
+        // Given：会话里已有图，用户要"再画一只猪"
+        String current = "{\"elements\":[{\"id\":\"n1\","
+                + "\"type\":\"rectangle\",\"x\":0,\"y\":0,"
+                + "\"width\":100,\"height\":60}]}";
+
+        // When
+        String prompt = promptService.buildPrompt("再画一只猪", current);
+
+        // Then
+        assertTrue(prompt.contains("再画一个 X"),
+                "必须点名「再画一个 X」这种踩在重画歧义区的说法");
+        assertTrue(prompt.contains("加一个 X"),
+                "必须点名「加一个 X」这类追加说法");
+        assertTrue(prompt.contains("追加"),
+                "必须明确「再画一个 X / 加一个 X」属于追加、走保真路径");
+        assertTrue(prompt.contains("重新画"),
+                "重画判定关键词仍需保留，作为丢弃旧元素的唯一出口");
+    }
+
+    /**
      * 用户手绘旁路（v2-34）必须**单列一段**，不能混在"当前场景"里。
      *
      * <p>混进去的后果：LLM 会把它当成场景的一部分原样抄进输出 ——

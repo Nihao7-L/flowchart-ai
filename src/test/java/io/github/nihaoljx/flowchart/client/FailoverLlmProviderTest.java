@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * FailoverLlmProvider 测试：故障转移 / 冷却 / 截断重试 / 升档。
+ * FailoverLlmProvider 测试：纯故障转移 / 冷却 / 截断重试。
  *
  * <p>用 JDK 自带 com.sun.net.httpserver 起桩服务（不触网），
  * 与 OpenAiCompatibleProviderTest 同一套做法。
@@ -182,74 +182,33 @@ class FailoverLlmProviderTest {
     }
 
     @Test
-    @DisplayName("min-round 升档：第 1 轮排除只许第 2 轮起的强模型")
-    void respectsMinRound() throws Exception {
-        AtomicInteger hitsStrong = new AtomicInteger();
-        AtomicInteger hitsCheap = new AtomicInteger();
-        String strong = startStub(hitsStrong, 200, ok("STRONG"));
-        String cheap = startStub(hitsCheap, 200, ok("CHEAP"));
-
-        LlmProperties.Candidate c1 = cand("strong", strong, "M-strong", 1);
-        c1.setMinRound(2);
-        LlmProperties.Candidate c2 = cand("cheap", cheap, "M-cheap", 2);
-        FailoverLlmProvider r = router(c1, c2);
-
-        LlmEffort.setRound(1);
-        assertEquals("CHEAP", r.chat(List.of(Message.user("hi")), 10));
-        assertEquals(0, hitsStrong.get(), "第 1 轮不该动强模型");
-
-        LlmEffort.setRound(2);
-        assertEquals("STRONG", r.chat(List.of(Message.user("hi")), 10));
-        assertEquals(1, hitsStrong.get());
-        LlmEffort.clear();
-    }
-
-    @Test
-    @DisplayName("规模升档：判定为大活时，第 1 轮就放开 minRound=2 的强模型")
-    void largeRequestUnlocksStrongModel() throws Exception {
-        AtomicInteger hitsStrong = new AtomicInteger();
-        AtomicInteger hitsCheap = new AtomicInteger();
-        String strong = startStub(hitsStrong, 200, ok("STRONG"));
-        String cheap = startStub(hitsCheap, 200, ok("CHEAP"));
-
-        LlmProperties.Candidate c1 = cand("strong", strong, "M-strong", 1);
-        c1.setMinRound(2);
-        LlmProperties.Candidate c2 = cand("cheap", cheap, "M-cheap", 2);
-        FailoverLlmProvider r = router(c1, c2);
-
-        // 小活：第 1 轮不该动强模型（与 respectsMinRound 同口径）
-        LlmEffort.setRound(1);
-        LlmEffort.setScale(1);
-        assertEquals("CHEAP", r.chat(List.of(Message.user("hi")), 10));
-        assertEquals(0, hitsStrong.get(), "小活第 1 轮不该动强模型");
-
-        // 大活：同样第 1 轮，规模把难度档抬到 2 → 强模型直接上
-        LlmEffort.setRound(1);
-        LlmEffort.setScale(3);
-        assertEquals("STRONG", r.chat(List.of(Message.user("hi")), 10));
-        assertEquals(1, hitsStrong.get(), "大活第 1 轮就该上强模型");
-        assertEquals(1, hitsCheap.get(), "不该重复打便宜候选");
-
-        LlmEffort.clear();
-    }
-
-    @Test
-    @DisplayName("规模升档：中活不抬档（限量强模型不能被中等需求烧掉）")
-    void mediumRequestKeepsCheapFirst() throws Exception {
-        AtomicInteger hitsStrong = new AtomicInteger();
-        String strong = startStub(hitsStrong, 200, ok("STRONG"));
-        String cheap = startStub(new AtomicInteger(), 200, ok("CHEAP"));
-
-        LlmProperties.Candidate c1 = cand("strong", strong, "M-strong", 1);
-        c1.setMinRound(2);
+    @DisplayName("纯故障转移：tier 升序，最低 tier 优先被用、且只用它")
+    void prefersLowestTierFirst() throws Exception {
+        AtomicInteger hitsA = new AtomicInteger();
+        AtomicInteger hitsB = new AtomicInteger();
+        String a = startStub(hitsA, 200, ok("FIRST_TIER1"));
+        String b = startStub(hitsB, 200, ok("SECOND_TIER2"));
         FailoverLlmProvider r = router(
-                c1, cand("cheap", cheap, "M-cheap", 2));
+                cand("a", a, "m1", 1), cand("b", b, "m2", 2));
 
-        LlmEffort.setRound(1);
-        LlmEffort.setScale(2);
-        assertEquals("CHEAP", r.chat(List.of(Message.user("hi")), 10));
-        assertEquals(0, hitsStrong.get(), "中活第 1 轮仍应先走便宜候选");
-        LlmEffort.clear();
+        assertEquals("FIRST_TIER1", r.chat(List.of(Message.user("hi")), 10));
+        assertEquals(1, hitsA.get(), "tier 最小的候选应最先被尝试");
+        assertEquals(0, hitsB.get(), "首选成功就不该打到更高 tier");
+    }
+
+    @Test
+    @DisplayName("纯故障转移：最低 tier 失败 → 自动切到下一 tier")
+    void fallsBackToNextTierWhenLowerFails() throws Exception {
+        AtomicInteger hitsA = new AtomicInteger();
+        AtomicInteger hitsB = new AtomicInteger();
+        String a = startStub(hitsA, 500, "{\"error\":{}}");
+        String b = startStub(hitsB, 200, ok("OK_TIER2"));
+        FailoverLlmProvider r = router(
+                cand("a", a, "m1", 1), cand("b", b, "m2", 2));
+
+        assertEquals("OK_TIER2", r.chat(List.of(Message.user("hi")), 10));
+        assertEquals(1, hitsA.get());
+        assertEquals(1, hitsB.get());
     }
 
     @Test

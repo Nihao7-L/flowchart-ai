@@ -261,7 +261,7 @@ class GenerationServiceTest {
         service.generate(null, "画圆", emitter);
 
         // 调了 3 次 LLM
-        verify(llmProvider, times(3))
+        verify(llmProvider, times(5))
                 .chat(anyList(), anyInt());
         // 最后发 error + 正常收尾
         verify(emitter).complete();
@@ -680,7 +680,7 @@ class GenerationServiceTest {
         SseEmitter emitter = mock(SseEmitter.class);
         service.generate(null, "画", emitter);
 
-        verify(llmProvider, times(3))
+        verify(llmProvider, times(5))
                 .chat(anyList(), anyInt());
         ArgumentCaptor<ChatEvent> captor =
                 ArgumentCaptor.forClass(ChatEvent.class);
@@ -907,14 +907,14 @@ class GenerationServiceTest {
         SseEmitter emitter = mock(SseEmitter.class);
         service.generate(null, "画一张鱼骨图", emitter);
 
-        // 1) 被拦下 → 走满三轮修正，而不是"首轮通过即发"
-        verify(llmProvider, times(3))
+        // 1) 被拦下 → 走满五轮修正（BACKSTOP_MAX_ROUNDS），而不是"首轮通过即发"
+        verify(llmProvider, times(5))
                 .chat(anyList(), anyInt());
 
         // 2) 修正 prompt 里必须写明不许交空场景，否则修正轮是白跑
         ArgumentCaptor<List<Message>> msgCaptor =
                 messageCaptor();
-        verify(llmProvider, times(3))
+        verify(llmProvider, times(5))
                 .chat(msgCaptor.capture(), anyInt());
         assertTrue(joined(msgCaptor.getAllValues().get(1))
                         .contains("不要返回"),

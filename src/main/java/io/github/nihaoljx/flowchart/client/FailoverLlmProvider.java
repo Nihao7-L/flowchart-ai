@@ -238,36 +238,17 @@ public class FailoverLlmProvider implements LlmProvider {
         if (messages == null || messages.isEmpty()) {
             throw new IllegalArgumentException("messages 不能为空");
         }
-        int round = LlmEffort.currentRound();
-        // 难度档 = max(轮次, 需求规模换算)：大活在第 1 轮就等同"难任务"，
-        // 让 minRound=2 的强模型立刻可用（2026-10-07）
-        int effort = LlmEffort.effectiveEffort();
+        // 取消「强模型升档」设计：候选一律按 tier 升序全量参与，
+        // 谁不可用（错误/冷却/超时/截断）就自动切下一个，恢复后再被优先选回。
+        // minRound 字段不再用于路由（配置里留着无害）。
         long deadline = System.currentTimeMillis()
                 + timeoutSeconds * 1000L;
 
-        // 按当前难度档筛出可用候选（minRound 实现"按难度升档"）
-        List<Entry> order = new ArrayList<>();
-        for (Entry e : entries) {
-            if (e.minRound <= effort) {
-                order.add(e);
-            }
-        }
-        if (order.isEmpty()) {
-            // 兜底不能是 order = entries —— 那会把 minRound 过滤整个撤销，
-            // 限量强模型在第 1 轮就被放行（"首轮不烧额度"的意图当场作废）。
-            // 正确语义：退到本表门槛最低的那一档，而不是无视门槛。
-            int lowest = entries.stream()
-                    .mapToInt(e -> e.minRound).min().orElse(1);
-            order = new ArrayList<>(entries.stream()
-                    .filter(e -> e.minRound == lowest).toList());
-            LOG.warn("[Failover] effort={} 把所有候选都筛掉了，"
-                            + "退到 minRound={} 档（{} 个候选）",
-                    effort, lowest, order.size());
-        }
-        LOG.info("[Failover] 本轮难度档 effort={}（轮次={}，规模={}），"
-                        + "可用候选 {} 个: {}",
-                effort, round, LlmEffort.currentScale(), order.size(),
-                order.stream().map(x -> x.name).toList());
+        List<Entry> order = new ArrayList<>(entries); // tier 升序，全量
+        LOG.info("[Failover] 候选 {} 个（tier 升序，纯故障转移）: {}",
+                order.size(),
+                order.stream().map(x -> x.name + "(t" + x.tier + ")")
+                        .toList());
 
         Exception last = null;
         boolean truncated = false;
@@ -329,9 +310,8 @@ public class FailoverLlmProvider implements LlmProvider {
                     applyCooldown(e, withJitter(COOL_TEMP_MS), "空内容");
                     continue;
                 }
-                LOG.info("[Failover] 候选 {} 命中（round={}），耗时 {} ms",
-                        e.name, round,
-                        System.currentTimeMillis() - t0);
+                LOG.info("[Failover] 候选 {} 命中，耗时 {} ms",
+                        e.name, System.currentTimeMillis() - t0);
                 return out;
             } catch (OpenAiCompatibleProvider
                     .TruncatedResponseException te) {

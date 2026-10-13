@@ -89,6 +89,9 @@ public class GeometryAudit {
     /** 标签被压：占比门槛 */
     public static final double LABEL_RATIO = 0.20;
 
+    /** 每类几何问题最多点名几条（避免修正 prompt 过长） */
+    private static final int NAMED_CAP = 8;
+
     /** 标签宽度估算用的每字宽度（4 个汉字实测约 64px） */
     private static final double LABEL_CHAR_WIDTH = 16;
 
@@ -133,7 +136,8 @@ public class GeometryAudit {
                     double h = element.path("height").asDouble(Double.NaN);
                     if (isPositive(w) && isPositive(h)
                             && Double.isFinite(x) && Double.isFinite(y)) {
-                        boxes.put(id, new Box(x, y, w, h, isLabeled(element)));
+                        boxes.put(id, new Box(x, y, w, h, isLabeled(element),
+                                labelText(element)));
                     }
                 } else if ("arrow".equals(type)) {
                     arrows.add(element);
@@ -177,35 +181,167 @@ public class GeometryAudit {
             int inset = countInsetEndpoints(paths, boxes);
 
             int n = paths.size();
-            List<String> detail = new ArrayList<>();
+
+            // 三、逐类点名：先按阈值决定"值不值得报"（防小图噪声），
+            // 一旦要报就把具体 offender 逐个点名 + 给局部改法，
+            // 让修正轮局部改，而不是整张重摆。
+            List<ValidationIssue> result = new ArrayList<>();
+
+            // 3.1 连线交叉：点名每一对交叉的连线
             if (crossings >= CROSSING_MIN && crossings >= n * CROSSING_RATIO) {
-                detail.add(crossings + " 对连线交叉");
-            }
-            if (through >= THROUGH_MIN && through >= n * THROUGH_RATIO) {
-                detail.add(through + " 处连线穿过无关图形");
-            }
-            if (pressed >= LABEL_MIN && pressed >= n * LABEL_RATIO) {
-                detail.add(pressed + " 处连线标签被图形压住");
-            }
-            if (inset > 0) {
-                detail.add(inset + " 处箭头端点插进了绑定图形内部");
-            }
-            if (detail.isEmpty()) {
-                return List.of();
+                int named = 0;
+                for (int i = 0; i < paths.size() && named < NAMED_CAP; i++) {
+                    for (int j = i + 1;
+                            j < paths.size() && named < NAMED_CAP; j++) {
+                        Path a = paths.get(i), b = paths.get(j);
+                        if (pathsCross(a, b)) {
+                            double[] pt = firstIntersection(a, b);
+                            String at = pt == null ? ""
+                                    : String.format(" 于 (%.0f,%.0f)",
+                                            pt[0], pt[1]);
+                            result.add(new ValidationIssue(
+                                    "geometry.crossing",
+                                    "连线 " + arrowDesc(a) + " 与连线 "
+                                            + arrowDesc(b) + " 交叉" + at,
+                                    "请让 " + a.id() + " 改用折线（多写几个 points）"
+                                            + "从 " + b.id() + " 的一侧绕开，"
+                                            + "不要两点直连"));
+                            named++;
+                        }
+                    }
+                }
+                if (crossings > named) {
+                    result.add(new ValidationIssue("geometry.crossing",
+                            "另有 " + (crossings - named)
+                                    + " 对连线交叉未逐一列出",
+                            "同样用折线绕开"));
+                }
             }
 
-            LOG.info("几何体检未通过：{}（节点 {} 个 / 连线 {} 条）",
-                    String.join("、", detail), obstacles.size(), n);
-            return List.of(new ValidationIssue(
-                    "geometry",
-                    "几何体检未通过：" + String.join("、", detail),
-                    "重新摆放时按四条改：① 连线不要从无关框身上穿过去，"
-                            + "要跨过别的框就用折线绕开；② 绑定了 start/end 的"
-                            + "箭头别自己写两点坐标（那是「框中心到框中心」，会插进"
-                            + "框里压住文字）—— 只写 start/end 由渲染器自动接到框边，"
-                            + "真要转弯再给 points 写三个以上的点；"
-                            + "③ 同层节点对齐、彼此拉开距离，给连线之间留出通道；"
-                            + "④ 连线标签挂在路径中点，两侧要留空档。"));
+            // 3.2 连线穿身：点名每一处"穿过无关图形"的连线
+            if (through >= THROUGH_MIN && through >= n * THROUGH_RATIO) {
+                int named = 0;
+                outer:
+                for (Path path : paths) {
+                    for (Map.Entry<String, Box> entry
+                            : obstacles.entrySet()) {
+                        if (named >= NAMED_CAP) {
+                            break outer;
+                        }
+                        if (path.ends().contains(entry.getKey())) {
+                            continue;
+                        }
+                        if (touches(path, entry.getValue())) {
+                            result.add(new ValidationIssue(
+                                    "geometry.through",
+                                    "连线 " + arrowDesc(path)
+                                            + " 穿过了无关图形 "
+                                            + boxDesc(entry.getKey(),
+                                            entry.getValue()),
+                                    "让 " + path.id() + " 绕开 "
+                                            + entry.getKey()
+                                            + "，或贴着它的边缘走"));
+                            named++;
+                        }
+                    }
+                }
+                if (through > named) {
+                    result.add(new ValidationIssue("geometry.through",
+                            "另有 " + (through - named)
+                                    + " 处穿身未逐一列出",
+                            "同样让对应连线绕开被穿图形"));
+                }
+            }
+
+            // 3.3 标签被压
+            if (pressed >= LABEL_MIN && pressed >= n * LABEL_RATIO) {
+                int named = 0;
+                for (Path path : paths) {
+                    if (named >= NAMED_CAP) {
+                        break;
+                    }
+                    String label = path.label();
+                    if (label.isBlank()) {
+                        continue;
+                    }
+                    for (Map.Entry<String, Box> entry
+                            : obstacles.entrySet()) {
+                        if (path.ends().contains(entry.getKey())) {
+                            continue;
+                        }
+                        if (midInBox(path, entry.getValue())) {
+                            result.add(new ValidationIssue(
+                                    "geometry.labelPressed",
+                                    "连线 " + path.id() + " 的标签「" + label
+                                            + "」被图形 "
+                                            + boxDesc(entry.getKey(),
+                                            entry.getValue())
+                                            + " 压住",
+                                    "把 " + path.id()
+                                            + " 的标签移到路径中点两侧空档，"
+                                            + "或移动该连线避开 "
+                                            + entry.getKey()));
+                            named++;
+                            break;
+                        }
+                    }
+                }
+                if (pressed > named) {
+                    result.add(new ValidationIssue("geometry.labelPressed",
+                            "另有 " + (pressed - named)
+                                    + " 处标签被压未逐一列出",
+                            "同样把对应连线标签移到空档"));
+                }
+            }
+
+            // 3.4 端点插进绑定图形内部
+            if (inset > 0) {
+                int named = 0;
+                for (Path path : paths) {
+                    if (named >= NAMED_CAP) {
+                        break;
+                    }
+                    if (!path.explicit()) {
+                        continue;
+                    }
+                    boolean head = isInside(path.points().get(0),
+                            boxes.get(path.startId()));
+                    boolean tail = isInside(
+                            path.points().get(path.points().size() - 1),
+                            boxes.get(path.endId()));
+                    if (head || tail) {
+                        String which = head && tail ? "首尾"
+                                : head ? "首" : "尾";
+                        result.add(new ValidationIssue(
+                                "geometry.insetEndpoint",
+                                "箭头 " + path.id() + " 的" + which
+                                        + "端点插在绑定图形 "
+                                        + (head ? path.startId()
+                                        : path.endId())
+                                        + " 内部，会压住框内文字",
+                                "去掉 " + path.id()
+                                        + " 显式写的 points，只保留 start/end "
+                                        + "由渲染器接到框边；"
+                                        + "真要转弯再用 ≥3 个点"));
+                        named++;
+                    }
+                }
+                if (inset > named) {
+                    result.add(new ValidationIssue("geometry.insetEndpoint",
+                            "另有 " + (inset - named)
+                                    + " 处端点内插未逐一列出",
+                            "同样去掉对应箭头的显式 points"));
+                }
+            }
+
+            if (result.isEmpty()) {
+                return List.of();
+            }
+            LOG.info("几何体检未通过：交叉{} / 穿身{} / 标签被压{} / 端点内插{}"
+                            + "（节点 {} 个 / 连线 {} 条，点名 {} 条 issue）",
+                    crossings, through, pressed, inset,
+                    obstacles.size(), n, result.size());
+            return result;
         } catch (Exception e) {
             // 体检是锦上添花，绝不能变成新的故障点
             LOG.debug("几何体检跳过（{}）", e.toString());
@@ -313,7 +449,8 @@ public class GeometryAudit {
             points.add(edgePointTowards(from, to.cx(), to.cy()));
             points.add(edgePointTowards(to, from.cx(), from.cy()));
         }
-        return new Path(points, ends, arrow.path("label").path("text").asText(""),
+        return new Path(arrow.path("id").asText(""), points, ends,
+                arrow.path("label").path("text").asText(""),
                 explicit, startId, endId);
     }
 
@@ -550,8 +687,79 @@ public class GeometryAudit {
         return Double.isFinite(value) && value > 0;
     }
 
-    /** 图形包围盒（轴对齐）+ 是否带 label（决定它算不算"节点"） */
-    private record Box(double x, double y, double w, double h, boolean labeled) {
+    /** 取图形的 label 文本（点名用，空 label 返回空串） */
+    private static String labelText(JsonNode element) {
+        JsonNode label = element.get("label");
+        if (label == null || label.isNull()) {
+            return "";
+        }
+        if (label.isTextual()) {
+            return label.asText("");
+        }
+        return label.path("text").asText("");
+    }
+
+    /** 连线点名：id + 标签文字（无标签只给 id） */
+    private static String arrowDesc(Path path) {
+        String label = path.label();
+        String txt = label.isBlank() ? "" : "「" + label + "」";
+        return "「" + path.id() + "」" + txt;
+    }
+
+    /** 图形点名：id + label 文字（无标签只给 id） */
+    private static String boxDesc(String id, Box box) {
+        String label = box.label();
+        String txt = label.isBlank() ? "" : "「" + label + "」";
+        return "「" + id + "」" + txt;
+    }
+
+    /** 路径中点是否落在某个图形包围盒内（标签被压判定） */
+    private static boolean midInBox(Path path, Box box) {
+        double[] mid = midpointOf(path);
+        return mid[0] >= box.x() && mid[0] <= box.x() + box.w()
+                && mid[1] >= box.y() && mid[1] <= box.y() + box.h();
+    }
+
+    /** 两条连线首个严格交叉点；不交叉返回 null */
+    private static double[] firstIntersection(Path a, Path b) {
+        for (int i = 0; i + 1 < a.points().size(); i++) {
+            for (int j = 0; j + 1 < b.points().size(); j++) {
+                double[] pt = intersectPoint(a.points().get(i),
+                        a.points().get(i + 1),
+                        b.points().get(j), b.points().get(j + 1));
+                if (pt != null) {
+                    return pt;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 两线段严格交叉的相交点；共线 / 相接 / 平行返回 null */
+    private static double[] intersectPoint(double[] p1, double[] p2,
+            double[] q1, double[] q2) {
+        double d1 = side(p1, p2, q1);
+        double d2 = side(p1, p2, q2);
+        double d3 = side(q1, q2, p1);
+        double d4 = side(q1, q2, p2);
+        if (!(((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
+                && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)))) {
+            return null;
+        }
+        double denom = (p2[0] - p1[0]) * (q2[1] - q1[1])
+                - (p2[1] - p1[1]) * (q2[0] - q1[0]);
+        if (Math.abs(denom) < 1e-9) {
+            return null;
+        }
+        double t = ((q1[0] - p1[0]) * (q2[1] - q1[1])
+                - (q1[1] - p1[1]) * (q2[0] - q1[0])) / denom;
+        return new double[]{p1[0] + t * (p2[0] - p1[0]),
+                p1[1] + t * (p2[1] - p1[1])};
+    }
+
+    /** 图形包围盒（轴对齐）+ 是否带 label + label 文本（点名用） */
+    private record Box(double x, double y, double w, double h,
+            boolean labeled, String label) {
         double cx() {
             return x + w / 2;
         }
@@ -561,8 +769,8 @@ public class GeometryAudit {
         }
     }
 
-    /** 一条连线的绝对坐标路径 + 端点 id + 标签文字 */
-    private record Path(List<double[]> points, Set<String> ends, String label,
-            boolean explicit, String startId, String endId) {
+    /** 一条连线的绝对坐标路径 + 自身 id + 端点 id + 标签文字 */
+    private record Path(String id, List<double[]> points, Set<String> ends,
+            String label, boolean explicit, String startId, String endId) {
     }
 }

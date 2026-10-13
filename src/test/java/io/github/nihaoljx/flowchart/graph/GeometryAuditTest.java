@@ -79,14 +79,17 @@ class GeometryAuditTest {
 
         List<ValidationIssue> issues = audit.audit(json);
 
-        assertEquals(1, issues.size(),
-                "问题再多也只报一条汇总，实际: " + issues);
-        assertEquals("geometry", issues.get(0).field());
-        assertTrue(issues.get(0).reason().contains("连线交叉"),
-                "应说明是交叉问题，实际: " + issues.get(0).reason());
-        assertTrue(issues.get(0).hint().contains("折线"),
-                "修复提示要给出可执行的做法（用折线绕开），实际: "
-                        + issues.get(0).hint());
+        assertTrue(issues.size() >= 2,
+                "点名化后应逐对报（而非一条汇总），实际: " + issues);
+        boolean allCrossing = issues.stream()
+                .allMatch(i -> "geometry.crossing".equals(i.field()));
+        assertTrue(allCrossing,
+                "交叉类 issue 的 field 应为 geometry.crossing，实际: "
+                        + issues);
+        assertTrue(issues.stream().anyMatch(i -> i.reason().contains("交叉")),
+                "应说明是交叉问题，实际: " + issues);
+        assertTrue(issues.stream().anyMatch(i -> i.hint().contains("折线")),
+                "修复提示要给出可执行的做法（用折线绕开），实际: " + issues);
     }
 
     @Test
@@ -102,9 +105,18 @@ class GeometryAuditTest {
 
         List<ValidationIssue> issues = audit.audit(json);
 
-        assertEquals(1, issues.size(), "实际: " + issues);
-        assertTrue(issues.get(0).reason().contains("标签被图形压住"),
-                "应报标签被压，实际: " + issues.get(0).reason());
+        // 这套场景里 4 条竖直箭头既"穿过中台框"（geometry.through）
+        // 又"标签中点落在框内被压"（geometry.labelPressed），两类会同时报。
+        // 本用例只钉死"标签被压"这条确实被点名，不要求整张只有这一类。
+        long pressed = issues.stream()
+                .filter(i -> "geometry.labelPressed".equals(i.field()))
+                .count();
+        assertTrue(pressed >= 2,
+                "点名化后每条被压标签各报一条，实际: " + issues);
+        assertTrue(issues.stream().anyMatch(
+                        i -> i.field().equals("geometry.labelPressed")
+                                && i.reason().contains("压住")),
+                "应点名被压的标签，实际: " + issues);
     }
 
     @Test
@@ -155,8 +167,9 @@ class GeometryAuditTest {
 
         List<ValidationIssue> issues = audit.audit(json);
 
-        assertEquals(1, issues.size(), "实际: " + issues);
-        assertTrue(issues.get(0).reason().contains("端点插进了绑定图形内部"),
+        assertEquals(1, issues.size(), "单条内插箭头只报一条，实际: " + issues);
+        assertEquals("geometry.insetEndpoint", issues.get(0).field());
+        assertTrue(issues.get(0).reason().contains("插在绑定图形"),
                 "应点明是端点内插，实际: " + issues.get(0).reason());
         assertTrue(issues.get(0).hint().contains("start/end"),
                 "提示要给出可执行改法（只写 start/end 交给渲染器），实际: "

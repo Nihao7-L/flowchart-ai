@@ -1,6 +1,5 @@
 package io.github.nihaoljx.flowchart.service;
 
-import io.github.nihaoljx.flowchart.client.LlmEffort;
 import io.github.nihaoljx.flowchart.client.LlmProvider;
 import io.github.nihaoljx.flowchart.client.Message;
 import io.github.nihaoljx.flowchart.context.AssembleInput;
@@ -56,7 +55,12 @@ public class GenerationService {
      * <p>只有**校验报 issue** 才会进入下一轮，且下一轮用带 issues 的修正
      * prompt。校验一次通过就立刻下发，不再空跑（2026-09-17 修正）。
      */
-    private static final int MAX_ROUNDS = 3;
+    /**
+     * 生成循环的<b>兜底</b>轮数：只防死循环，不是"跑满才停"。
+     * 真正退出靠 predicate —— {@code issues.isEmpty()}（结构合法 + 几何达标
+     * + 非空）一旦达成立即 return，与轮次无关。TOTAL_BUDGET_MS 是第二道墙。
+     */
+    private static final int BACKSTOP_MAX_ROUNDS = 5;
 
     /**
      * 单次生成的总时间预算（毫秒）
@@ -76,9 +80,19 @@ public class GenerationService {
      * 复杂图需要约 380 秒，而 0.6 的候选份额把首候选窗口压到 252 秒 ⇒ 每轮都在
      * 它还没写完时掐断（实测 2_order_flow：849 秒三轮全灭、只剩占位符）。
      * 现在给到 30 分钟，让主力在一次生成里能拿到**两次 850 秒级**的机会。
-     * 注意这是**上限**不是固定等待——正常请求 30~400 秒即返回。
+     *
+     * <p>2026-10-12 再由 1800 秒上调到 3600 秒（1 小时）：实测确认 glm 画高难度图
+     * 单轮要 360~780 秒，而 5 轮修正循环（BACKSTOP_MAX_ROUNDS=5）最坏情况共需
+     * ≈5×780s≈65 分钟。1800 秒的预算会让第 4、5 轮只剩几十秒——慢主力在这么小的
+     * 窗口里必定超时、别的候选又来不及试，于是误报"候选均不可用"提前收工
+     * （实测 Prompt3：第 4 轮只剩 45s，glm 超时、预算耗尽、循环被截断）。
+     * 提到 3600 秒后，第 4、5 轮都能拿到满额 900 秒窗口，慢主力得以完工，
+     * 修正循环才真正跑得完。这是**上限**不是固定等待——easy 请求一轮达标即停
+     * （实测 Prompt2：第 1 轮 0 issue 直接下发，总耗时 &lt; 400s）；只有高难度图
+     * 才会逼近这个上限。代价：极端情况下单次请求最长可能跑满 1 小时，但换来
+     * "弱模型也有足够轮次把难图画对"，与"达标即停"的设计目标一致。
      */
-    public static final long TOTAL_BUDGET_MS = 1_800_000L;
+    public static final long TOTAL_BUDGET_MS = 3_600_000L;
 
     /**
      * 总预算的运行时读数（2026-10-11）。
@@ -301,16 +315,6 @@ public class GenerationService {
         long deadline = System.currentTimeMillis()
                 + TOTAL_BUDGET_MS;
         try {
-            // 任务开始就估一次规模：路由靠它决定"第 1 轮要不要直接上强模型"
-            //（大活首轮用便宜模型等于白烧一轮，2026-10-07 实测）
-            int scale = RequestScale.estimate(userText);
-            LlmEffort.setScale(scale);
-            if (scale >= RequestScale.LARGE) {
-                LOG.info("需求规模判定为大活（scale={}），"
-                        + "本轮起直接放开强模型", scale);
-                sendEvent(emitter, "thinking",
-                        "识别为大图任务，直接启用强模型");
-            }
             generateInternal(
                     sessionId, userText,
                     emitter, deadline);
@@ -321,9 +325,7 @@ public class GenerationService {
             sendError(emitter,
                     "生成异常终止: " + e.getMessage());
         } finally {
-            // ThreadLocal 必须清：线程池复用时会串味（上次的规模档
-            // 会跟到下一次请求上）
-            LlmEffort.clear();
+            // 无状态收尾（原 LlmEffort ThreadLocal 清理已随「强模型升档」设计移除）
         }
     }
 
@@ -397,7 +399,7 @@ public class GenerationService {
         String lastParseable = null;
 
         for (int round = 1;
-                round <= MAX_ROUNDS; round++) {
+                round <= BACKSTOP_MAX_ROUNDS; round++) {
             int roundTimeout = planRound(deadline);
             if (roundTimeout < MIN_ROUND_SECONDS) {
                 long usedSec = (TOTAL_BUDGET_MS
@@ -427,13 +429,11 @@ public class GenerationService {
             }
 
             LOG.info("生成轮次 {}/{}，本轮上限 {} 秒",
-                    round, MAX_ROUNDS, roundTimeout);
+                    round, BACKSTOP_MAX_ROUNDS, roundTimeout);
             sendEvent(emitter, "thinking",
                     "第 " + round + " 轮生成中...");
 
-            // 告诉路由"当前第几轮"：round 1 只用便宜/不限量候选，
-            // round >= 2（首轮没过校验 = 难任务）才放开限量强模型
-            LlmEffort.setRound(round);
+            // 纯故障转移模式：候选按 tier 升序、谁不可用切谁，不按轮次升档
 
             String raw;
             try {
@@ -448,7 +448,7 @@ public class GenerationService {
                 // 的开关，所以只要预算还够就必须往下走一轮。
                 long leftMs = deadline - System.currentTimeMillis()
                         - TAIL_RESERVE_MS;
-                if (round < MAX_ROUNDS
+                if (round < BACKSTOP_MAX_ROUNDS
                         && leftMs > MIN_ROUND_SECONDS * 1000L) {
                     LOG.warn("第 {} 轮 LLM 调用失败（{}），"
                             + "剩余预算 {}s 仍够，转入第 {} 轮重试",
@@ -629,8 +629,8 @@ public class GenerationService {
                     "第 " + round + " 轮校验失败: "
                             + issueDigest(issues));
 
-            if (round == MAX_ROUNDS) {
-                // 三轮都修不动 = 模型给不出可用结果，分两种：
+            if (round == BACKSTOP_MAX_ROUNDS) {
+                // 五轮都修不动 = 模型给不出可用结果，分两种：
                 // (a) 场景**为空**（鱼骨图那组实测），(b) 图非空但那几条
                 // 校验三轮都改不掉（f05 那批 frame/text + group、f30 那批
                 // 箭头绑 frame）。旧实现两种都下发纯 error，用户整句输入
@@ -645,7 +645,7 @@ public class GenerationService {
                             0, SUMMARY_MAX_LEN)
                             + "…";
                 }
-                String note = "已重试 " + MAX_ROUNDS
+                String note = "已重试 " + BACKSTOP_MAX_ROUNDS
                         + " 轮仍未通过校验（" + summary
                         + "）：" + fallbackOutcome(editMode)
                         + "，请把图形拆小后重试";
@@ -657,7 +657,7 @@ public class GenerationService {
                 }
                 // 兜底自身失败（objectMapper 都挂了）才退回 error
                 sendError(emitter,
-                        "已重试 " + MAX_ROUNDS
+                        "已重试 " + BACKSTOP_MAX_ROUNDS
                                 + " 轮仍不通过: "
                                 + summary);
                 return;
