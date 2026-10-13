@@ -1,6 +1,6 @@
 # 模块计划 · 循环工程（S4 循环 / 真 ReAct）
 
-> 状态：规划中
+> 状态：**进行中（提前开工）**——2026-10-13 用户拍板「先把 messages 和 tool 做起来」，v2-55 收窄为最小核先行，工作台副本见 `plans/underway/v2-55-agent-loop-core.md`（含设计理由 / 首批 4 工具集 / 验收口径 / 风险表）；v2-56 及 G4 后半仍按本计划后置。
 > 关联架构：`agent/` 包（ADR-4：允许调 `tools` / `llm` / `graph` / `rag`）；不碰 `GraphValidator` 判定逻辑本身、`scene.schema.json` 字段语义
 > 所属阶段：**S4 循环工程**（与 M6b② 同阶段交付；执行序见 `roadmap.md` 第二节）
 > 覆盖任务：v2-55 ~ v2-56

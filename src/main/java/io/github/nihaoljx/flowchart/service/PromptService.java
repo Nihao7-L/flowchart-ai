@@ -310,6 +310,59 @@ public class PromptService {
     }
 
     /**
+     * 按元素类型取契约片段（v2-55，{@code agent.ReadContractTool} 的按需加载入口）
+     *
+     * <p>为什么独立成方法而不是切 {@link #buildContractBlock()} 的文本：
+     * 那份产物是整块字符串，按行反切等于给契约加第二个真相源。这里直接
+     * 复用同一组私有渲染器（{@code branchNames} / {@code renderProp} /
+     * {@code requiredSuffix}）与同一份 schema 现算 —— 单一真相源不变，
+     * 只是多一个"按类型出片段"的出口。BRANCH_NOTES / FIELD_HINTS /
+     * "空壳会被打回"三条口径原样带上，保证片段与整块不漂移。
+     *
+     * @param branch 契约分支名（{@link #CONTRACT_BRANCHES} 之一）
+     * @return 该类型的契约片段（自包含，可直接回喂给模型）
+     * @throws IllegalArgumentException 分支名不在 CONTRACT_BRANCHES 里
+     * @throws IOException              读 schema 资源失败
+     */
+    public String contractSection(String branch) throws IOException {
+        boolean known = false;
+        for (String b : CONTRACT_BRANCHES) {
+            if (b.equals(branch)) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            throw new IllegalArgumentException("未知契约分支: " + branch
+                    + "，允许: " + String.join("/", CONTRACT_BRANCHES));
+        }
+        JsonNode definitions =
+                objectMapper.readTree(loadResource(SCHEMA_PATH)).get("definitions");
+        JsonNode def = definitions.get(branch);
+        JsonNode props = def.get("properties");
+        StringBuilder sb = new StringBuilder();
+        sb.append("## 契约 · ").append(branchNames(def)).append("：");
+        Iterator<String> names = props.fieldNames();
+        boolean first = true;
+        while (names.hasNext()) {
+            String name = names.next();
+            if ("type".equals(name) || SKIP_IN_TABLE.contains(name)) {
+                continue;
+            }
+            if (!first) {
+                sb.append(", ");
+            }
+            sb.append(renderProp(name, props.get(name), definitions));
+            first = false;
+        }
+        sb.append(requiredSuffix(def)).append(BRANCH_NOTES.getOrDefault(branch, "")).append('\n');
+        sb.append("id 用英文字母数字下划线连字符（不许空格 / 中文 / 点 / 斜杠）；"
+                + "文字用 label 或 containerId，label 里必须有非空 text，"
+                + "没内容就整个键别写（空壳会被打回）。\n");
+        return sb.toString();
+    }
+
+    /**
      * 分支的展示名：{@code shape} 展开成「rectangle / ellipse / diamond」（取自它
      * {@code type} 的 enum），其余分支用自己 {@code type} 的 const。
      */

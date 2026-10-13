@@ -1,0 +1,52 @@
+[
+  {
+    "name": "ailanglang-deepseek-v4.1-flash",
+    "model": "deepseek-v4.1-flash",
+    "ok": true,
+    "tool_calls": [
+      "read_contract",
+      "submit_scene"
+    ],
+    "parallel": true,
+    "chinese_args_kept": true,
+    "args_parse_ok": true,
+    "finish_reason": "tool_calls",
+    "elapsed_s": 2.5,
+    "content_head": ""
+  },
+  {
+    "name": "ailanglang-glm-5.3-flash",
+    "model": "glm-5.3-flash",
+    "ok": true,
+    "tool_calls": [
+      "read_contract",
+      "submit_scene"
+    ],
+    "parallel": true,
+    "chinese_args_kept": true,
+    "args_parse_ok": true,
+    "finish_reason": "tool_calls",
+    "elapsed_s": 27.6,
+    "content_head": ""
+  },
+  {
+    "name": "ailanglang-grok-4.7",
+    "model": "grok-4.7",
+    "ok": true,
+    "tool_calls": [
+      "read_contract",
+      "submit_scene"
+    ],
+    "parallel": true,
+    "chinese_args_kept": true,
+    "args_parse_ok": true,
+    "finish_reason": "tool_calls",
+    "elapsed_s": 13.6,
+    "content_head": ""
+  },
+  {
+    "name": "ailanglang-gpt-6.1-sol",
+    "ok": false,
+    "error": "HTTP 502: b'{\"error\":{\"message\":\"\\xe8\\xaf\\xb7\\xe6\\xb1\\x82\\xe6\\x9a\\x82\\xe6\\x97\\xb6\\xe6\\x9c\\xaa\\xe8\\x83\\xbd\\xe5\\xae\\x8c\\xe6\\x88\\x90\\xef\\xbc\\x8c\\xe8\\xaf\\xb7\\xe7\\xa8\\x8d\\xe5\\x90\\x8e\\xe9\\x87\\x8d\\xe8\\xaf\\x95\\xe6\\x88\\x96\\xe8\\x81\\x94\\xe7\\xb3\\xbb\\xe7\\xae\\xa1\\xe7\\x90\\x86\\xe5\\x91\\x98\\xe3\\x80\\x82\"}}\\n'"
+  }
+]
