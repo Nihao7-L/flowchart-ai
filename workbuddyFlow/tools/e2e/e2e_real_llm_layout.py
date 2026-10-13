@@ -5,8 +5,8 @@
   - e2e_drag_* 等 6 个：**打桩** `/api/chat`，只验前端逻辑，不碰大模型；
   - 本脚本：**不打桩**，走真实后端 + 真实大模型，验"这张图能不能看"。
 
-前置：8080 后端与 5173 dev server 都在跑（`tools/run-backend.sh` / `tools/run-frontend.sh`）。
-跑法：见 `.playwright/run-real-llm.sh`。
+前置：8080 后端与 5173 dev server 都在跑（后端用 `tools/run-backend.sh` 起；前端用 `tools/e2e/run-e2e.sh` 自带起）。
+跑法：先 `tools/run-backend.sh` 起 8080（注意 unset SERVER__PORT），再用 `tools/e2e/run-e2e.sh` 自带起 5173；本脚本需配置真实大模型 API key，无法在无 key 环境跑。
 
 判定口径（全部量化，不靠"看着还行"）：
   1. NaN 元素数 = 0

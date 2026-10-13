@@ -67,7 +67,7 @@ ChartFlow：Spring Boot + 大模型（LLM）的 **AI 白板（Whiteboard）**，
 | `tools/e2e/probe_elbow_arrow.py` | 折线箭头可行性（结论：绑定箭头 ⇔ 直线是 0.18.1 硬约束） |
 | `tools/e2e/probe_frontend_geom.py` · `frontend/tools/probe_scene_fit.mjs` | 前端几何 / 取景行为 |
 
-其他：`tools/layout-bench/`（布局基准 + 三方渲染对比，`-Dtest=LayoutBench test` 手动跑）· `tools/run-backend.sh` / `run-frontend.sh` / `run-tests.sh`（起服务）· `tools/sse-probe.py`。
+其他：`tools/layout-bench/`（布局基准 + 三方渲染对比，`-Dtest=LayoutBench test` 手动跑）· `tools/run-backend.sh`（起 8080 后端）· `tools/e2e/run-e2e.sh`（自带起 5173 前端并跑离线 E2E + 可选 `--with-probes`）。
 
 > ⚠️ `tools/**` 下的 `battery-out/` 快照、`probe-*.json`、`layout-bench/out/`、`compare.png|html`、`elbow-probe.png` 都是**跑出来的产物（是证据，不是源码）**，已在 `.gitignore` 排除。文档引用它们 = 引用"本地产物"，新克隆里不存在。
 

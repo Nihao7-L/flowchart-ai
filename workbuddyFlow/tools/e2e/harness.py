@@ -14,7 +14,7 @@
 
 前置：前端 dev server 已起（默认 http://127.0.0.1:5173），且必须是
       dev 构建 —— 探针 window.__chartflow 只在 import.meta.env.DEV 下挂载。
-      用 tools/run-frontend.sh 起（它显式 --host 127.0.0.1 --strictPort）。
+      用 tools/e2e/run-e2e.sh 起（自带起前端，--host 127.0.0.1 --strictPort）。
 
 注意：沙箱里 http_proxy 指向本地代理，Chromium 默认会继承系统代理而连不上
       本机端口 —— 所以 launch 时显式 proxy={"server": "direct://"} 绕过。
