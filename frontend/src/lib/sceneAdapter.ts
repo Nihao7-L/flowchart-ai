@@ -581,7 +581,7 @@ const snapArrowEndsToAnchors = (
       abs[0] = snapped;
       changed = true;
     }
-    if (!isBindableTarget(startEl) && startEl.id != null) {
+    if (!isSafeBindingTarget(startEl) && startEl.id != null) {
       intent.start = String(startEl.id);
     }
   }
@@ -596,7 +596,7 @@ const snapArrowEndsToAnchors = (
       abs[last] = snapped;
       changed = true;
     }
-    if (!isBindableTarget(endEl) && endEl.id != null) {
+    if (!isSafeBindingTarget(endEl) && endEl.id != null) {
       intent.end = String(endEl.id);
     }
   }
@@ -651,6 +651,25 @@ const BINDABLE_TYPES = new Set<string>([
 const isBindableTarget = (
   el: Record<string, unknown> | undefined,
 ): boolean => !!el && BINDABLE_TYPES.has(String(el.type));
+
+/**
+ * 「安全」的绑定目标 = Excalidraw 认 + 不会触发 label 重定位陷阱。
+ *
+ * 陷阱（2026-10-14 r4 实测 + 最小复现矩阵钉死）：契约 `start:{id}` / `end:{id}`
+ * 指向 **text** 元素时，`convertToExcalidrawElements` 会把该 text 当成
+ * **箭头标签**重新定位 —— 实验：end 绑 text ⇒ text y=300→-12.5（r4 的
+ * s_cancel/s_done 叠字、t2/r1 的文字压字的真凶）；绑 rectangle 则原位不动；
+ * 换 startBinding 格式、摘 boundElements、单独跑转换器都不复现 ——
+ * 只有契约 start/end 格式 + text 目标触发。
+ * Excalidraw 的语义里「箭头连文字」=「给箭头挂标签」，而契约里「箭头指向
+ * 文字节点」是裸文字流程图的常态，两个语义冲突 —— 只能摘掉这类绑定，
+ * 降级为「意图目标 + 几何锚定」：端点仍按 anchorBBox 落在文字包围盒边缘
+ * （指向正确），代价是编辑期拖动文字不联动；customData.chartflowIntentTarget
+ * 留痕可反推意图。
+ */
+const isSafeBindingTarget = (
+  el: Record<string, unknown> | undefined,
+): boolean => isBindableTarget(el) && String(el?.type) !== 'text';
 
 /**
  * 能"装文字"的容器类型（= 契约 `text.containerId` 的合法目标）。
@@ -713,9 +732,10 @@ const withArrowGeometry = (
   // 摘掉后该端变自由端：只要另一头还站着，几何照旧按真实元素算（下面的
   // startEl / endEl 逻辑），箭头照样画到该去的地方；两头都不可绑时，
   // 按两个真实元素的中心连一条自由箭头，而不是丢个残桩在原点。
+  // 2026-10-14：text 目标也摘（isSafeBindingTarget）—— 见其注释的 label 陷阱。
   const clean: Record<string, unknown> = { ...skeleton };
-  if (startId && !isBindableTarget(startEl)) delete clean.start;
-  if (endId && !isBindableTarget(endEl)) delete clean.end;
+  if (startId && !isSafeBindingTarget(startEl)) delete clean.start;
+  if (endId && !isSafeBindingTarget(endEl)) delete clean.end;
 
   const hasXY = Number.isFinite(Number(skeleton.x)) && Number.isFinite(Number(skeleton.y));
   const hasPoints = Array.isArray(skeleton.points) && skeleton.points.length >= 2;

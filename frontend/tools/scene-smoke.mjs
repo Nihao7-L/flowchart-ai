@@ -416,9 +416,14 @@ const cases = [
         ? '取景边界不应有 NaN' : null),
   },
   {
-    // 上面那条的对偶面：修完之后，**合法**绑定必须原样保留 —— 尤其别把
-    // 指向 text 的绑定误伤掉（text 是 Excalidraw 明确支持的绑定端点类型）。
-    name: 'A1c 边界：矩形 / text / 形状之间的合法绑定必须原样保留',
+    // 上面那条的对偶面：图形↔图形的**合法**绑定必须原样保留。
+    // 2026-10-14 口径修正：指向 **text** 的绑定不再保留 —— 契约 start/end
+    // 绑 text 会触发 Excalidraw 转换器的「箭头标签重定位」陷阱（最小复现矩阵
+    // 实测：end 绑 text ⇒ text y=300→-12.5；绑图形原位不动），sceneAdapter
+    // 摘掉该绑定、降级为「意图目标 + 几何锚定」。这条用例同时锁两件事：
+    //   1) a1 的 start(text) 摘、end(ellipse) 留，t1 文字坐标纹丝不动；
+    //   2) a2 双图形绑定原样保留（别把 A1b/A1c 的"摘"扩大化误伤图形绑定）。
+    name: 'A1c 边界：图形绑定保留、text 绑定摘除且文字不被拖位（label 陷阱回归锁）',
     input: [
       { id: 't1', type: 'text', x: 0, y: 0, text: '标题', fontSize: 20 },
       { id: 'n1', type: 'ellipse', x: 0, y: 80, width: 120, height: 60, label: { text: '开始' } },
@@ -429,12 +434,15 @@ const cases = [
     check: (r) => (r.fatal ? '不应 fatal: ' + r.fatal : null)
       || (r.dropped.length ? '不应丢弃: ' + r.dropped.join(',') : null)
       || (() => {
-        for (const id of ['a1', 'a2']) {
-          const a = r.elements.find((e) => e.id === id);
-          if (!a) return id + ' 未转换出来';
-          if (!a.startBinding || !a.endBinding) {
-            return id + ' 的合法绑定被误摘掉了';
-          }
+        const a1 = r.elements.find((e) => e.id === 'a1');
+        const a2 = r.elements.find((e) => e.id === 'a2');
+        if (!a1 || !a2) return 'a1/a2 未转换出来';
+        if (a1.startBinding) return 'a1 的 start(text) 绑定应摘掉（label 陷阱）';
+        if (!a1.endBinding) return 'a1 的 end(ellipse) 合法绑定被误摘掉了';
+        if (!a2.startBinding || !a2.endBinding) return 'a2 的图形绑定被误摘掉了';
+        const t1 = r.elements.find((e) => e.id === 't1');
+        if (!t1 || Math.abs(t1.x - 0) > 2 || Math.abs(t1.y - 0) > 2) {
+          return 't1 文字被重定位（label 陷阱复发）: x=' + t1.x + ' y=' + t1.y;
         }
         return null;
       })(),
