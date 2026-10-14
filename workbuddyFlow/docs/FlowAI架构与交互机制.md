@@ -1,6 +1,6 @@
 # FlowAI 架构与交互机制
 
-> 一份综合说明：前端选型、IR 数据结构、SSE 事件、线程模型、校验与重试。图都用 Mermaid（在 GitHub / IDE / Obsidian 里直接渲染成 SVG）；每张图下面用一两句话讲「为什么这么画」。
+> 一份综合说明：前端选型、IR 数据结构、SSE 事件、双生成路径（legacy 循环 / agent 循环）、线程模型、校验与重试、缓存与跨轮记忆。图都用 Mermaid（在 GitHub / IDE / Obsidian 里直接渲染成 SVG）；每张图下面用一两句话讲「为什么这么画」。
 
 ## 一、整体架构
 
@@ -14,22 +14,47 @@ flowchart TB
   end
   subgraph BL["后端层 (Spring Boot)"]
     CT["Controller 接口层 (很薄)"]
-    SV["Service 业务层"]
-    AI["AI 层: LlmProvider 接口 + FailoverLlmProvider 候选链(按tier)"]
-    SS["SessionStore 缓存层 (IR 唯一真相源)"]
-    CT --> SV
-    SV --> AI
-    SV --> SS
+    subgraph SV["service/ 选路 + 落库 + 兜底纪律"]
+      GS["GenerationService (≈800行)"]
+      GB["GenerationBudget 时间预算"]
+      GE["GenerationEvents SSE 出口"]
+      SB["SceneSeedBuilder 种子工位"]
+      GF["GenerationFallback 兜底决策"]
+    end
+    subgraph AI["llm/ 单包 (双客户端栈合并)"]
+      LP["LlmProvider + FailoverLlmProvider<br/>(legacy 客户端栈)"]
+      AC["AgentLlmClient + FailoverAgentClient<br/>+ OpenAiToolClient (agent 客户端栈)"]
+    end
+    subgraph AG["agent/ 循环 + 工具"]
+      AL["AgentLoop (ReAct 循环)"]
+      T5["5 工具: submit_scene / validate_scene<br/>/ read_scene / read_contract / update_elements"]
+    end
+    subgraph GR["graph/ 三层"]
+      VA["validate: GraphValidator / GeometryAudit<br/>/ SceneGate (判定唯一真相源)"]
+      TR["transform: Scene* (bind/dedup/sanitize/...)"]
+      LA["layout: Layout* (未接生成链路)"]
+    end
+    SS["session/: SessionStore (IR 真相源)<br/>+ MemoryStore (跨轮记忆) + ContextAssembler"]
+    CT --> GS
+    GS --> LP
+    AL --> AC
+    AL --> T5
+    T5 --> VA
+    GS --> VA
+    GS --> TR
+    GS --> SS
+    AL --> SS
   end
   B -->|"POST /api/chat"| CT
   C -->|"POST /api/chat"| CT
   B -->|"PUT /api/model/canvas"| CT
-  SV -.->|"SSE 事件流"| B
+  GS -.->|"SSE 事件流"| B
 ```
 
 **设计思路**
 - 前端只干两件事：把 IR（中间表示，即图的全部数据）画成画布、把用户操作和输入收上来；后端持有 IR、业务和 LLM 调度。两边互不关心对方内部细节，可以各改各的。
 - AI 层画成「接口 + 候选链」而不是一个 `chat()` 盒子：免费模型额度/过载不稳，单家调用会让整次生成随它抖动。候选链按 tier 升序逐个试、失败冷却后切下一个，「换一家」是运行期自动行为，对业务层透明。
+- **包结构按「谁改的频率不同」分层**（reorganize-harness 重组后）：`llm/` 把 legacy 与 agent 两套客户端栈合并成单包、依赖方向单向 `agent→llm`（换模型厂商只动这一个包）；`graph/` 拆 validate（判定）/ transform（归一化）/ layout（排版，当前未接生成链路）三层；`service/` 的 `GenerationService` 只留选路 + 落库 + 兜底纪律，时间预算 / SSE 出口 / 种子工位 / 兜底决策拆成四个伴生类（god class 1624→约 800 行）；`session/` 收拢会话存储、上下文装配与跨轮记忆。
 - 用 SSE（服务端主动推消息）而不是等 HTTP 响应：LLM 要 30–300 秒，同步等会超时或卡住请求线程。SSE 边生成边推「思考中/校验中/结果」，前端不空屏。
 
 ### 1.2 前端为什么选 Excalidraw
@@ -152,6 +177,7 @@ flowchart LR
 **设计思路**
 - 4 类够用：`thinking` 避免空屏；`validation` 透出「在修哪几个问题」；`result` 是终态成品（完整 IR）；`error` 是兜底失败的明确信号，前端据此提示而非卡死。
 - agent 模式（v2-55）额外推 `tool_call`/`tool_result` 两类，把「模型调了哪个工具、观察结果是什么」推到前端。前端对未知类型直接忽略，旧前端不受影响。
+- `update_elements`（v2-57）走 `tool_call` 通道下发增量 ops：模型只交「改了哪几个元素」，没交的原样保留——把「AI 改图 = 整图重画」这类抄丢抄错事故从机制上消灭，编辑耗时从新建的 26~33s 降到 6~9s。
 
 ### 3.2 单轮生成流程（legacy 路径）
 
@@ -163,8 +189,8 @@ flowchart TD
   Bind --> Dedup["sceneDeduper.dedup() 去重"]
   Dedup --> San["sceneSanitizer.sanitize() 修空 label"]
   San --> Claim["scenePlanner.claimFramesOnly() 填 frame.children"]
-  Claim --> Gate["parseGate 严格 JSON 读取"]
-  Gate --> Val["graphValidator.validate() + geometryAudit.audit()"]
+  Claim --> Gate["SceneGate.parseGate() 严格 JSON 读取"]
+  Gate --> Val["SceneGate.validateAll()<br/>graphValidator.validate() + geometryAudit.audit()"]
   Val -->|"通过"| Res["result 事件 → 落库"]
   Val -->|"失败"| Iss["validation 事件: N 个问题"]
   Iss --> Retry{"重试? ≤5 轮"}
@@ -175,19 +201,22 @@ flowchart TD
 
 **设计思路**
 - 一条链、每步只做一件事、顺序固定：`LLM → bind → dedup → sanitize → claimFramesOnly → parseGate → validate(+audit)`。`bind`/`dedup`/`sanitize` 把模型交来的半成品修成能校验的形态；`parseGate` 专拦「JSON 后多一句收尾话」这种下游会判非法的交付。失败不立刻发旧图：报 issue 就进下一轮（最多 5 轮）让模型自己改，第 5 轮仍失败才兜底。
-- **两条生成路径在 `generate()` 一层分流**：本文画的是 legacy 路径（`generateInternal()`）。v2-55 另起 agent 路径（`generateViaAgent()`：messages 单线积累 + 4 工具派发），由 `chartflow.agent-loop.enabled=true` 启用；默认关 ⇒ legacy 是当前默认行为。两者复用同一套 failover/校验/兜底层，差别只在「怎么跟模型打交道」。
+- **两条生成路径在 `generate()` 一层分流**：本文画的是 legacy 路径（`generateInternal()`）。v2-55 另起 agent 路径（`generateViaAgent()`：messages 单线积累 + 5 工具派发，见 §3.5），由 `chartflow.agent-loop.enabled` 切换；代码默认 false，当前 `application.yml` 显式开启 ⇒ **agent 是当前默认路径，legacy 为退路**。两者复用同一套 failover/校验/兜底层，差别只在「怎么跟模型打交道」。
+- **闸门判定单一真相源**：`parseGate`/`validateAll`/`emptySceneIssue`/`detectRewrite` 都收在 `graph/validate/SceneGate`，legacy 循环按步委托、agent 工具整体调用 `SceneGate.process()`——两条路径对「什么算合法」的口径不会各自漂移。
 
 ### 3.3 配置参数
 
 | 配置 | 值 | 说明 |
 | --- | --- | --- |
-| **TOTAL_BUDGET_MS** | 3,600,000 ms (60分钟) | 生成流程总时间预算（`GenerationService` 常量；多候选故障转移后单轮可能跨多个候选，需留足窗口） |
-| **SSE_TIMEOUT_MS** | 3,620,000 ms (≈60.3分钟) | SSE 连接超时 = `TOTAL_BUDGET_MS + 20,000`（`DiagramController` 推导，恒与预算对齐，避免流被容器掐断） |
+| **TOTAL_BUDGET_MS** | 3,600,000 ms (60分钟) | 生成流程总时间预算（`service/GenerationBudget` 常量；多候选故障转移后单轮可能跨多个候选，需留足窗口） |
+| **SSE_TIMEOUT_MS** | 3,620,000 ms (≈60.3分钟) | SSE 连接超时 = `GenerationBudget.totalBudgetMs() + 20_000`（`DiagramController` 推导，恒与预算对齐，避免流被容器掐断） |
 | **MAX_ROUND_SECONDS** | 900 s | 单轮 LLM 调用硬上限（秒），实际取 `min(本值, 剩余预算 − TAIL_RESERVE_MS)` |
 | **MIN_ROUND_SECONDS** | 10 s | 剩余预算低于此值不再开新一轮，直接走兜底下发 |
 | **TAIL_RESERVE_MS** | 30,000 ms | 留给「发结果 + 关闭流」的收尾余量，不参与 LLM 调用 |
 | **BACKSTOP_MAX_ROUNDS** | 5 | 最大轮次 = 1 次首生成 + 最多 4 次修正轮；只有校验报 issue 才进下一轮 |
 | **TEXT_EVENT_STREAM_VALUE** | text/event-stream | 响应媒体类型 |
+
+> `totalBudgetMs()` 是**方法**不是裸常量引用：`TOTAL_BUDGET_MS` 是 `static final` 字面量，别处写 `TOTAL_BUDGET_MS + 20_000L` 会被 javac 在编译期内联成字面量，出现「只改预算、对齐点没动」时增量编译不重编译对齐类、上限静默停在旧值的事故。
 
 ### 3.4 LLM 调用层（多候选故障转移）
 
@@ -199,9 +228,13 @@ flowchart TD
 | --- | --- |
 | **`LlmProvider`（接口）** | 3 个重载 `chat(String)` / `chat(String,int)` / `chat(List<Message>,int)`。生成循环用 `chat(List<Message>,int)`——入参是 system+user 两条消息与本轮超时（秒），不再是拼接好的单个 prompt 字符串。 |
 | **`FailoverLlmProvider`** | `@Primary`，`llm.failover-enabled=true` 时生效。持有候选表，**全部候选按 tier 升序全量参与**；某候选失败（错误/冷却/超时/截断）自动切下一个；同厂商（baseUrl 的 host）其余候选在本次链里一起跳过（一家限流往往全家倒，避免空耗一轮）；恢复后再被优先选回。 |
+| **`AgentLlmClient` + `FailoverAgentClient` + `OpenAiToolClient`** | agent 模式专用客户端栈（与上面 legacy 栈同在 `llm/` 单包）：入参是 `AgentMessages`（多轮消息单线积累），出参是 `AgentResult`（文本 + `ToolCall` 列表）；failover 语义与 legacy 栈同构（同 tier 全量、同厂商跳过、冷却表共享一套口径）。 |
 | **`LlmProperties`** | `@ConfigurationProperties(prefix="llm")`，含 `failoverEnabled` 与 `List<Candidate>`。候选字段：`tier` / `minRound` / `vision` / `largeOutput` / `maxTokens` / `timeoutSeconds` / `stream` / `idleTimeoutSeconds` / `baseUrl` / `apiKey` / `model`。 |
-| **`LlmFailureKind`** | `DETERMINISTIC` / `TRANSIENT` / `QUOTA` / `PERMANENT`。由 `classify(status,body)` **先读 body 语义、再按状态码兜底**（防把「上下文超长」误归为限流）。冷却：`DETERMINISTIC=0s`、`TRANSIENT=120s`、`QUOTA=600s`（429 限流 60s）、`PERMANENT=停用`。仅「上下文超长」为真时 `abortChain` 中断整链。 |
+| **`LlmFailureKind`** | `DETERMINISTIC` / `TRANSIENT` / `QUOTA` / `PERMANENT`。由 `classify(status,body)` **先读 body 语义、再按状态码兜底**（防把「上下文超长」误归为限流；429 只认 JSON 的 `error.code`：1113=余额不足、1305=过载，绝不用 `body.contains` 匹配）。冷却口径（2026-10-11 起，`COOL_MAX_MS`=30s 统一封顶、jitter ±30% 双向抖动）：`QUOTA=30s`、`RATE=15s`、`TRANSIENT=20s`、`DETERMINISTIC=0s` 不冷却、`PERMANENT=停用`。仅「上下文超长」为真时 `abortChain` 中断整链。 |
 | **`OpenAiCompatibleProvider`** | OpenAI 兼容流式实现。**判死主依据是「流式空闲超时」（`idleTimeoutSeconds`，连续多久没新内容才判死）而非总时长**——模型还在稳定吐字就一直等，不因跑得久被误杀。截断靠 `maxTokens` 兜底。 |
+
+> 早期有个 `LlmEffort`「按难度升档」路由（首轮只放便宜模型、难了再放开强模型），已在 2feca53 移除——现在路由就是纯按 tier 故障转移，`minRound` 字段在配置里留着但不再参与路由。
+> **冷却表在进程内存**（单例共享、重启即忘）：多实例部署会被稀释；并发时同一候选被多线程共享冷却状态（已知：3 路并发曾 5/12 请求拿到「候选均不可用」占位符，改串行后全成功）。
 
 > 早期有个 `LlmEffort`「按难度升档」路由（首轮只放便宜模型、难了再放开强模型），已在 2feca53 移除——现在路由就是纯按 tier 故障转移，`minRound` 字段在配置里留着但不再参与路由。
 
@@ -222,6 +255,31 @@ flowchart TD
 
 - **LLM 调用失败**：failover 在本轮内自动切下一个候选；整条链都挂才抛异常到 `generate()` 统一兜底。
 - **校验失败**：进下一轮（最多 5 轮）把 issues 编回 prompt 重生成。仅预算耗尽或已达上限轮次才走兜底下发。
+
+### 3.5 agent 模式（v2-55 循环核 + v2-57 增量编辑）
+
+`chartflow.agent-loop.enabled=true` 时 `/api/chat` 走 ReAct（推理-行动交替）循环：模型不再「一把梭交整份 JSON」，而是带着历史消息单线积累、按需调工具，由工具把每次行动的结果喂回下一步。
+
+```mermaid
+flowchart TD
+  Start["用户需求"] --> Loop["AgentLoop: messages 单线积累"]
+  Loop --> LLM["FailoverAgentClient.chat(messages)<br/>返回文本 + ToolCall 列表"]
+  LLM -->|"submit_scene 交整份场景"| Gate["SceneGate.process()<br/>parseGate → validateAll → 空场景拦截 → 编辑保真"]
+  LLM -->|"update_elements 交增量 ops"| Ops["按 id add/update/remove<br/>在当前场景基线上应用"]
+  Ops --> Gate
+  LLM -->|"validate_scene 自查"| Gate
+  LLM -->|"read_scene / read_contract<br/>读当前 IR / 读契约"| Obs["观察结果回填 messages"]
+  Gate -->|"通过"| Res["result 事件 → 落库"]
+  Gate -->|"不通过"| Obs
+  Obs --> Loop
+  LLM -->|"无工具调用"| End["收尾: 按已有最好结果落库/兜底"]
+```
+
+**设计思路**
+- **为什么 agent 优于一把梭**：模型能先 `read_contract` 确认字段口径再画、画完 `validate_scene` 自检、错了带着 issue 上下文重画——「修哪几个问题」是模型自己看着办的，而不是后端把 issue 拼成 prompt 硬塞。
+- **5 个领域工具**：`submit_scene`（交整份场景 JSON）/ `update_elements`（交增量 ops，v2-57）/ `validate_scene`（不落库的试跑校验）/ `read_scene`（读当前 IR）/ `read_contract`（读 IR schema 与规则）。全部工具的判定都走 `SceneGate.process()` 同一实现——和 legacy 路径口径不会漂移。
+- **增量 ops（v2-57）**：`update_elements` 让「改一个框的颜色」不必重抄整张图，后端在当前场景基线上应用 ops 后仍走同一条 SceneGate 管线。实测编辑耗时 6~9s，是新建（26~33s）的 1/4~1/3。
+- **遗留观察项**：删中间节点时模型未自动补桥接边（ops 忠实执行了删除，「删 A 补 A前→A后」的语义模型没想到）——观察项，可选提示词增量。legacy 循环物理并入 AgentLoop 需先过双路径电池题对照（规划风险登记明令「先对照再删」）。
 
 ## 四、线程模型
 
@@ -276,7 +334,8 @@ flowchart TD
 - **业务（仅编辑模式第一轮）**：① 改图保真 `SceneDrift`——保留 id 但整图重排坐标判为「整图重排」；② 换图检测 `detectRewrite`——旧元素 ≥3 且 id 重叠 <30% 判为「重新画了一张图」。
 - **可选枚举**（v2-40 起，硬编码集合，集合外值 → 整轮被判非法、白耗一轮重试）：`fillStyle`/`strokeStyle`/`verticalAlign`/`startArrowhead`/`endArrowhead`（12 种端点，含鸦脚 `crowfoot_one`/`crowfoot_many`）/`textAlign`/`fontFamily`/`relation`。
 - **几何体检（`GeometryAudit`，在 validate 之后追加 issue）**：只测量不改坐标，把「连线交叉/穿身/标签被压」量成 issue，借修正轮让 LLM 自己重摆。阈值：`CROSSING_MIN=3` 且占比 `≥0.33`、`THROUGH_MIN=3` 且占比 `≥0.25`、`LABEL_MIN=2` 且占比 `≥0.20`。
-- **解析闸门（`parseGate`，在校验之前）**：用 `STRICT_JSON`（开启 `FAIL_ON_TRAILING_TOKENS`）严格读一遍，读不通即转一条 issue 交修正轮，且**不记进 `lastParseable`**，堵住「坏 JSON 被记成可解析场景、兜底时下发 → 前端空白画布」的事故。
+- **解析闸门（`SceneGate.parseGate`，在校验之前）**：用 `STRICT_JSON`（开启 `FAIL_ON_TRAILING_TOKENS`）严格读一遍，读不通即转一条 issue 交修正轮，且**不记进 `lastParseable`**，堵住「坏 JSON 被记成可解析场景、兜底时下发 → 前端空白画布」的事故。
+- **判定收口在 `graph/validate/SceneGate`**：`parseGate` / `validateAll` / `emptySceneIssue` / `detectRewrite` / `process`（整链）都在这一个类里。legacy 循环按步委托（兜底语义留在循环侧），agent 工具整体调 `process()`——「什么算合法」只有一份实现，两条路径不会各自漂移。空场景拦截判的是**结果**不是 issue 数量（校验器自己可能漏报空数组）。
 
 ### 5.3 Issue 结构
 
@@ -381,6 +440,14 @@ flowchart TD
 
 当前实现：**只有重启服务器时才会清空**（需要优化过期机制）。
 
+### 7.5 跨轮记忆（MemoryStore，reorganize-harness 步骤 6）
+
+SessionStore 存「图本身」，MemoryStore 存「图的病史」——每会话累积最近 50 条校验 issue 历史（最多 1000 个会话，有界防内存泄漏）。
+
+- **写**：`GenerationService` 每轮校验失败即记录（哪些字段被点名、原因是什么）。
+- **读（归 m5 消费）：把历史 issue 编进修正 prompt，让模型知道「这个会话反复踩过什么坑」，避免多轮细化重复踩同一 issue。
+- 与 SessionStore 同生命周期（进程内存），单测 `InMemoryMemoryStoreTest` 覆盖有界淘汰与并发写。
+
 ## 八、完整交互流程
 
 ```mermaid
@@ -428,5 +495,6 @@ flowchart TD
 
 - **看 SSE 事件**：浏览器开发者工具 → Network → /api/chat → EventStream。
 - **看 IR 数据**：后端断点 `GenerationService.saveModel()`。
-- **看校验结果**：后端断点 `GenerationService.generateInternal()`（legacy 路径）/ `generateViaAgent()`（agent 路径）。
+- **看校验结果**：legacy 路径断点 `GenerationService.generateInternal()`；agent 路径断点 `graph/validate/SceneGate.process()`（5 个工具共用同一判定）+ `agent/AgentLoop` 循环体。
+- **看 LLM 候选切换**：日志两行 `生成轮次 x/5` + `可用候选 [...]`；failover 明细看 `FailoverLlmProvider` / `FailoverAgentClient` 的 `[AgentFailover]` 行（命中/失败/冷却）。
 - **看元素标记**：前端控制台检查元素的 `customData.chartflowModel` 属性。
