@@ -233,15 +233,59 @@ const normalize = (
   return out;
 };
 
+/**
+ * 元素的有效尺寸（宽/高）。
+ *
+ * 为什么不能默认 0：契约 `scene.schema.json` 的 `text` 定义**没有**
+ * `width` / `height` 字段（裸文字的尺寸由渲染器按字体测出），而绑定式
+ * 箭头的几何推导发生在渲染器测量之前 —— 把缺尺寸当 0 会让 `centerOf`
+ * 退化成"文字左上角"，16 条线全从字头上穿过（2026-10-13 t2 实测）。
+ *
+ * 裸文字按字数估：
+ *   - CJK（含全角）≈ 0.9 × fontSize / 字，Latin ≈ 0.45 × fontSize / 字
+ *     （与提示词契约段的宽度真值 Latin≈9px、CJK≈18px @fontSize 20 同源）；
+ *   - 行高 ≈ 1.25 × fontSize（Excalidraw 默认 lineHeight）。
+ * 非文字元素缺尺寸时维持旧口径 0（shape 的 w/h 在契约里必填，实际到不了）。
+ */
+const effectiveSize = (
+  el: Record<string, unknown>,
+): { width: number; height: number } => {
+  const w = Number(el.width);
+  const h = Number(el.height);
+  // 注意零尺寸也算缺失：ensureFiniteSize 会先给缺宽高的文字盖 0/0，
+  // 箭头治愈等下游拿到的"有限值"可能是假的 0 —— 文字不可能宽高全 0
+  if (Number.isFinite(w) && Number.isFinite(h) && (w > 0 || h > 0)) {
+    return { width: w, height: h };
+  }
+  if (String(el.type) !== 'text') {
+    return { width: 0, height: 0 };
+  }
+  const text = String(el.text ?? '');
+  if (!text) {
+    return { width: 0, height: 0 };
+  }
+  const fontSize = Number(el.fontSize);
+  const fs = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 20;
+  const lines = text.split('\n');
+  let maxLineWidth = 0;
+  for (const line of lines) {
+    let lineWidth = 0;
+    for (const ch of line) {
+      lineWidth += ch.charCodeAt(0) > 0x2e80 ? fs * 0.9 : fs * 0.45;
+    }
+    maxLineWidth = Math.max(maxLineWidth, lineWidth);
+  }
+  return { width: maxLineWidth, height: lines.length * fs * 1.25 };
+};
+
 /** 元素中心点（绑定式箭头需要一个真实起点，否则箭头会落在原点） */
 const centerOf = (el: Record<string, unknown>): { x: number; y: number } => {
   const x = Number(el.x);
   const y = Number(el.y);
-  const w = Number(el.width);
-  const h = Number(el.height);
+  const size = effectiveSize(el);
   return {
-    x: (Number.isFinite(x) ? x : 0) + (Number.isFinite(w) ? w : 0) / 2,
-    y: (Number.isFinite(y) ? y : 0) + (Number.isFinite(h) ? h : 0) / 2,
+    x: (Number.isFinite(x) ? x : 0) + size.width / 2,
+    y: (Number.isFinite(y) ? y : 0) + size.height / 2,
   };
 };
 
@@ -260,11 +304,10 @@ const edgePointTowards = (
   el: Record<string, unknown>,
   target: { x: number; y: number },
 ): { x: number; y: number } => {
-  const width = Number(el.width);
-  const height = Number(el.height);
+  const size = effectiveSize(el);
   const center = centerOf(el);
-  const halfWidth = Number.isFinite(width) ? width / 2 : 0;
-  const halfHeight = Number.isFinite(height) ? height / 2 : 0;
+  const halfWidth = size.width / 2;
+  const halfHeight = size.height / 2;
   if (halfWidth <= 0 && halfHeight <= 0) {
     return center;
   }
@@ -283,6 +326,298 @@ const edgePointTowards = (
     return center;
   }
   return { x: center.x + dx * scale, y: center.y + dy * scale };
+};
+
+/**
+ * 方案 4（2026-10-14）：锚定包围盒 —— 箭头"声明要指向的那块东西"占的范围。
+ *
+ * 与 {@link effectiveSize} 的分工：effectiveSize 回答"这个元素本身多大"，
+ * anchorBBox 回答"端点该落在哪块范围上"。关键差异在线类元素：
+ * line / freedraw / arrow 在契约里**没有 width/height**（几何由 points 定义），
+ * effectiveSize 对它们返回 0×0 —— 直接当锚会让锚点退化成元素 x/y 原点
+ * （= points 包围盒左上角，t2「箭头扎字角上」的同族变体，2026-10-14 S1 实测）。
+ * 这里对带 points 的线类元素现算包围盒，口径与 {@link ensureFiniteSize} 一致
+ * （"points 自带宽高定义，重算永远比沿用可靠"）。
+ */
+const LINEAR_ANCHOR_TYPES = new Set<string>(['line', 'freedraw', 'arrow']);
+
+/** 单个元素的锚定包围盒（不含 group 聚合）。`depth` 用于箭头→箭头链条的递归防抖 */
+const singleAnchorBBox = (
+  el: Record<string, unknown>,
+  byId: Map<string, Record<string, unknown>> | undefined,
+  depth: number,
+): { x1: number; y1: number; x2: number; y2: number } => {
+  const nx = Number(el.x);
+  const ny = Number(el.y);
+  const x = Number.isFinite(nx) ? nx : 0;
+  const y = Number.isFinite(ny) ? ny : 0;
+  const rawPoints = el.points as unknown;
+  if (
+    LINEAR_ANCHOR_TYPES.has(String(el.type)) &&
+    Array.isArray(rawPoints) &&
+    rawPoints.length >= 2
+  ) {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const p of rawPoints as unknown[][]) {
+      const px = Number(p?.[0]);
+      const py = Number(p?.[1]);
+      if (Number.isFinite(px)) xs.push(px);
+      if (Number.isFinite(py)) ys.push(py);
+    }
+    if (xs.length >= 2 || ys.length >= 2) {
+      return {
+        x1: x + Math.min(...xs),
+        y1: y + Math.min(...ys),
+        x2: x + Math.max(...xs),
+        y2: y + Math.max(...ys),
+      };
+    }
+  }
+  // 箭头目标且自带几何不存在（byId 里是原始契约元素，points 还没派生）：
+  // 按它自己的绑定递归推导两端几何，取两端点的包围盒。
+  // （2026-10-14 S6 实测：箭头→箭头不递归会锚到场景原点 (0,0)。）
+  if (
+    String(el.type) === 'arrow' &&
+    byId &&
+    depth <= ANCHOR_RECURSION_LIMIT &&
+    (!Array.isArray(rawPoints) || (rawPoints as unknown[]).length < 2)
+  ) {
+    const geo = boundArrowGeometry(el, byId, depth);
+    if (geo) {
+      const xs = [geo.from.x, geo.to.x];
+      const ys = [geo.from.y, geo.to.y];
+      return {
+        x1: Math.min(...xs),
+        y1: Math.min(...ys),
+        x2: Math.max(...xs),
+        y2: Math.max(...ys),
+      };
+    }
+  }
+  const size = effectiveSize(el);
+  return { x1: x, y1: y, x2: x + size.width, y2: y + size.height };
+};
+
+/**
+ * 箭头→箭头→箭头… 链式推导的深度上限：到层就放弃递归、退回 x/y 原点兜底。
+ * 防御模型的循环引用（a→b→a）把转换拖成死循环。
+ */
+const ANCHOR_RECURSION_LIMIT = 3;
+
+/**
+ * 按绑定关系推导一条箭头的两端几何（与 withArrowGeometry 缺几何路径同一套数学）。
+ * 目标元素不存在 / 两端都没声明时返回 null，调用方自行兜底。
+ */
+function boundArrowGeometry(
+  skeleton: Record<string, unknown>,
+  byId: Map<string, Record<string, unknown>>,
+  depth: number,
+): { from: { x: number; y: number }; to: { x: number; y: number } } | null {
+  const startId = (skeleton.start as { id?: unknown } | undefined)?.id;
+  const endId = (skeleton.end as { id?: unknown } | undefined)?.id;
+  if (typeof startId !== 'string' && typeof endId !== 'string') {
+    return null;
+  }
+  const startEl = typeof startId === 'string' ? byId.get(startId) : undefined;
+  const endEl = typeof endId === 'string' ? byId.get(endId) : undefined;
+  const startBB = startEl ? anchorBBox(startEl, byId, depth + 1) : null;
+  const endBB = endEl ? anchorBBox(endEl, byId, depth + 1) : null;
+  const startCenter = startBB ? bboxCenter(startBB) : { x: 0, y: 0 };
+  const endCenter = endBB
+    ? bboxCenter(endBB)
+    : { x: startCenter.x + 120, y: startCenter.y };
+  const from = startBB ? edgePointTowardsBBox(startBB, endCenter) : startCenter;
+  const to = endBB ? edgePointTowardsBBox(endBB, startCenter) : endCenter;
+  return { from, to };
+}
+
+/**
+ * 锚定包围盒，带 group 聚合：意图目标是组合图形的某个成员时，
+ * 锚到**整组**的并集包围盒，而不是单个成员 —— 否则箭头只指到"部件"。
+ * （校验器口径：group 只许贴在矩形/椭圆/菱形上；这里宽进严出，不重复限类型。）
+ * `depth` 只服务箭头→箭头的递归推导，公开调用方恒为 0。
+ */
+const anchorBBox = (
+  el: Record<string, unknown>,
+  byId?: Map<string, Record<string, unknown>>,
+  depth = 0,
+): { x1: number; y1: number; x2: number; y2: number } => {
+  const base = singleAnchorBBox(el, byId, depth);
+  const group = el.group as unknown;
+  if (typeof group !== 'string' || !group || !byId) {
+    return base;
+  }
+  let { x1, y1, x2, y2 } = base;
+  for (const other of byId.values()) {
+    if (other === el || (other as Record<string, unknown>).group !== group) {
+      continue;
+    }
+    const ob = singleAnchorBBox(other, byId, depth + 1);
+    x1 = Math.min(x1, ob.x1);
+    y1 = Math.min(y1, ob.y1);
+    x2 = Math.max(x2, ob.x2);
+    y2 = Math.max(y2, ob.y2);
+  }
+  return { x1, y1, x2, y2 };
+};
+
+const bboxCenter = (bb: { x1: number; y1: number; x2: number; y2: number }) => ({
+  x: (bb.x1 + bb.x2) / 2,
+  y: (bb.y1 + bb.y2) / 2,
+});
+
+/** 包围盒版本的边缘交点（与 {@link edgePointTowards} 同一套数学，作用对象换成锚定包围盒） */
+const edgePointTowardsBBox = (
+  bb: { x1: number; y1: number; x2: number; y2: number },
+  target: { x: number; y: number },
+): { x: number; y: number } => {
+  const center = bboxCenter(bb);
+  const halfWidth = (bb.x2 - bb.x1) / 2;
+  const halfHeight = (bb.y2 - bb.y1) / 2;
+  if (halfWidth <= 0 && halfHeight <= 0) {
+    return center;
+  }
+  const dx = target.x - center.x;
+  const dy = target.y - center.y;
+  if (dx === 0 && dy === 0) {
+    return center;
+  }
+  const scaleX = dx !== 0 ? halfWidth / Math.abs(dx) : Number.POSITIVE_INFINITY;
+  const scaleY = dy !== 0 ? halfHeight / Math.abs(dy) : Number.POSITIVE_INFINITY;
+  const scale = Math.min(scaleX, scaleY);
+  if (!Number.isFinite(scale) || scale >= 1) {
+    return center;
+  }
+  return { x: center.x + dx * scale, y: center.y + dy * scale };
+};
+
+/**
+ * 把一个悬空端点沿"作者画的出发方向"吸附到锚定包围盒边缘。
+ *
+ * `neighbor` 是该端点的相邻折点（首点取 pts[1]，末点取 pts[len-2]）：
+ * 吸附方向 = 包围盒中心 → 相邻折点，即箭头自己画出的走向，不另造方向。
+ *
+ * 两种情况**不动**（作者意图优先）：
+ *   - 端点已落在包围盒内/上（箭头已经"够到"目标，吸附反而画蛇添足）；
+ *   - 相邻折点在包围盒内（朝内吸会反向拖拽，退回原点最稳）。
+ *
+ * @returns 吸附后的坐标；不需要吸附时返回 null（调用方保持原点）。
+ */
+const snapPointToAnchorBBox = (
+  point: { x: number; y: number },
+  bb: { x1: number; y1: number; x2: number; y2: number },
+  neighbor: { x: number; y: number },
+): { x: number; y: number } | null => {
+  const inside =
+    point.x >= bb.x1 && point.x <= bb.x2 && point.y >= bb.y1 && point.y <= bb.y2;
+  if (inside) {
+    return null;
+  }
+  const neighborInside =
+    neighbor.x >= bb.x1 &&
+    neighbor.x <= bb.x2 &&
+    neighbor.y >= bb.y1 &&
+    neighbor.y <= bb.y2;
+  if (neighborInside) {
+    return null;
+  }
+  const edge = edgePointTowardsBBox(bb, neighbor);
+  const center = bboxCenter(bb);
+  // 零尺寸/同心退化（scale>=1 会返回中心）：中心可能比原点更歪，宁可不吸
+  if (edge.x === center.x && edge.y === center.y) {
+    return null;
+  }
+  return edge;
+};
+
+/**
+ * 方案 4 主入口：给"自带几何"的绑定式箭头把首/末点吸附到**声明的端点目标**。
+ *
+ * 背景（2026-10-14 t2/S4/S5 实测）：模型给箭头写了 x/y + points 时，几何完全
+ * 按模型坐标渲染 —— 端点距所绑元素边缘悬空 16~140px，箭头"指向空气"。
+ * 治愈逻辑豁免 ≥3 点折线（保护刻意绕行），校验器 v10.0.0 起放开"绑定+points"
+ * 并存 ⇒ 这类箭头此前落在修正无人区。
+ *
+ * 规则（作者意图优先，最小干预）：
+ *   - **只动首/末点**，中段绕行路径一个点都不碰（回流/折线语义保留）；
+ *   - 只吸附**声明了 start/end 的那一端**：绑得上就锚到绑定元素，绑不上
+ *     （line/freedraw/arrow/image 等）也锚到该元素 —— "不可绑 ≠ 丢失意图"，
+ *     Excalidraw 层面保持自由端（不崩），几何忠实于模型声明的指向；
+ *   - 端点已在目标包围盒内/上 ⇒ 不动；
+ *   - 不可绑的声明端记入 `customData.chartflowIntentTarget` 留痕，供治愈/审计追溯。
+ */
+const snapArrowEndsToAnchors = (
+  skeleton: Record<string, unknown>,
+  startEl: Record<string, unknown> | undefined,
+  endEl: Record<string, unknown> | undefined,
+  startDeclared: boolean,
+  endDeclared: boolean,
+  byId: Map<string, Record<string, unknown>>,
+): Record<string, unknown> => {
+  const rawPoints = skeleton.points as unknown;
+  if (!Array.isArray(rawPoints) || rawPoints.length < 2) {
+    return skeleton;
+  }
+  const sx = Number(skeleton.x);
+  const sy = Number(skeleton.y);
+  const ox = Number.isFinite(sx) ? sx : 0;
+  const oy = Number.isFinite(sy) ? sy : 0;
+  const abs = (rawPoints as number[][]).map((p) => ({
+    x: ox + (Number(p?.[0]) || 0),
+    y: oy + (Number(p?.[1]) || 0),
+  }));
+
+  let changed = false;
+  const intent: Record<string, string> = {};
+
+  if (startDeclared && startEl) {
+    const snapped = snapPointToAnchorBBox(
+      abs[0],
+      anchorBBox(startEl, byId),
+      abs[1],
+    );
+    if (snapped) {
+      abs[0] = snapped;
+      changed = true;
+    }
+    if (!isBindableTarget(startEl) && startEl.id != null) {
+      intent.start = String(startEl.id);
+    }
+  }
+  const last = abs.length - 1;
+  if (endDeclared && endEl) {
+    const snapped = snapPointToAnchorBBox(
+      abs[last],
+      anchorBBox(endEl, byId),
+      abs[last - 1],
+    );
+    if (snapped) {
+      abs[last] = snapped;
+      changed = true;
+    }
+    if (!isBindableTarget(endEl) && endEl.id != null) {
+      intent.end = String(endEl.id);
+    }
+  }
+
+  if (!changed && Object.keys(intent).length === 0) {
+    return skeleton;
+  }
+
+  const out: Record<string, unknown> = {
+    ...skeleton,
+    x: abs[0].x,
+    y: abs[0].y,
+    points: abs.map((p) => [p.x - abs[0].x, p.y - abs[0].y]),
+  };
+  if (Object.keys(intent).length > 0) {
+    out.customData = {
+      ...((skeleton.customData as Record<string, unknown> | undefined) ?? {}),
+      chartflowIntentTarget: intent,
+    };
+  }
+  return out;
 };
 
 /**
@@ -343,7 +678,10 @@ const TEXT_CONTAINER_TYPES = new Set<string>([
  *   - 起点 = 起点元素中心，`x` / `y` 即该绝对坐标；
  *   - `points` = `[[0,0], [终点中心 - 起点中心]]`（相对坐标，Excalidraw 约定）。
  *
- * 只补"缺什么"：契约若已给了 x/y 与 points 就原样透传，不做二次加工。
+ * 只补"缺什么"：契约若已给了 x/y 与 points，几何主体**原样透传**
+ * （绕行路径是作者的事实），但首/末点会按声明的端点目标做**吸附**
+ * （见 {@link snapArrowEndsToAnchors}，2026-10-14 方案 4）——
+ * 模型把端点写飘 16~140px 时不再"指到空气"。
  * 端点找不到时退回原点 + 一小段水平线，保证至少是个合法元素而不是 NaN。
  */
 const withArrowGeometry = (
@@ -382,16 +720,22 @@ const withArrowGeometry = (
   const hasXY = Number.isFinite(Number(skeleton.x)) && Number.isFinite(Number(skeleton.y));
   const hasPoints = Array.isArray(skeleton.points) && skeleton.points.length >= 2;
   if (hasXY && hasPoints) {
-    return clean;
+    // 方案 4（2026-10-14）：自带几何不再"整段透传"——中段绕行保留，
+    // 首/末点吸附到声明的端点目标（绑得上锚绑定元素，绑不上也锚该元素）。
+    return snapArrowEndsToAnchors(clean, startEl, endEl, !!startId, !!endId, byId);
   }
 
-  // 取「边缘交点」而非中心点：中心点会让箭头穿过图形、与框内文字叠在一起
-  const startCenter = startEl ? centerOf(startEl) : { x: 0, y: 0 };
-  const endCenter = endEl
-    ? centerOf(endEl)
+  // 取「锚定包围盒的边缘交点」而非中心点：中心点会让箭头穿过图形、
+  // 与框内文字叠在一起。用包围盒（线类元素按 points 现算，见 anchorBBox）
+  // 才能让 line/freedraw 这类"契约无宽高"的目标也锚得准。
+  const startBB = startEl ? anchorBBox(startEl, byId) : null;
+  const endBB = endEl ? anchorBBox(endEl, byId) : null;
+  const startCenter = startBB ? bboxCenter(startBB) : { x: 0, y: 0 };
+  const endCenter = endBB
+    ? bboxCenter(endBB)
     : { x: startCenter.x + 120, y: startCenter.y };
-  const from = startEl ? edgePointTowards(startEl, endCenter) : startCenter;
-  const to = endEl ? edgePointTowards(endEl, startCenter) : endCenter;
+  const from = startBB ? edgePointTowardsBBox(startBB, endCenter) : startCenter;
+  const to = endBB ? edgePointTowardsBBox(endBB, startCenter) : endCenter;
 
   return {
     ...clean,
@@ -859,12 +1203,13 @@ export const healCorruptedArrows = (
     const { start, end } = arrowEndpoints(host);
     const midX = (start.x + end.x) / 2;
     const midY = (start.y + end.y) / 2;
-    const w = Number((el as unknown as { width?: unknown }).width);
-    const h = Number((el as unknown as { height?: unknown }).height);
+    // 标签文字可能没有 w/h（契约 text 定义就没有）——用有效尺寸估，
+    // 否则标签左上角会钉在中点上、看起来偏右下半个身位
+    const size = effectiveSize(el as Record<string, unknown>);
     return {
       ...el,
-      x: Number.isFinite(w) ? midX - w / 2 : midX,
-      y: Number.isFinite(h) ? midY - h / 2 : midY,
+      x: midX - size.width / 2,
+      y: midY - size.height / 2,
     } as ConvertedElement;
   });
 
@@ -1023,8 +1368,9 @@ const bindContainerTexts = (els: ConvertedElement[]): ConvertedElement[] => {
     }
     if (text.textAlign == null) text.textAlign = 'center';
     if (text.verticalAlign == null) text.verticalAlign = 'middle';
-    const w = Number(text.width);
-    const h = Number(text.height);
+    // 契约 text 定义没有 width/height（ensureFiniteSize 也会盖 0/0）——
+    // 按有效尺寸估，否则标签左上角钉在容器中心、视觉上偏右下半个身位
+    const size = effectiveSize(text as Record<string, unknown>);
     const center =
       container.type === 'arrow' || container.type === 'line'
         ? linearMidpoint(container)
@@ -1032,9 +1378,9 @@ const bindContainerTexts = (els: ConvertedElement[]): ConvertedElement[] => {
             x: Number(container.x) + Number(container.width) / 2,
             y: Number(container.y) + Number(container.height) / 2,
           };
-    if (center && Number.isFinite(w) && Number.isFinite(h)) {
-      text.x = center.x - w / 2;
-      text.y = center.y - h / 2;
+    if (center) {
+      text.x = center.x - size.width / 2;
+      text.y = center.y - size.height / 2;
     }
   }
   return els;
