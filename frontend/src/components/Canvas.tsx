@@ -27,6 +27,15 @@ interface CanvasProps {
 const POSITION_REPORT_DEBOUNCE_MS = 400;
 
 /**
+ * 字体子集预加载的超时兜底。
+ *
+ * <p>正常拉取（本地 dev / 命中缓存）几十毫秒；最坏情形（子集 CDN 慢 / 网络断）
+ * `document.fonts.load` 会长时间 pending —— 超时后按旧行为渲染，
+ * 宁可字体没到位也不能让画布白等。
+ */
+const FONT_PRELOAD_TIMEOUT_MS = 2000;
+
+/**
  * 中间画布（flex: 1）
  * 完全继承 PoC 原型的 Excalidraw 交互能力
  *
@@ -61,74 +70,108 @@ const Canvas: React.FC<CanvasProps> = ({ elements, onSync, onRenderIssue }) => {
   useEffect(() => {
     if (!api) return;
 
-    const { elements: converted, dropped, fatal } = convertScene(elements);
-    conversionRef.current = { dropped, fatal };
+    let cancelled = false;
 
-    // Bug A（2026-09-17）：用户先手绘、AI 首次"接管"画布时，旧逻辑会把
-    // 用户手绘和 AI 新图叠在一起 → 用户看到两张图（手绘在右、AI 在左）。
-    // 判据：本轮 AI 场景非空、且上一轮 AI 签名是空（此前画布只有手绘）。
-    // 这种情况整体替换画布（不保留旧手绘），让 AI 吸收用户的原图。
-    const isTakeover =
-      converted.length > 0 && appliedSignatureRef.current === '';
-    const userElements = isTakeover
-      ? []
-      : api
-          .getSceneElements()
-          .filter((el) => !isModelElement(el));
+    const applyScene = () => {
+      if (cancelled) return;
+      const { elements: converted, dropped, fatal } = convertScene(elements);
+      conversionRef.current = { dropped, fatal };
 
-    api.updateScene({
-      elements: [...converted, ...userElements],
-      // 后端推送属于"远端更新 / 场景初始化"，按 0.18 语义用 CaptureUpdateAction.NEVER
-      // （旧版写法 commitToHistory: false 在 0.18.1 已移除，会报 TS2353）
-      captureUpdate: CaptureUpdateAction.NEVER,
-    });
+      // Bug A（2026-09-17）：用户先手绘、AI 首次"接管"画布时，旧逻辑会把
+      // 用户手绘和 AI 新图叠在一起 → 用户看到两张图（手绘在右、AI 在左）。
+      // 判据：本轮 AI 场景非空、且上一轮 AI 签名是空（此前画布只有手绘）。
+      // 这种情况整体替换画布（不保留旧手绘），让 AI 吸收用户的原图。
+      const isTakeover =
+        converted.length > 0 && appliedSignatureRef.current === '';
+      const userElements = isTakeover
+        ? []
+        : api
+            .getSceneElements()
+            .filter((el) => !isModelElement(el));
 
-    const signature = converted.map((el) => el.id).join('|');
-    const isNewGeneration = signature !== '' && signature !== appliedSignatureRef.current;
-    appliedSignatureRef.current = signature;
-
-    // 视口接管策略：只在"新一轮生成"（AI 元素 id 签名变化）时适配一次视口，
-    // 且**把用户手绘一起纳入取景范围**。
-    //   旧实现两处都错：① 无条件执行（每次 onChange 触发的重渲染都抢视口）；
-    //   ② 只框 AI 元素 —— 用户的手绘被留在取景框外，观感就是"跳到另一个画布"。
-    //   只框 AI 元素也不行：用户有手绘时 AI 图可能整个落在视口外，又变成"生成了看不到"。
-    // 所以取景 = AI 元素 ∪ 用户元素：新图一定可见，用户的图案也仍在画面里。
-    if (isNewGeneration) {
-      // ⚠️ 必须用 `fitToContent`，不能用 `fitToViewport`：
-      // Excalidraw 0.18 的 scrollToContent opts 是互斥联合类型
-      //   {fitToContent?: boolean; fitToViewport?: never}
-      // | {fitToViewport?: boolean; fitToContent?: never}
-      // `fitToViewport` 是「适配 frame 视口」专用分支，对普通图形算不出正确 bounds ——
-      // 后果就是聊天说"已生成 N 个元素"、画布却全空，只剩一个「滚动回到内容」按钮：
-      // 元素已进场景，视口留在了原地。
-      //
-      // 另延后一帧再取景：`updateScene` 刚提交，等 Excalidraw 完成这次 store/布局提交，
-      // 避免 bounds 基于上一帧的元素集合算。
-      viewportFrameRef.current = window.requestAnimationFrame(() => {
-        viewportFrameRef.current = null;
-        try {
-          // A2（2026-09-21）：fitToContent 默认把内容顶到视口边缘，最上面一排
-          // 节点会被 Excalidraw 顶部悬浮工具栏（形状工具条）永久遮挡、点不到也
-          // 拖不动。canvasOffsets 在取景时给四边留余量，顶部留足 64px 覆盖工具条。
-          api.scrollToContent([...converted, ...userElements], {
-            fitToContent: true,
-            animate: false,
-            canvasOffsets: { top: 64, right: 24, bottom: 24, left: 24 },
-          });
-        } catch (e) {
-          console.warn('[Canvas] scrollToContent 失败:', e);
-        }
+      api.updateScene({
+        elements: [...converted, ...userElements],
+        // 后端推送属于"远端更新 / 场景初始化"，按 0.18 语义用 CaptureUpdateAction.NEVER
+        // （旧版写法 commitToHistory: false 在 0.18.1 已移除，会报 TS2353）
+        captureUpdate: CaptureUpdateAction.NEVER,
       });
-    }
 
-    // 失败必须让用户看见：画布空白本身没有任何解释能力
-    if (fatal) {
-      onRenderIssue?.(`画布渲染失败：${fatal}`);
-    } else if (dropped.length > 0) {
-      onRenderIssue?.(
-        `画布渲染：${dropped.length} 个元素无法渲染已跳过（id: ${dropped.join(', ')}）`,
-      );
-    }
+      const signature = converted.map((el) => el.id).join('|');
+      const isNewGeneration = signature !== '' && signature !== appliedSignatureRef.current;
+      appliedSignatureRef.current = signature;
+
+      // 视口接管策略：只在"新一轮生成"（AI 元素 id 签名变化）时适配一次视口，
+      // 且**把用户手绘一起纳入取景范围**。
+      //   旧实现两处都错：① 无条件执行（每次 onChange 触发的重渲染都抢视口）；
+      //   ② 只框 AI 元素 —— 用户的手绘被留在取景框外，观感就是"跳到另一个画布"。
+      // 所以取景 = AI 元素 ∪ 用户元素：新图一定可见，用户的图案也仍在画面里。
+      if (isNewGeneration) {
+        // ⚠️ 必须用 `fitToContent`，不能用 `fitToViewport`：
+        // Excalidraw 0.18 的 scrollToContent opts 是互斥联合类型
+        //   {fitToContent?: boolean; fitToViewport?: never}
+        // | {fitToViewport?: boolean; fitToContent?: never}
+        // `fitToViewport` 是「适配 frame 视口」专用分支，对普通图形算不出正确 bounds ——
+        // 后果就是聊天说"已生成 N 个元素"、画布却全空，只剩一个「滚动回到内容」按钮：
+        // 元素已进场景，视口留在了原地。
+        //
+        // 另延后一帧再取景：`updateScene` 刚提交，等 Excalidraw 完成这次 store/布局提交，
+        // 避免 bounds 基于上一帧的元素集合算。
+        viewportFrameRef.current = window.requestAnimationFrame(() => {
+          viewportFrameRef.current = null;
+          try {
+            // A2（2026-09-21）：fitToContent 默认把内容顶到视口边缘，最上面一排
+            // 节点会被 Excalidraw 顶部悬浮工具栏（形状工具条）永久遮挡、点不到也
+            // 拖不动。canvasOffsets 在取景时给四边留余量，顶部留足 64px 覆盖工具条。
+            api.scrollToContent([...converted, ...userElements], {
+              fitToContent: true,
+              animate: false,
+              canvasOffsets: { top: 64, right: 24, bottom: 24, left: 24 },
+            });
+          } catch (e) {
+            console.warn('[Canvas] scrollToContent 失败:', e);
+          }
+        });
+      }
+
+      // 失败必须让用户看见：画布空白本身没有任何解释能力
+      if (fatal) {
+        onRenderIssue?.(`画布渲染失败：${fatal}`);
+      } else if (dropped.length > 0) {
+        onRenderIssue?.(
+          `画布渲染：${dropped.length} 个元素无法渲染已跳过（id: ${dropped.join(', ')}）`,
+        );
+      }
+    };
+
+    // 手绘字体懒加载竞态修复（2026-10-14，r8 注释行行尾被硬裁的根因）：
+    // Xiaolai（CJK 手绘字体）在 Excalidraw 0.18 里切成 200+ 个 unicode-range
+    // 子集、按需懒加载。场景刚到达时覆盖正文的子集多半还没就位，
+    // convertToExcalidrawElements 用兜底字体量宽 → 偏窄（r8 实测 748 vs 真值
+    // 784，差 4.8%）；字体到位后渲染按旧宽把行尾硬裁，观感是"注释缺了半句"。
+    // 解法：转换**之前**把场景全部文字（正文 + 形状/箭头标签）涉及的字体子集
+    // 显式拉齐 —— `fonts.load` 的第二参数按字符选中对应 unicode-range 子集；
+    // family 栈里的每个名字都请求一遍，谁注册了谁生效（document.fonts.load
+    // 对未注册的 family 静默返回空数组，不报错）。
+    // 与超时赛跑 + allSettled：字体挂死 / 加载失败时按旧行为渲染，不阻塞画布。
+    const sceneText = elements
+      .map((el) => `${el.text ?? ''} ${el.label?.text ?? ''}`)
+      .join(' ')
+      .trim();
+    const fontRequest = sceneText
+      ? Promise.allSettled(
+          ['Excalifont', 'Xiaolai', 'Virgil'].map((family) =>
+            document.fonts.load(`18px "${family}"`, sceneText),
+          ),
+        ).then(() => undefined)
+      : Promise.resolve();
+    void Promise.race([
+      fontRequest,
+      new Promise<void>((resolve) => window.setTimeout(resolve, FONT_PRELOAD_TIMEOUT_MS)),
+    ]).then(applyScene);
+
+    return () => {
+      cancelled = true;
+    };
   }, [api, elements, onRenderIssue]);
 
   /**
