@@ -9,32 +9,32 @@
 ```mermaid
 flowchart TB
   subgraph UL["用户层"]
-    B["浏览器 (Excalidraw 渲染画布)"]
-    C["聊天框 (用户输入需求)"]
+    B["浏览器 Excalidraw 画布"]
+    C["聊天框"]
   end
-  subgraph BL["后端层 (Spring Boot)"]
-    CT["Controller 接口层 (很薄)"]
-    subgraph SV["service/ 选路 + 落库 + 兜底纪律"]
-      GS["GenerationService (≈800行)"]
-      GB["GenerationBudget 时间预算"]
-      GE["GenerationEvents SSE 出口"]
-      SB["SceneSeedBuilder 种子工位"]
-      GF["GenerationFallback 兜底决策"]
+  subgraph BL["后端层 Spring Boot"]
+    CT["Controller 接口层"]
+    subgraph SV["service/ 选路 + 落库 + 兜底"]
+      GS["GenerationService"]
+      GB["GenerationBudget"]
+      GE["GenerationEvents"]
+      SB["SceneSeedBuilder"]
+      GF["GenerationFallback"]
     end
-    subgraph AI["llm/ 单包 (双客户端栈合并)"]
-      LP["LlmProvider + FailoverLlmProvider<br/>(legacy 客户端栈)"]
-      AC["AgentLlmClient + FailoverAgentClient<br/>+ OpenAiToolClient (agent 客户端栈)"]
+    subgraph AI["llm/ 单包"]
+      LP["legacy 客户端栈"]
+      AC["agent 客户端栈"]
     end
     subgraph AG["agent/ 循环 + 工具"]
-      AL["AgentLoop (ReAct 循环)"]
-      T5["5 工具: submit_scene / validate_scene<br/>/ read_scene / read_contract / update_elements"]
+      AL["AgentLoop"]
+      T5["5 个领域工具"]
     end
     subgraph GR["graph/ 三层"]
-      VA["validate: GraphValidator / GeometryAudit<br/>/ SceneGate (判定唯一真相源)"]
-      TR["transform: Scene* (bind/dedup/sanitize/...)"]
-      LA["layout: Layout* (未接生成链路)"]
+      VA["validate 判定"]
+      TR["transform 归一化"]
+      LA["layout 排版"]
     end
-    SS["session/: SessionStore (IR 真相源)<br/>+ MemoryStore (跨轮记忆) + ContextAssembler"]
+    SS["session/ 会话 + 记忆"]
     CT --> GS
     GS --> LP
     AL --> AC
@@ -50,6 +50,13 @@ flowchart TB
   B -->|"PUT /api/model/canvas"| CT
   GS -.->|"SSE 事件流"| B
 ```
+
+**图上每个包里装的是什么**（细节不塞进节点，免得文字被裁）
+- **service/**：`GenerationService` 只留选路 + 落库 + 兜底纪律（约 800 行）；四个伴生类各管一件事——`GenerationBudget`（时间预算）、`GenerationEvents`（SSE 出口）、`SceneSeedBuilder`（种子工位：手绘提升/版本盖章/占位合成）、`GenerationFallback`（兜底决策）。
+- **llm/**：双客户端栈合并成的单包——legacy 栈 `LlmProvider + FailoverLlmProvider`，agent 栈 `AgentLlmClient + FailoverAgentClient + OpenAiToolClient`；依赖方向单向 `agent→llm`，换模型厂商只动这一个包。
+- **agent/**：`AgentLoop`（ReAct 循环）+ 5 个领域工具：`submit_scene` / `update_elements` / `validate_scene` / `read_scene` / `read_contract`。
+- **graph/**：`validate`（`GraphValidator` / `GeometryAudit` / `SceneGate`——判定唯一真相源）/ `transform`（`SceneBinder` / `SceneDeduper` / `SceneSanitizer` / `ScenePlanner` / `SceneDrift`）/ `layout`（`LayoutEngine` 等，当前未接生成链路）。
+- **session/**：`SessionStore`（IR 真相源）+ `MemoryStore`（跨轮记忆）+ `ContextAssembler` / `ConversationReplay`（上下文装配与回放）。
 
 **设计思路**
 - 前端只干两件事：把 IR（中间表示，即图的全部数据）画成画布、把用户操作和输入收上来；后端持有 IR、业务和 LLM 调度。两边互不关心对方内部细节，可以各改各的。
@@ -171,7 +178,7 @@ flowchart LR
   R["result 完整 IR"]
   T --> V --> R
   T -.-> E["error 兜底失败"]
-  TC["agent 模式扩展: tool_call / tool_result"]
+  TC["agent 模式扩展:<br/>tool_call / tool_result"]
 ```
 
 **设计思路**
@@ -184,17 +191,17 @@ flowchart LR
 ```mermaid
 flowchart TD
   Start["生成开始"] --> Think["thinking 事件"]
-  Think --> LLM["llmProvider.chat()<br/>FailoverLlmProvider 多候选故障转移"]
+  Think --> LLM["llmProvider.chat()<br/>FailoverLlmProvider<br/>故障转移"]
   LLM --> Bind["sceneBinder.bind() 吸附归一化"]
   Bind --> Dedup["sceneDeduper.dedup() 去重"]
-  Dedup --> San["sceneSanitizer.sanitize() 修空 label"]
-  San --> Claim["scenePlanner.claimFramesOnly() 填 frame.children"]
-  Claim --> Gate["SceneGate.parseGate() 严格 JSON 读取"]
-  Gate --> Val["SceneGate.validateAll()<br/>graphValidator.validate() + geometryAudit.audit()"]
+  Dedup --> San["sceneSanitizer.sanitize()<br/>修空 label"]
+  San --> Claim["scenePlanner.claimFramesOnly()<br/>填 frame.children"]
+  Claim --> Gate["SceneGate.parseGate()<br/>严格 JSON 读取"]
+  Gate --> Val["SceneGate.validateAll()<br/>结构校验 + 几何体检"]
   Val -->|"通过"| Res["result 事件 → 落库"]
   Val -->|"失败"| Iss["validation 事件: N 个问题"]
   Iss --> Retry{"重试? ≤5 轮"}
-  Retry -->|"是"| Fix["contextAssembler 把 issues 编进修正消息"]
+  Retry -->|"是"| Fix["contextAssembler<br/>把 issues 编进修正消息"]
   Fix --> LLM
   Retry -->|"否"| Fall["最终失败 → 兜底下发"]
 ```
@@ -263,9 +270,9 @@ flowchart TD
 ```mermaid
 flowchart TD
   Start["用户需求"] --> Loop["AgentLoop: messages 单线积累"]
-  Loop --> LLM["FailoverAgentClient.chat(messages)<br/>返回文本 + ToolCall 列表"]
-  LLM -->|"submit_scene 交整份场景"| Gate["SceneGate.process()<br/>parseGate → validateAll → 空场景拦截 → 编辑保真"]
-  LLM -->|"update_elements 交增量 ops"| Ops["按 id add/update/remove<br/>在当前场景基线上应用"]
+  Loop --> LLM["FailoverAgentClient<br/>.chat() 返回文本+ToolCall"]
+  LLM -->|"submit_scene 交整份场景"| Gate["SceneGate.process()<br/>整链判定"]
+  LLM -->|"update_elements 交增量 ops"| Ops["按 id add/update/remove<br/>在场景基线上应用"]
   Ops --> Gate
   LLM -->|"validate_scene 自查"| Gate
   LLM -->|"read_scene / read_contract<br/>读当前 IR / 读契约"| Obs["观察结果回填 messages"]
@@ -292,7 +299,7 @@ flowchart TB
   ST["SSE 生成线程 (每请求 1 个)"]
   GEN["generate(): 生成 + 推 SSE"]
   TP --> CH --> ST --> GEN
-  N["chat() 返回 emitter 后立刻释放 Tomcat 线程,<br/>去接下一个请求"]
+  N["chat() 返回 emitter 后<br/>立刻释放 Tomcat 线程"]
   N -.-> CH
   style N fill:#f6f8fa,stroke:#888,stroke-dasharray:4 3
 ```
@@ -375,7 +382,7 @@ flowchart TD
   C --> P["parseGate 严格 JSON"]
   P --> V["校验 + 几何体检"]
   V -->|"通过"| Save["保存结果 → result 事件"]
-  V -->|"失败"| Fix["contextAssembler 把 issues 编进修正消息"]
+  V -->|"失败"| Fix["contextAssembler<br/>把 issues 编进修正消息"]
   Fix --> R{"≤5 轮?"}
   R -->|"是"| G
   R -->|"否"| Fall["兜底下发 (不发旧图)"]
@@ -405,7 +412,7 @@ flowchart TD
   C1 -->|"否"| No["不触发缓存"]
   C1 -->|"是"| C2{"前端调 PUT /api/model/canvas?<br/>(用户在画布操作了)"}
   C2 -->|"否"| No
-  C2 -->|"是"| Yes["触发: updatePositions / removeElements / setUserElements"]
+  C2 -->|"是"| Yes["触发: updatePositions /<br/>removeElements / setUserElements"]
 ```
 
 **设计思路**
