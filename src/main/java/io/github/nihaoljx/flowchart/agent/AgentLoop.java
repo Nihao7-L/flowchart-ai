@@ -1,29 +1,35 @@
 package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.SubmitSceneTool;
+import io.github.nihaoljx.flowchart.agent.tools.UpdateElementsTool;
 import io.github.nihaoljx.flowchart.service.PromptService;
 
 import java.util.List;
 import java.util.Map;
+import io.github.nihaoljx.flowchart.llm.AgentTurn;
+import io.github.nihaoljx.flowchart.llm.Observation;
+import io.github.nihaoljx.flowchart.llm.ToolContext;
+import io.github.nihaoljx.flowchart.llm.AgentLlmClient;
+import io.github.nihaoljx.flowchart.llm.AgentMessages;
+import io.github.nihaoljx.flowchart.llm.ToolCall;
+import io.github.nihaoljx.flowchart.llm.AgentResult;
 
 /**
- * agent 主循环（v2-55，learn-claude-code s01 的 while + tool_use）
+ * agent 主循环（，learn-claude-code s01 的 while + tool_use）
  *
- * <pre>
  * messages = [system(稳定块), user(需求)]
- * while steps &lt; MAX_STEPS 且预算未耗尽:
+ * while steps < MAX_STEPS 且预算未耗尽:
  *     resp = client.respond(messages, tools)
  *     一批 tool_calls 全部执行 → observation 逐条追加回 messages
- *     if 提交了 submit_scene 且通过校验: → COMPLETED
+ *     if 提交了 submit_scene 或 update_elements 且通过校验: → COMPLETED
  *     if 提交了 submit_scene 但未过:     → 追加修正指令（点名化 issue），继续
  *     if 纯文本轮:                       → 回喂"请用工具或提交"，继续
  * 超限/超时 → PARTIAL（最后一份读得通的进度，不伪装成功）
- * </pre>
  *
- * <p>双闸门：步数上限 {@value #MAX_STEPS} + 总预算 {@code deadlineMs}
+ * 双闸门：步数上限 {@value #MAX_STEPS} + 总预算 `deadlineMs`
  * （沿用 8d661b9 的 totalBudgetMs 口径，由调用方传入）。单轮超时由循环
- * 按剩余预算折算后传给 {@link AgentLlmClient}。无进展检测/checkpoint
- * 属 v2-56，本类刻意不做。
+ * 按剩余预算折算后传给 AgentLlmClient。无进展检测/checkpoint
+ * 属 ，本类刻意不做。
  */
 public final class AgentLoop {
 
@@ -74,7 +80,7 @@ public final class AgentLoop {
     }
 
     /**
-     * 全参入口（v2-55 步骤 3）：previousJson 非空 = 编辑模式，
+     * 全参入口（步骤 3）：previousJson 非空 = 编辑模式，
      * 场景闸门对首次提交跑改图保真检查（对齐 legacy 第 1 轮口径）。
      */
     public AgentResult run(String systemBlock, String userRequest,
@@ -107,7 +113,8 @@ public final class AgentLoop {
                 Observation obs = registry.dispatch(call, ctx);
                 messages.appendToolResult(call, obs);
                 safeToolResult(listener, call, obs);
-                if (SubmitSceneTool.NAME.equals(call.name())) {
+                if (SubmitSceneTool.NAME.equals(call.name())
+                        || UpdateElementsTool.NAME.equals(call.name())) {
                     submitted = obs;
                 }
             }

@@ -1,8 +1,8 @@
 package io.github.nihaoljx.flowchart.agent.tools;
 
-import io.github.nihaoljx.flowchart.agent.AgentTool;
-import io.github.nihaoljx.flowchart.agent.Observation;
-import io.github.nihaoljx.flowchart.agent.ToolContext;
+import io.github.nihaoljx.flowchart.llm.AgentTool;
+import io.github.nihaoljx.flowchart.llm.Observation;
+import io.github.nihaoljx.flowchart.llm.ToolContext;
 import io.github.nihaoljx.flowchart.service.PromptService;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -12,13 +12,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * read_contract：按元素类型按需读契约片段（v2-55，s07 思路的工具化）
+ * read_contract：按元素类型按需读契约片段（，s07 思路的工具化）
  *
- * <p>为什么不全量塞 system：契约段约 3.3KB 且常驻，而模型真正纠结的
+ * 为什么不全量塞 system：契约段约 3.3KB 且常驻，而模型真正纠结的
  * 往往只有一两个类型（arrow 的 points/start/end 二选一、frame 的
  * 绑定禁令）。按需加载 = 注意力预算纪律（最小高信号 token 集合）。
  *
- * <p>映射关系：模型说 rectangle / ellipse / diamond 时归到 shape 分支
+ * 映射关系：模型说 rectangle / ellipse / diamond 时归到 shape 分支
  * （schema 的 definitions 键是 shape，一个分支覆盖三种形状）。
  */
 public final class ReadContractTool implements AgentTool {

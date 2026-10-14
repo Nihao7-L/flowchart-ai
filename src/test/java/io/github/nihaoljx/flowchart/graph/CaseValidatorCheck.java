@@ -11,6 +11,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
+import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
+import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
 
 /**
  * 全功能用例桥接：把 {@code full_battery.py} 产生的「真实 LLM / 后端输出」

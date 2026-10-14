@@ -3,6 +3,7 @@ package io.github.nihaoljx.flowchart.controller;
 import io.github.nihaoljx.flowchart.model.CanvasSyncRequest;
 import io.github.nihaoljx.flowchart.model.ChatRequest;
 import io.github.nihaoljx.flowchart.model.Result;
+import io.github.nihaoljx.flowchart.service.GenerationBudget;
 import io.github.nihaoljx.flowchart.service.GenerationService;
 import io.github.nihaoljx.flowchart.session.SessionStore;
 import io.swagger.v3.oas.annotations.Operation;
@@ -20,7 +21,7 @@ import org.springframework.web.servlet.mvc.method
 /**
  * 图表接口
  *
- * <p>M1 补入 POST /api/chat（SSE）承载
+ * M1 补入 POST /api/chat（SSE）承载
  * "文字 → 图表 IR"主链路；
  * PUT /api/model/canvas 承载
  * "用户拖拽 / 删除 / 手绘 → 画布现状同步"。
@@ -34,19 +35,19 @@ public class DiagramController {
     /**
      * SSE 通道存活上限（毫秒）
      *
-     * 由 {@link GenerationService#totalBudgetMs()} 推导，两者必须恒等对齐：
+     * 由 totalBudgetMs() 推导，两者必须恒等对齐：
      * 通道若先于生成结束被 Spring 掐断，前端只能收到一条被腰斩的流
      * （现象：聊天栏说"已生成 N 个元素"却看不到图，或干脆毫无提示）。
-     * 旧版写死 120 秒，而实测单轮 LLM 调用就要约 100 秒——第 2 轮必然撞墙。
+     * 写死 120 秒，而实测单轮 LLM 调用就要约 100 秒——第 2 轮必然撞墙。
      *
-     * <p>⚠️ 2026-10-11 改：原来直接写 {@code GenerationService.TOTAL_BUDGET_MS + 20_000L}，
+     * ⚠️  改：原来直接写 `GenerationBudget.TOTAL_BUDGET_MS + 20_000L`，
      * 那是**编译期常量表达式**，javac 会内联成字面量写进本 class，运行时不再回读
-     * GenerationService。后果是"只改了 TOTAL_BUDGET_MS、本文件没动"时增量编译
+     * GenerationBudget。后果是"只改了 TOTAL_BUDGET_MS、本文件没动"时增量编译
      * 不会重编译本类 ⇒ 通道上限静默停在旧值（例如预算 30 分钟、通道 15 分钟，
      * 第 15 分钟被腰斩）。改成**方法调用**后不再是编译期常量，不会内联。
      */
     private static final long SSE_TIMEOUT_MS =
-            GenerationService.totalBudgetMs() + 20_000L;
+            GenerationBudget.totalBudgetMs() + 20_000L;
 
     private final GenerationService generationService;
     private final SessionStore sessionStore;
@@ -67,10 +68,10 @@ public class DiagramController {
     /**
      * 文字 → 图表 IR（SSE 流式推送）
      *
-     * <p>事件类型：thinking / validation
+ * 事件类型：thinking / validation
      * / result / error
      *
-     * <p>会话语义（v2-33）：若 {@code sessionId} 对应的会话里已有模型，
+ * 会话语义：若 `sessionId` 对应的会话里已有模型，
      * 本次请求按"改这张图"处理（当前场景会进 prompt）；否则为新建。
      * 空 sessionId = 无状态生成，只为兼容，不参与上下文与落库。
      */
@@ -87,7 +88,7 @@ public class DiagramController {
                 new SseEmitter(SSE_TIMEOUT_MS);
 
         // sessionId 必须透传：生成服务靠它取"当前图模型"做编辑上下文，
-        // 并在生成成功后把新模型写回（v2-33）
+        // 并在生成成功后把新模型写回
         new Thread(() ->
                 generationService.generate(
                         request.sessionId(),
@@ -98,12 +99,12 @@ public class DiagramController {
     }
 
     /**
-     * 画布现状同步（v2-34，取代原 PATCH /api/model/positions）
+     * 画布现状同步（，取代原 PATCH /api/model/positions）
      *
-     * <p>为什么从"坐标回写"升级成"现状同步"：只回写坐标时，
+ * 为什么从"坐标回写"升级成"现状同步"：只回写坐标时，
      * "用户删了哪些元素""用户手绘了哪些元素""用户拖解绑了哪些线"
      * 后端一无所知 —— 被删元素下一轮复活，用户手绘的线又被 LLM
-     * 重复画一条，拖走的线又被绑回原处（2026-09-16 用户实测）。
+     * 重复画一条，拖走的线又被绑回原处（用户实测）。
      *
      * @param sessionId 会话 ID
      * @param request   画布现状: positions / removedIds /

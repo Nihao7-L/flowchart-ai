@@ -1,6 +1,6 @@
 # 模块计划 · 前端双通道交互层（M6b · S3 / S4）
 
-> 状态：进行中（v2-24b 的画布现状回写已在 S1 提前交付；余 v2-25 / v2-26）
+> 状态：进行中（v2-24b 画布现状回写已在 S1 提前交付；编辑保真 v2-37 已归档；M3 依赖已由 v2-55 agent/tools 满足——**余 v2-25 增量 ops，现由 v2-57 承接，见 `plans/underway/v2-57-incremental-ops.md`**）
 > 关联架构：`architecture.md` 2.1 运行时视图、2.2 数据视图、ADR-1 / ADR-2 / ADR-4
 > 所属阶段：**S3 能改**（v2-24b / v2-25）→ **S4 循环工程**（v2-26）（执行序见 `plans/masterPlan/roadmap.md`）
 > 覆盖任务：v2-24（`onChange` 回写部分）、v2-25、v2-26

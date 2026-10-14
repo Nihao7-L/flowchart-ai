@@ -5,11 +5,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import io.github.nihaoljx.flowchart.llm.Observation;
+import io.github.nihaoljx.flowchart.llm.ToolContext;
+import io.github.nihaoljx.flowchart.llm.ToolCall;
+import io.github.nihaoljx.flowchart.llm.AgentTool;
 
 /**
- * 工具派发表（v2-55，learn-claude-code s02 的 TOOL_HANDLERS）
+ * 工具派发表（，learn-claude-code s02 的 TOOL_HANDLERS）
  *
- * <p>启动时装配、不可变；运行期只做三件事：按名字派发、
+ * 启动时装配、不可变；运行期只做三件事：按名字派发、
  * 兜执行异常、产出进请求体的工具定义清单。未知工具名不算事故
  * —— 模型迷路时给它一条能看懂的 observation，循环继续。
  */
@@ -58,7 +62,7 @@ public final class ToolRegistry {
 
     /**
      * 工具定义清单（OpenAI function-calling 口径）：
-     * {@code [{"type":"function","function":{"name":..,"description":..,
+     * `[{"type":"function","function":{"name":..,"description":..,
      * "parameters":{...}}}, ...]}
      */
     public List<Map<String, Object>> schemas() {

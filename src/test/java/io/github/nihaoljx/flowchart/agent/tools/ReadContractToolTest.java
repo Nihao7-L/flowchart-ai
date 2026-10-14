@@ -1,6 +1,6 @@
 package io.github.nihaoljx.flowchart.agent.tools;
 
-import io.github.nihaoljx.flowchart.agent.Observation;
+import io.github.nihaoljx.flowchart.llm.Observation;
 import io.github.nihaoljx.flowchart.service.PromptService;
 
 import com.fasterxml.jackson.databind.ObjectMapper;

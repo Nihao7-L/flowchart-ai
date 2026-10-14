@@ -1,13 +1,13 @@
 package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.AgentTools;
-import io.github.nihaoljx.flowchart.graph.GeometryAudit;
-import io.github.nihaoljx.flowchart.graph.GraphValidator;
-import io.github.nihaoljx.flowchart.graph.SceneBinder;
-import io.github.nihaoljx.flowchart.graph.SceneDeduper;
-import io.github.nihaoljx.flowchart.graph.SceneDrift;
-import io.github.nihaoljx.flowchart.graph.ScenePlanner;
-import io.github.nihaoljx.flowchart.graph.SceneSanitizer;
+import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
+import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
+import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
+import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
+import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
 import io.github.nihaoljx.flowchart.service.PromptService;
 
 import org.junit.jupiter.api.Test;
@@ -19,6 +19,9 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import io.github.nihaoljx.flowchart.llm.AgentLlmClient;
+import io.github.nihaoljx.flowchart.llm.AgentResult;
+import io.github.nihaoljx.flowchart.llm.OpenAiToolClient;
 
 /**
  * v2-55 真实 LLM 冒烟（手动挡）：AgentLoop + 真实候选模型 + 真实场景

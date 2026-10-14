@@ -3,19 +3,20 @@ package io.github.nihaoljx.flowchart.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.nihaoljx.flowchart.client.LlmProvider;
-import io.github.nihaoljx.flowchart.client.Message;
-import io.github.nihaoljx.flowchart.context.ContextAssembler;
-import io.github.nihaoljx.flowchart.context.ContextBudget;
-import io.github.nihaoljx.flowchart.context.ContextReplay;
-import io.github.nihaoljx.flowchart.graph.GeometryAudit;
-import io.github.nihaoljx.flowchart.graph.GraphValidator;
-import io.github.nihaoljx.flowchart.graph.SceneBinder;
-import io.github.nihaoljx.flowchart.graph.SceneDeduper;
-import io.github.nihaoljx.flowchart.graph.SceneSanitizer;
-import io.github.nihaoljx.flowchart.graph.SceneDrift;
-import io.github.nihaoljx.flowchart.graph.ScenePlanner;
-import io.github.nihaoljx.flowchart.graph.ValidationIssue;
+import io.github.nihaoljx.flowchart.llm.LlmProvider;
+import io.github.nihaoljx.flowchart.llm.Message;
+import io.github.nihaoljx.flowchart.session.ContextAssembler;
+import io.github.nihaoljx.flowchart.session.ContextBudget;
+import io.github.nihaoljx.flowchart.session.ConversationReplay;
+import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
+import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
+import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
+import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
+import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
+import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
+import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
 import io.github.nihaoljx.flowchart.model.ChatEvent;
 import io.github.nihaoljx.flowchart.session.SessionStore;
 import org.mockito.ArgumentCaptor;
@@ -102,7 +103,7 @@ class GenerationServiceTest {
         // 这样"发出去的消息长什么样"是被真正组装出来的，
         // 断言才覆盖到静态层 / 动态层的真实内容，而不是桩返回值。
         // 契约由真实 PromptService 从 classpath 读取（与 PromptServiceTest 同法）。
-        ContextReplay replay = new ContextReplay();
+        ConversationReplay replay = new ConversationReplay();
         // 测试不落盘：回放是观测手段，不该在跑用例时写文件
         ReflectionTestUtils.setField(replay, "enabled", false);
         ContextAssembler contextAssembler = new ContextAssembler(
@@ -1134,7 +1135,7 @@ class GenerationServiceTest {
     @Test
     @DisplayName("解析闸门：合法场景放行")
     void parseGateAcceptsGoodScene() {
-        assertNull(service.parseGate(GOOD_SCENE),
+        assertNull(SceneGate.parseGate(GOOD_SCENE),
                 "合法 JSON 不该被闸门拦下");
     }
 
@@ -1148,7 +1149,7 @@ class GenerationServiceTest {
                         GOOD_SCENE + "\n希望对你有帮助"),
                 "前提：默认 ObjectMapper 对尾随内容是宽容的");
 
-        ValidationIssue issue = service.parseGate(
+        ValidationIssue issue = SceneGate.parseGate(
                 GOOD_SCENE + "\n希望对你有帮助");
 
         assertNotNull(issue, "尾随散文必须被闸门拦下");
@@ -1161,11 +1162,11 @@ class GenerationServiceTest {
     @Test
     @DisplayName("解析闸门：代码块包裹 / 空内容 / 非对象顶层都要拦")
     void parseGateRejectsOtherMalformed() {
-        assertNotNull(service.parseGate(null), "null 必须拦下");
-        assertNotNull(service.parseGate("   "), "空白必须拦下");
-        assertNotNull(service.parseGate("[1,2,3]"),
+        assertNotNull(SceneGate.parseGate(null), "null 必须拦下");
+        assertNotNull(SceneGate.parseGate("   "), "空白必须拦下");
+        assertNotNull(SceneGate.parseGate("[1,2,3]"),
                 "顶层是数组必须拦下（契约要求对象）");
-        assertNotNull(service.parseGate(
+        assertNotNull(SceneGate.parseGate(
                         "```json\n" + GOOD_SCENE + "\n```"),
                 "``` 包裹必须拦下（extractJson 只剥以 ``` 开头的整体包裹，"
                         + "这里刻意留一层没剥掉的）");

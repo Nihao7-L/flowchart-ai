@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
+import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
 
 /**
  * 连线吸附单元测试（v2-33）

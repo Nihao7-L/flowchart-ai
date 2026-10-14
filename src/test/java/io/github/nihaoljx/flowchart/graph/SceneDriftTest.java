@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
+import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
 
 /**
  * 几何保真校验（v2-37）单测。

@@ -1,8 +1,8 @@
 package io.github.nihaoljx.flowchart.agent.tools;
 
-import io.github.nihaoljx.flowchart.agent.AgentTool;
-import io.github.nihaoljx.flowchart.agent.Observation;
-import io.github.nihaoljx.flowchart.agent.ToolContext;
+import io.github.nihaoljx.flowchart.llm.AgentTool;
+import io.github.nihaoljx.flowchart.llm.Observation;
+import io.github.nihaoljx.flowchart.llm.ToolContext;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,9 +12,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * read_scene：读当前场景的摘要与指定元素全量（v2-55）
+ * read_scene：读当前场景的摘要与指定元素全量
  *
- * <p>这是"修正轮点名元素摘录"的正规化形态：不传 focusIds 时只给
+ * 这是"修正轮点名元素摘录"的正规化形态：不传 focusIds 时只给
  * 统计 + 概览（有界，防撑爆窗口）；传 focusIds 时给指定元素的
  * 完整 JSON（上限 20 个），模型修哪几个就看哪几个。
  */

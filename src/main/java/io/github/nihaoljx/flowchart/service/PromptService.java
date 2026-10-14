@@ -3,7 +3,7 @@ package io.github.nihaoljx.flowchart.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import io.github.nihaoljx.flowchart.graph.ValidationIssue;
+import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
 import io.github.nihaoljx.flowchart.session.SessionStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,28 +19,30 @@ import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Prompt 内容服务（v2-8 / 路线2 重写；v2-33 补"编辑模式"；v2-41 拆静态/动态两块；
- * 2026-09-24 静态层正文改为**直接读 md 文件**；同日补 v2-42 编辑模式增量）
+ * Prompt 内容服务（/ 路线2 重写； 补"编辑模式"； 拆静态/动态两块；
+ *  静态层正文改为**直接读 md 文件**；同日补  编辑模式增量）
  *
- * <p><b>静态层唯一正文来源 = {@code prompts/whiteboard/system-prompt.md}</b>
- * （用户 2026-09-24 拍板「以 system-prompt.md 为准」；2026-09-27 合并掉
- * {@code system-prompt-large.md}，静态层从此只有这一份 md）。运行时**不再维护第二份
+ * 静态层唯一正文来源 = `prompts/whiteboard/system-prompt.md`
+ * （用户  「以 system-prompt.md 为准」； 合并掉
+ * `system-prompt-large.md`，静态层从此只有这一份 md）。运行时**不再维护第二份
  * Java 硬编码文案** —— 改提示词只改那一份 md，从此不存在"两份文本互相漂移"。
  *
- * <p>本类职责：
- * <ul>
- *   <li>{@link #buildSystemBlock()} —— md 正文 + {@link #buildContractBlock()}
- *       生成的契约段（契约源仍是 {@code schemas/scene.schema.json}，md 里声明
- *       "契约每轮由运行时注入"）。每轮完全不变，进 system 消息、且是
- *       KV-cache 的稳定前缀；</li>
- *   <li>{@link #buildUserBlock(String, String)} —— 当前场景 + 修改规则 + 用户需求（每轮变化，进 user 消息）。
- *       大图（> {@value #EDIT_INLINE_MAX_ELEMENTS} 元素）走 v2-42 增量投喂：只给结构摘要，
- *       不再整份塞场景；</li>
- *   <li>{@link #buildFixBlock(List)} —— 修正轮追加的校验 issues。</li>
- * </ul>
- * 装配由 {@code context.ContextAssembler} 负责（排序 / 裁剪 / 落盘）；本类只产出文案。
+ * 本类职责：
  *
- * <p>版本号等元数据**不进正文**（否则每轮前缀变化、KV-cache 失效）。
+ * - buildSystemBlock() —— md 正文 + buildContractBlock()
+ *       生成的契约段（契约源仍是 `schemas/scene.schema.json`，md 里声明
+ *       "契约每轮由运行时注入"）。每轮完全不变，进 system 消息、且是
+ *       KV-cache 的稳定前缀；
+ *
+ * - String) —— 当前场景 + 修改规则 + 用户需求（每轮变化，进 user 消息）。
+ *       大图（> {@value #EDIT_INLINE_MAX_ELEMENTS} 元素）走  增量投喂：只给结构摘要，
+ *       不再整份塞场景；
+ *
+ * - buildFixBlock(List) —— 修正轮追加的校验 issues。
+ *
+ * 装配由 `context.ContextAssembler` 负责（排序 / 裁剪 / 落盘）；本类只产出文案。
+ *
+ * 版本号等元数据**不进正文**（否则每轮前缀变化、KV-cache 失效）。
  */
 @Service
 public class PromptService {
@@ -53,24 +55,24 @@ public class PromptService {
     private static final String SCHEMA_PATH = "schemas/scene.schema.json";
 
     /**
-     * v2-42：编辑模式下元素数**超过**此值，user 块改走「结构摘要 + 被改元素全文 + 引用骨架」。
+ * 编辑模式下元素数**超过**此值，user 块改走「结构摘要 + 被改元素全文 + 引用骨架」。
      *
-     * <p>动机：大图整份塞进 prompt 有两个代价 —— token 开销线性增长、
+ * 动机：大图整份塞进 prompt 有两个代价 —— token 开销线性增长、
      * 且"当前场景"段过长会稀释模型对「用户需求」的注意力（Lost in the Middle）。
      * 30 这个数字的判据是"整份 JSON 大约 3~5 KB"，再往上就开始明显拖慢并干扰。
      */
     public static final int EDIT_INLINE_MAX_ELEMENTS = 30;
 
     /**
-     * md 里的 HTML 注释（只给人和 CI 看的内容）。{@code DOTALL} + 非贪婪：
+     * md 里的 HTML 注释（只给人和 CI 看的内容）。`DOTALL` + 非贪婪：
      * 注释可能跨多行，但绝不能一口吞到下一个注释的结尾。
      */
     private static final java.util.regex.Pattern COMMENT_PATTERN =
             java.util.regex.Pattern.compile("(?s)<!--.*?-->");
 
     /**
-     * 契约段要列举的元素分支（{@code scene.schema.json} 里 {@code definitions} 的键）。
-     * 按"模型实际会用到"排序；{@code image} / {@code magicframe} 属前向兼容、当前不产出，
+     * 契约段要列举的元素分支（`scene.schema.json` 里 `definitions` 的键）。
+     * 按"模型实际会用到"排序；`image` / `magicframe` 属前向兼容、当前不产出，
      * 列出来只会稀释注意力，故不纳入（md 的「能力与边界」里已交代它们）。
      */
     static final String[] CONTRACT_BRANCHES = {
@@ -89,11 +91,11 @@ public class PromptService {
     /**
      * 单条补充口径（渲染不出来自 schema，是规则，不是形状）。
      *
-     * <p>⚠️ 2026-10-07 补 arrow 一条：契约的字段表把 {@code points / start / end}
-     * 并排列出，读起来像"三个都能给"，而校验器卡的是<b>二选一</b>。实测中等用例
-     * 第 1 轮 5 个箭头全犯（{@code 共 10 个问题}，一半是这条）—— md 的「自检」
+ * ⚠️  补 arrow 一条：契约的字段表把 `points / start / end`
+     * 并排列出，读起来像"三个都能给"，而校验器卡的是二选一。实测中等用例
+     * 第 1 轮 5 个箭头全犯（`共 10 个问题`，一半是这条）—— md 的「自检」
      * 里虽写了二选一，但模型填字段时看的是这里。字段级规则就跟在字段后面，
-     * 与 {@code line} 那条同理。
+     * 与 `line` 那条同理。
      */
     private static final java.util.Map<String, String> BRANCH_NOTES =
             java.util.Map.of("line", "（禁止 start/end 绑定 —— 连图形用 arrow；"
@@ -115,24 +117,24 @@ public class PromptService {
                             + "绑了整张图会渲染成空白）");
 
     /**
-     * 字段级提示：跟在字段名后面渲染成 {@code angle(弧度不是角度)}。
+     * 字段级提示：跟在字段名后面渲染成 `angle(弧度不是角度)`。
      *
-     * <p><b>为什么要有这张表：</b>契约段是按 schema 现算的，只渲染「名字 + 类型
-     * + 枚举」，schema 里的 {@code description} 一律不进提示词（省 token）。
+ * 为什么要有这张表：契约段是按 schema 现算的，只渲染「名字 + 类型
+     * + 枚举」，schema 里的 `description` 一律不进提示词（省 token）。
      * 于是那些**光看字段名不够、又不像枚举那样能自解释**的字段就成了坑：
-     * <ul>
-     *   <li>{@code angle} —— schema 写着「弧度，默认 0」，但模型看不到这句，
-     *       按直觉写 {@code 45}。而前端 / Excalidraw 都按弧度解释，
-     *       45 rad ≈ 58.4°，图形被转到莫名其妙的角度（2026-10-07 iso-3d
-     *       实测：6 个矩形全被转歪，等轴测房子糊成一团）。</li>
-     *   <li>{@code backgroundColor} —— 契约里 {@code fillStyle} 是个枚举，
-     *       模型以为「给了纹理就等于填了」，于是只给 {@code fillStyle} 不给
-     *       {@code backgroundColor} → 前端等于没填充 → 整张图纯黑线，
-     *       用户明确要的「不同面同色系深浅」完全没实现。</li>
-     * </ul>
      *
-     * <p>写法守住两条：① 只写**看名字绝对猜不到**的那一点，不去重复 md 已有的
-     * 内容；② 短到不拖累字段表。漂移守卫见 {@code PromptServiceContractTest}：
+ * - `angle` —— schema 写着「弧度，默认 0」，但模型看不到这句，
+     *       按直觉写 `45`。而前端 / Excalidraw 都按弧度解释，
+     *       45 rad ≈ 58.4°，图形被转到莫名其妙的角度（iso-3d
+     *       实测：6 个矩形全被转歪，等轴测房子糊成一团）。
+     *
+ * - `backgroundColor` —— 契约里 `fillStyle` 是个枚举，
+     *       模型以为「给了纹理就等于填了」，于是只给 `fillStyle` 不给
+     *       `backgroundColor` → 前端等于没填充 → 整张图纯黑线，
+     *       用户明确要的「不同面同色系深浅」完全没实现。
+     *
+ * 写法守住两条：① 只写**看名字绝对猜不到**的那一点，不去重复 md 已有的
+     * 内容；② 短到不拖累字段表。漂移守卫见 `PromptServiceContractTest`：
      * 这张表的每个键都必须是 schema 里真实存在的字段。
      */
     static final java.util.Map<String, String> FIELD_HINTS =
@@ -149,9 +151,9 @@ public class PromptService {
             new ConcurrentHashMap<>();
 
     /**
-     * 从 md 首行治理头里抠出版本号，形如 {@code 版本 v10.2.0}。
+     * 从 md 首行治理头里抠出版本号，形如 `版本 `。
      *
-     * <p>治理头本身会被 {@link #stripComments} 剥掉（不发模型），
+ * 治理头本身会被 stripComments 剥掉（不发模型），
      * 但这里是**读原文**取号，所以剥离动作不影响取值。
      */
     private static final java.util.regex.Pattern VERSION_PATTERN =
@@ -159,7 +161,7 @@ public class PromptService {
 
     /**
      * 会话模型的解析器：把「场景 elements」与「用户手绘旁路」
-     * 拆成两段分别渲染（v2-34）；v2-42 起还用来算元素数与抽骨架。
+     * 拆成两段分别渲染； 起还用来算元素数与抽骨架。
      */
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -167,18 +169,19 @@ public class PromptService {
             LoggerFactory.getLogger(PromptService.class);
 
     /**
-     * 静态层内容块：单一提示词正文 + 契约段（v6.0.0 拆层，v7.0.0 合并回一层）。
+     * 静态层内容块：单一提示词正文 + 契约段（拆层， 合并回一层）。
      *
-     * <p><b>v7.0.0 变更（用户拍板「不分两个系统提示词」）</b>：原来静态层拆成
-     * 「核心 + 大图扩展」两份、按 {@code isLargeTask} 条件注入。合并为一份后：
-     * <ul>
-     *   <li>删掉 {@code system-prompt-large.md} 与规模判定逻辑 —— 少一条分支、少一份
-     *       会漂移的副本；</li>
-     *   <li>体积反而更小：扩展层原本就与核心层大面积重复（分区、要量、交白卷），
-     *       去重后 8325 字节 vs 旧两层合计 9414 字节；</li>
-     *   <li>token 口径统一：所有请求付同一份 system（约 2996），不再有"切层级"
-     *       导致的 KV-cache 前缀抖动（旧：切层级会打穿稳定前缀）。</li>
-     * </ul>
+ *  变更：原来静态层拆成
+     * 「核心 + 大图扩展」两份、按 `isLargeTask` 条件注入。合并为一份后：
+     *
+ * - 删掉 `system-prompt-large.md` 与规模判定逻辑 —— 少一条分支、少一份
+     *       会漂移的副本；
+     *
+ * - 体积反而更小：扩展层原本就与核心层大面积重复（分区、要量、交白卷），
+     *       去重后 8325 字节 vs 旧两层合计 9414 字节；
+     *
+ * - token 口径统一：所有请求付同一份 system（约 2996），不再有"切层级"
+     *       导致的 KV-cache 前缀抖动（旧：切层级会打穿稳定前缀）。
      *
      * @return system 消息正文（= 提示词正文 + "\n\n" + 契约段）
      * @throws IOException 读资源文件失败
@@ -189,22 +192,22 @@ public class PromptService {
     }
 
     /**
-     * 提示词版本号（v2-43 / Q3-A）—— <b>从 md 治理头现读</b>。
+     * 提示词版本号（/ Q3-A）—— 从 md 治理头现读。
      *
-     * <p><b>为什么必须现读、不能写死常量</b>：v2-43 最初把版本号做成
-     * {@code GenerationService.PROMPT_VERSION} 里的硬编码字符串，结果是
-     * 10-06 到 10-10 期间 md 连改十余版（v9.0.0 → v10.2.0），那个常量一直
-     * 停在 {@code v8.0.1}。它不报错、不告警，只是<b>安静地记错</b> ——
+ * 为什么必须现读、不能写死常量： 最初把版本号做成
+     * `GenerationService.PROMPT_VERSION` 里的硬编码字符串，结果是
+     * 10-06 到 10-10 期间 md 连改十余版（→），那个常量一直
+     * 停在 ``。它不报错、不告警，只是安静地记错 ——
      * 而它唯一的用途就是给 M14（评估回归）按版本对照新旧出图质量，
      * 记错等于给回归门禁喂假基线，比"没记"更糟。
      *
-     * <p>改成从治理头派生后，"人改了 md 忘了改 Java"这条断链**结构上消失**：
+ * 改成从治理头派生后，"人改了 md 忘了改 Java"这条断链**结构上消失**：
      * 版本号只有一个来源，就是那份文件自己的首行。
      *
-     * <p>取值失败（治理头被删 / 格式变了）不抛异常，而是回退到
-     * {@code "unknown"} 并打 WARN —— 版本号是溯源元数据，不该让整个出图链路挂掉。
+ * 取值失败（治理头被删 / 格式变了）不抛异常，而是回退到
+     * `"unknown"` 并打 WARN —— 版本号是溯源元数据，不该让整个出图链路挂掉。
      *
-     * @return 形如 {@code v10.2.0}；取不到时为 {@code unknown}
+     * @return 形如 ``；取不到时为 `unknown`
      */
     public String promptVersion() {
         try {
@@ -222,19 +225,19 @@ public class PromptService {
     }
 
     /**
-     * 去掉 md 里的 HTML 注释（{@code <!-- ... -->}）。
+     * 去掉 md 里的 HTML 注释（`<!-- ... -->`）。
      *
-     * <p><b>2026-10-07 用户拍板 strip：</b>md 首行那条 {@code L0 治理头} 是一份
-     * 给人 / CI 看的变更史，明写着「不属模型指令」，但它<b>一直原样发给了模型</b>
+ *  用户 strip：md 首行那条 `L0 治理头` 是一份
+     * 给人 / CI 看的变更史，明写着「不属模型指令」，但它一直原样发给了模型
      * —— 实测占 839B ≈ md 的 14%，按 3.4 字节/token 折算约 245 token / 轮，
      * 每问一次付一次。而版本号、改动原因这些东西模型读了完全没用。
      *
-     * <p>更糟的是它<b>会随每次改动膨胀</b>（提示词越维护越长），而它对 KV-cache
+ * 更糟的是它会随每次改动膨胀（提示词越维护越长），而它对 KV-cache
      * 前缀还起反作用：本类注释里「版本号等元数据不进正文，否则每轮前缀变化、
      * KV-cache 失效」那条纪律，正是被这行亲手违反的。strip 之后 md 顶部
-     * 直接是 {@code # System Prompt}，前缀稳定且只剩真正的指令。
+     * 直接是 `# System Prompt`，前缀稳定且只剩真正的指令。
      *
-     * <p>注释仍留在源文件里：写变更史是必要的，只是不该付费发给模型。
+ * 注释仍留在源文件里：写变更史是必要的，只是不该付费发给模型。
      * CI / 人读文件照样看得到。
      */
     private static String stripComments(String md) {
@@ -242,21 +245,22 @@ public class PromptService {
     }
 
     /**
-     * 契约段（v2-43）：由 {@code scene.schema.json} **派生**出的紧凑字段表。
+     * 契约段：由 `scene.schema.json` **派生**出的紧凑字段表。
      *
-     * <p>为什么不再是「原样贴 JSON」（旧写法）：实测整份 schema 注入进来要吃掉
+ * 为什么不再是「原样贴 JSON」（旧写法）：实测整份 schema 注入进来要吃掉
      * 3000+ token，占 system 块六成以上，其中大半是 JSON 语法括号与重复的
-     * {@code "type":"number"} / id 正则。模型真正需要的只是「每个类型能写哪些键、
+     * `"type":"number"` / id 正则。模型真正需要的只是「每个类型能写哪些键、
      * 取值是什么」。改为按 schema 现算一张字段表 ——
-     * <ul>
-     *   <li>省 token：同一份信息从 3000+ 降到 500 上下（详见 {@code buildSystemBlock} 注释）；</li>
-     *   <li>不漂移：字段表是**算出来的**，契约里加一个键，提示词里自动多一项，
-     *       不存在「改了 schema 忘了改提示词」这条经典断链；</li>
-     *   <li>更好读：模型产的是 JSON，按类型分组的字段清单比一大坨
-     *       {@code draft-07} 嵌套更容易对照。</li>
-     * </ul>
      *
-     * <p>本方法仍是**纯静态**的（同样受 {@code resourceCache} 缓存、同样进 system、
+ * - 省 token：同一份信息从 3000+ 降到 500 上下（详见 `buildSystemBlock` 注释）；
+     *
+ * - 不漂移：字段表是**算出来的**，契约里加一个键，提示词里自动多一项，
+     *       不存在「改了 schema 忘了改提示词」这条经典断链；
+     *
+ * - 更好读：模型产的是 JSON，按类型分组的字段清单比一大坨
+     *       `draft-07` 嵌套更容易对照。
+     *
+ * 本方法仍是**纯静态**的（同样受 `resourceCache` 缓存、同样进 system、
      * 同样是 KV-cache 稳定前缀），所以 KV-cache 收益一点没丢。
      *
      * @return 契约段正文
@@ -270,7 +274,7 @@ public class PromptService {
         sb.append("场景 = {\"elements\":[...]}，数组顺序即层级；坐标单位 px、"
                 + "原点是左上角，x 向右、y 向下增大（屏幕坐标，不是数学坐标），"
                 + "就是最终落点。\n");
-        // ⚠️ 这句话必须点名 type（2026-10-07 血的教训）：
+        // ⚠️ 这句话必须点名 type（血的教训）：
         // 下面那份键清单为了省 token **不列 type**（它是行首类型名，重复写
         // 纯浪费）。但只说"只写下面这些键"、却不提 type 时，模型会严格
         // 照做 —— 于是每个元素都漏写 type。实测 15 模块大图第一轮
@@ -297,7 +301,7 @@ public class PromptService {
             }
             sb.append(requiredSuffix(def)).append(BRANCH_NOTES.getOrDefault(branch, "")).append('\n');
         }
-        // ⚠️ 2026-10-07：原来只有"不要写裸字符串"这半条，漏了空壳。实测中等用例
+        // ⚠️ ：原来只有"不要写裸字符串"这半条，漏了空壳。实测中等用例
         // 第 1 轮 5 个箭头全带空 label、简单用例也偶发（第 2 轮才过）—— 而
         // GraphValidator.checkLabel 对"label 存在但 text 空"是**打回**，不是忽略。
         // 契约里没写、模型就认为空壳无害。字段级规则跟在字段旁边最有效。
@@ -310,16 +314,16 @@ public class PromptService {
     }
 
     /**
-     * 按元素类型取契约片段（v2-55，{@code agent.ReadContractTool} 的按需加载入口）
+     * 按元素类型取契约片段（，`agent.ReadContractTool` 的按需加载入口）
      *
-     * <p>为什么独立成方法而不是切 {@link #buildContractBlock()} 的文本：
+ * 为什么独立成方法而不是切 buildContractBlock() 的文本：
      * 那份产物是整块字符串，按行反切等于给契约加第二个真相源。这里直接
-     * 复用同一组私有渲染器（{@code branchNames} / {@code renderProp} /
-     * {@code requiredSuffix}）与同一份 schema 现算 —— 单一真相源不变，
+     * 复用同一组私有渲染器（`branchNames` / `renderProp` /
+     * `requiredSuffix`）与同一份 schema 现算 —— 单一真相源不变，
      * 只是多一个"按类型出片段"的出口。BRANCH_NOTES / FIELD_HINTS /
      * "空壳会被打回"三条口径原样带上，保证片段与整块不漂移。
      *
-     * @param branch 契约分支名（{@link #CONTRACT_BRANCHES} 之一）
+     * @param branch 契约分支名（CONTRACT_BRANCHES 之一）
      * @return 该类型的契约片段（自包含，可直接回喂给模型）
      * @throws IllegalArgumentException 分支名不在 CONTRACT_BRANCHES 里
      * @throws IOException              读 schema 资源失败
@@ -363,8 +367,8 @@ public class PromptService {
     }
 
     /**
-     * 分支的展示名：{@code shape} 展开成「rectangle / ellipse / diamond」（取自它
-     * {@code type} 的 enum），其余分支用自己 {@code type} 的 const。
+     * 分支的展示名：`shape` 展开成「rectangle / ellipse / diamond」（取自它
+     * `type` 的 enum），其余分支用自己 `type` 的 const。
      */
     private static String branchNames(JsonNode def) {
         JsonNode typeNode = def.get("properties").get("type");
@@ -380,10 +384,10 @@ public class PromptService {
     }
 
     /**
-     * 必填键后缀：把契约里的 {@code required} 附在行尾
+     * 必填键后缀：把契约里的 `required` 附在行尾
      * （模型漏写必填键会被直接打回）。
      *
-     * <p>⚠️ 2026-10-07 起**不再剔除 type**：原先认为它"自明"（行首就写着
+ * ⚠️  起**不再剔除 type**：原先认为它"自明"（行首就写着
      * rectangle / arrow…）而省掉，但这恰恰让模型以为 type 不属于该写的键
      * —— 实战里 15 模块大图第一轮 38 个 issue 全是"缺少必填字段 type"。
      * 真值是 schema 的 required，就照抄，别再自作聪明。
@@ -401,9 +405,9 @@ public class PromptService {
     }
 
     /**
-     * 单个字段的紧凑写法：{@code fillStyle} → {@code fillStyle[hachure|...]}，
-     * {@code opacity} → {@code opacity 0-100}，{@code label} → {@code label{"text"}}。
-     * 未知的 {@code $ref} 递归展开一层，不认识就退回字段名，绝不抛异常 ——
+     * 单个字段的紧凑写法：`fillStyle` → `fillStyle[hachure|...]`，
+     * `opacity` → `opacity 0-100`，`label` → `label{"text"`}。
+     * 未知的 `$ref` 递归展开一层，不认识就退回字段名，绝不抛异常 ——
      * 提示词拼装失败等于整条生成链路跪掉，这里必须稳。
      */
     private static String renderProp(String name, JsonNode node, JsonNode definitions) {
@@ -469,15 +473,15 @@ public class PromptService {
     }
 
     /**
-     * 数组的简写：points → {@code [[0,0],[dx,dy]...]}，其余 → {@code [...]}.
+     * 数组的简写：points → `[[0,0],[dx,dy]...]`，其余 → `[...]`.
      *
-     * <p>⚠️ 2026-10-07：原来写的是 {@code [[dx,dy]...]}，看不出**首点必须是 [0,0]**
+ * ⚠️ ：原来写的是 `[[dx,dy]...]`，看不出**首点必须是 [0,0]**
      * —— 因为 points 是相对 x/y 的偏移（Excalidraw 约定，前端
-     * {@code withArrowGeometry} 也是按 {@code [[0,0],[终点-起点]]} 生成的）。
+     * `withArrowGeometry` 也是按 `[[0,0],[终点-起点]]` 生成的）。
      * 模型据此把**绝对坐标**写进 points，同时把 x/y 也设成第一个点，
      * 于是落点 = (x+dx, y+dy) ≈ 坐标翻倍：实测画猫那组 9 条线全被画到视野外，
      * 而校验器只检查每个点是不是两个数字、**不检查首点**，静默通过。
-     * 渲染成 {@code [[0,0],[dx,dy]...]} 让这个约定自解释。
+     * 渲染成 `[[0,0],[dx,dy]...]` 让这个约定自解释。
      */
     private static String arrayShape(JsonNode node) {
         JsonNode items = node.get("items");
@@ -488,7 +492,7 @@ public class PromptService {
         return "[...]";
     }
 
-    /** {code exclusiveMinimum:0} 表示「必须大于 0」，提示词里写成 {@code (>0)}。 */
+    /** {code exclusiveMinimum:0} 表示「必须大于 0」，提示词里写成 `(>0)`。 */
     private static boolean isExclusivePositive(JsonNode node) {
         JsonNode min = node.get("exclusiveMinimum");
         return min != null && min.asInt() == 0;
@@ -496,14 +500,14 @@ public class PromptService {
 
 
     /**
-     * 动态层内容块（v2-41）：当前场景 + 修改规则 + 用户需求
+     * 动态层内容块：当前场景 + 修改规则 + 用户需求
      *
-     * <p>这一块**每轮变化**（用户换了需求、图被改了），所以进 user 消息。
+ * 这一块**每轮变化**（用户换了需求、图被改了），所以进 user 消息。
      *
-     * <p><b>v2-42 增量投喂</b>：编辑模式下元素数超过
+ *  增量投喂：编辑模式下元素数超过
      * {@value #EDIT_INLINE_MAX_ELEMENTS} 时，当前场景不再整份贴出，
-     * 改为 {@link #compactSceneBlock}（结构摘要 + 被改元素全文 + 引用骨架）。
-     * 小图（≤ 阈值）仍走整份贴出 —— 那条路径的文案与 v2-41 逐字节一致，
+     * 改为 compactSceneBlock（结构摘要 + 被改元素全文 + 引用骨架）。
+     * 小图（≤ 阈值）仍走整份贴出 —— 那条路径的文案与  逐字节一致，
      * 不做任何改动，保证小图行为零漂移。
      *
      * @param userText         用户在输入框里的原始需求
@@ -533,7 +537,7 @@ public class PromptService {
     }
 
     /**
-     * 修改规则段（v2-33 引入；v2-42 抽成方法，两条路径共用同一份文案）。
+     * 修改规则段（引入； 抽成方法，两条路径共用同一份文案）。
      *
      * @return 「## 修改规则（必须遵守）」整段
      */
@@ -555,6 +559,9 @@ public class PromptService {
         sb.append("- **没有要求改动的元素必须原样保留**：`id` / `type` / 几何（x / y / width / height）"
                 + "/ `label` / 样式全部照抄，不要重新编号、不要重排坐标、不要精简掉你认为多余的元素。\n");
         sb.append("- 「删除某元素」= 结果里不包含它（同时删掉连到它的箭头）。\n");
+        sb.append("- 删的是**链路中间**的节点时，必须补桥接边：原本 A → 中间 → B 两条边要合并成一条 A → B"
+                + "（两端绑到 A 和 B），除非用户明确说「断开」；"
+                + "删掉节点后原图必须仍然连通，不能留下悬空的断头。\n");
         sb.append("- 「新增元素」= 起一个不与现有 id 重复的新 id（沿用现有命名风格）。\n");
         sb.append("- 「改文字 / 改颜色」= 只动那一个字段，其余照抄。\n");
         sb.append("- 只有「另画一张」的情况，或用户明确要求「重新画 / 换一张 / 全部重做」，"
@@ -563,22 +570,23 @@ public class PromptService {
     }
 
     /**
-     * v2-42：大图编辑模式的紧凑场景块。
+ * 大图编辑模式的紧凑场景块。
      *
-     * <p>由三部分组成（对齐计划里写的「结构摘要 + 被改元素全文 + 引用」）：
-     * <ol>
-     *   <li><b>结构摘要</b> —— 每个元素一行骨架（id / type / 几何 / label 文本 /
+ * 由三部分组成（对齐计划里写的「结构摘要 + 被改元素全文 + 引用」）：
+     *
+ * - 结构摘要 —— 每个元素一行骨架（id / type / 几何 / label 文本 /
      *       绑定端点 / group），**全量**列出。之所以骨架里必须带几何与 label：
      *       输出侧仍要求"未点名元素原样保留"（md 约束 5），若摘要丢了这些信息，
      *       模型就只能瞎猜几何 —— 图会散。带上以后，未点名元素可被逐字复现，
-     *       **无需后端做合并**；</li>
-     *   <li><b>被改元素全文</b> —— 用户这句话里点名到的元素（按 id 或 label 文本
-     *       命中），给出完整 JSON，省得模型只凭骨架猜样式；</li>
-     *   <li><b>引用骨架</b> —— 箭头 / 线的端点、containerId 归属，供模型在
-     *       删元素时顺手清掉悬空箭头（md 约束 5）。</li>
-     * </ol>
+     *       **无需后端做合并**；
      *
-     * @param scene    已剥离 {@code _userElements} 的场景根节点
+ * - 被改元素全文 —— 用户这句话里点名到的元素（按 id 或 label 文本
+     *       命中），给出完整 JSON，省得模型只凭骨架猜样式；
+     *
+ * - 引用骨架 —— 箭头 / 线的端点、containerId 归属，供模型在
+     *       删元素时顺手清掉悬空箭头（md 约束 5）。
+     *
+     * @param scene    已剥离 `_userElements` 的场景根节点
      * @param count    元素总数
      * @param userText 用户需求（用于识别"被点名"的元素）
      * @return 紧凑场景块
@@ -623,9 +631,9 @@ public class PromptService {
     }
 
     /**
-     * 单个元素的一行骨架（v2-42）。
+     * 单个元素的一行骨架。
      *
-     * <p>格式：{@code id type (x,y,w x h) start->end "label" group=... }，
+ * 格式：`id type (x,y,w x h) start->end "label" group=... `，
      * 缺哪段省哪段。意图是"信息够模型复现，又不重复渲染层字段"。
      *
      * @param el 元素节点
@@ -670,10 +678,10 @@ public class PromptService {
     }
 
     /**
-     * 引用骨架行（v2-42）：端点绑定或 containerId 归属。
+     * 引用骨架行：端点绑定或 containerId 归属。
      *
      * @param el 元素节点
-     * @return {@code e1: n1 -> n2} 或 {@code t1: in n1}；无引用时返回空串
+     * @return `e1: n1 -> n2` 或 `t1: in n1`；无引用时返回空串
      */
     private String reference(JsonNode el) {
         String id = text(el, "id");
@@ -693,11 +701,11 @@ public class PromptService {
     }
 
     /**
-     * 判断元素是否被用户这句话"点名"（v2-42）。
+     * 判断元素是否被用户这句话"点名"。
      *
-     * <p>朴素判据：用户文本里出现了该元素的 id 或 label 文本。
+ * 朴素判据：用户文本里出现了该元素的 id 或 label 文本。
      * 命中就把它整份 JSON 附上 —— 宁可多给一个，也不少给；判据保守
-     * （长度 &lt; 2 不参战）以免短标签（如「是」）到处误命中。
+     * （长度 < 2 不参战）以免短标签（如「是」）到处误命中。
      *
      * @param el       元素节点
      * @param userText 用户需求
@@ -716,9 +724,9 @@ public class PromptService {
     }
 
     /**
-     * 取 {@code start} / {@code end} 这类端点对象里的 id。
+     * 取 `start` / `end` 这类端点对象里的 id。
      *
-     * @param node 端点节点（可能是 {@code {"id":"n1"}} 或缺失）
+     * @param node 端点节点（可能是 `{"id":"n1"`} 或缺失）
      * @return 端点 id；取不到返回空串
      */
     private String endpoint(JsonNode node) {
@@ -729,7 +737,7 @@ public class PromptService {
     }
 
     /**
-     * 取元素的可见文字：优先 {@code label.text}（图形），其次 {@code text}（文字元素）。
+     * 取元素的可见文字：优先 `label.text`（图形），其次 `text`（文字元素）。
      *
      * @param el 元素节点
      * @return 文本；没有返回空串
@@ -758,11 +766,11 @@ public class PromptService {
     }
 
     /**
-     * 数字字段读取（骨架里用；整数去小数点，避免 {@code 0.0} 这类噪音）。
+     * 数字字段读取（骨架里用；整数去小数点，避免 `0.0` 这类噪音）。
      *
      * @param node  节点
      * @param field 字段名
-     * @return 简洁数字串；非数字返回 {@code "?"}
+     * @return 简洁数字串；非数字返回 `"?"`
      */
     private String num(JsonNode node, String field) {
         JsonNode v = node.get(field);
@@ -777,7 +785,7 @@ public class PromptService {
     }
 
     /**
-     * 单行 JSON（v2-42：把元素整份塞进「被改元素」段）。
+     * 单行 JSON把元素整份塞进「被改元素」段）。
      *
      * @param node 节点
      * @return 紧凑 JSON
@@ -791,7 +799,7 @@ public class PromptService {
     }
 
     /**
-     * 容错解析（v2-42）：场景 JSON 不可解析时返回 null，调用方退回整份贴出。
+     * 容错解析：场景 JSON 不可解析时返回 null，调用方退回整份贴出。
      *
      * @param json JSON 文本
      * @return 根节点；解析失败返回 null
@@ -806,7 +814,7 @@ public class PromptService {
     }
 
     /**
-     * 元素计数（v2-42）。
+     * 元素计数。
      *
      * @param scene 场景根节点（可为 null）
      * @return 元素个数；无法判断返回 -1（调用方按"小图"处理，走整份贴出）
@@ -820,9 +828,9 @@ public class PromptService {
     }
 
     /**
-     * 修正块（v2-41）：上一轮校验未通过
+     * 修正块：上一轮校验未通过
      *
-     * <p>不再声明 IOException —— 它本身没有任何 I/O。
+ * 不再声明 IOException —— 它本身没有任何 I/O。
      *
      * @param issues 上一轮校验失败的 issue 列表
      * @return 追加到 user 消息末尾的修正块
@@ -845,11 +853,11 @@ public class PromptService {
     }
 
     /**
-     * 单串等价入口（v2-41 起仅供"整串 prompt"形态的调用方与测试使用）
+     * 单串等价入口（起仅供"整串 prompt"形态的调用方与测试使用）
      *
-     * <p><b>生产路径已改走 {@code context.ContextAssembler}（system / user 两条消息）。</b>
-     * 本方法内部只是把 {@link #buildSystemBlock()} 与
-     * {@link #buildUserBlock(String, String)} 首尾相接 —— 因此
+ * 生产路径已改走 `context.ContextAssembler`（system / user 两条消息）。
+     * 本方法内部只是把 buildSystemBlock() 与
+     * String) 首尾相接 —— 因此
      * **不存在第二份文案、不会漂移**，旧调用点与既有断言可原样保留。
      *
      * @param userText         用户在输入框里的原始需求
@@ -862,9 +870,9 @@ public class PromptService {
     }
 
     /**
-     * 单串等价入口：修正 prompt（v2-10）
+     * 单串等价入口：修正 prompt
      *
-     * <p>= {@link #buildPrompt(String, String)} + {@link #buildFixBlock(List)}。
+ * = String) + buildFixBlock(List)。
      *
      * @param userText         原始用户需求
      * @param issues           上一轮校验失败的 issue 列表
@@ -884,9 +892,9 @@ public class PromptService {
     /**
      * 场景段：把会话模型里的"用户手绘"旁路摘掉之后的 JSON。
      *
-     * <p>为什么要摘：{@code _userElements} 是后端内部字段，
+ * 为什么要摘：`_userElements` 是后端内部字段，
      * 混在"当前场景"里会让 LLM 以为它是场景的一部分，
-     * 进而原样抄进输出 —— 那反而成了新的重复源（v2-34）。
+     * 进而原样抄进输出 —— 那反而成了新的重复源。
      *
      * @param modelJson 会话模型 JSON
      * @return 只含 elements 的 JSON；解析失败时原样返回
@@ -908,11 +916,11 @@ public class PromptService {
     }
 
     /**
-     * 用户手绘元素段（v2-34）
+     * 用户手绘元素段
      *
-     * <p>用户手绘的线**不在 elements 里**（后端不持有它们的几何），
+ * 用户手绘的线**不在 elements 里**（后端不持有它们的几何），
      * 于是 LLM 完全不知道用户已经在那里连了一条线，会再画一条 ——
-     * 用户看到的就是"同一处两条线"（2026-09-16 实测：
+     * 用户看到的就是"同一处两条线"（实测：
      * 「多添加线的地方是我删除一次然后又添加上去的」）。
      * 这里把用户画的东西单列一段告诉它，并明确禁止抄进输出。
      *

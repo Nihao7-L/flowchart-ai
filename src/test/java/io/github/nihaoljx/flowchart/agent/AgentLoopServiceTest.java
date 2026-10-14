@@ -1,13 +1,13 @@
 package io.github.nihaoljx.flowchart.agent;
 
-import io.github.nihaoljx.flowchart.client.LlmProperties;
-import io.github.nihaoljx.flowchart.graph.GeometryAudit;
-import io.github.nihaoljx.flowchart.graph.GraphValidator;
-import io.github.nihaoljx.flowchart.graph.SceneBinder;
-import io.github.nihaoljx.flowchart.graph.SceneDeduper;
-import io.github.nihaoljx.flowchart.graph.SceneDrift;
-import io.github.nihaoljx.flowchart.graph.ScenePlanner;
-import io.github.nihaoljx.flowchart.graph.SceneSanitizer;
+import io.github.nihaoljx.flowchart.llm.LlmProperties;
+import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
+import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
+import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
+import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
+import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
 import io.github.nihaoljx.flowchart.service.PromptService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

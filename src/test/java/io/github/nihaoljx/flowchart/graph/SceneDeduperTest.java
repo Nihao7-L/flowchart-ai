@@ -9,6 +9,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
 
 /**
  * 连线去重单元测试（v2-34）

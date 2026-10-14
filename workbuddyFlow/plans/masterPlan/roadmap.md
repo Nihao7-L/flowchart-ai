@@ -20,7 +20,7 @@
 | **S1a** 画得出 | 复杂图型（多层嵌套）表达得了 | **M9** | **契约容量 + 图型语法**：语义→视觉编译层、多层分组、关系语义（箭头端点/线型） | 同一句"画一个多层嵌套的电商微服务架构图"→ 模块层次看得见；换 ER 图 → 能画出 1:N 基数（模块计划 `plans/masterPlan/m9-contract-capacity.md`；活跃项 `state/active/v2-40-contract-capacity.md`，**P0 / P1 已完成 2026-09-18 并通过端到端验收**；**P2 关系语义、P4 前端多行输入均已落地 2026-09-19**；**P3 图型语法经用户拍板取消（YAGNI）**） |
 | **S1b** 排得清 | 复杂图先分模块再落几何 | **M8** | **排版步骤**：结构规划 + 分区布局 | 同一句"画一个多层微服务架构图"→ 标签压叠归零、模块分区一眼可见（模块计划 `plans/masterPlan/m8-layout-planning.md`；**已归档 `state/completed/underway/v2-39-layout-planning.md`**（2026-09-18）：验收 1~9 全过 —— 离线 E2E **6/6**、真实 LLM 电池两项 FAIL 归零（图形重叠 2 → 0 对、`framesOnGrid` 2/3 → 3/3）、frame 三项指标按精确口径 **0 / 0 / 0**、门禁全绿；与 v2-40 P1 合并交付） |
 | **S2** 上下文工程 | 每次调用前统一组装窗口，大图不爆 token | M10 | ContextAssembler（rank + 预算 + 每轮回放 + **promptVersion 版本号 Q3-A**） | 大图（>30 元素）轮次入窗 token 较今日下降；关键约束固定在 `system` 首尾；每轮 `context-replay-<session>-<round>.json` 落盘可回放（含 `promptVersion`，供 M14 按版本对照） |
-| **S3** 能改 | 人和 AI 都能改这张图 | M3 + M6b① | 双通道 + Diagram Tools | 手动拖个节点 → 后端坐标已更新；对话说"把 A 改成 B"→ 图跟着变；**两条路不互相覆盖** |
+| **S3** 能改 | 人和 AI 都能改这张图 | M3 + M6b① | 双通道 + Diagram Tools | 手动拖个节点 → 后端坐标已更新；对话说"把 A 改成 B"→ 图跟着变；**两条路不互相覆盖**。**2026-10-14 对账：大半已实现**——M6b① 人类编辑回写（v2-24b，`PUT /api/model/canvas`）+ AI 对话编辑 + 编辑保真（v2-37）早已交付；M3 工具体系被 v2-55 agent/tools 实质覆盖；**余增量 ops（v2-25→v2-57 承接）** |
 > **2026-10-13 执行序调整（用户拍板）**：S4 核（messages 单线积累 + 工具派发，即 v2-55 前置核）**提前先行**，其余（NDJSON 流式 / 独立评估器 / v2-56）顺延；子计划 `plans/underway/v2-55-agent-loop-core.md`，前置放宽说明见其第六节（M3 编辑工具非本核前置，候选模型 tool_calls 支持度探针先行）。
 | **S4** 循环工程 | 生成可多轮修正、卡住就停、过程可见 | M4 + M6b② | 真 ReAct 循环（LoopState + ReadabilityGate 连美观一起查 + 无进展检测 + 中断恢复）。**设计输入已备（2026-10-13 三源调研，详见 m4 计划「调研输入」节）**：ReadabilityGate 可叠加独立需求评估器（learn-claude-code s17）、中断恢复 = run journal JSONL（s16）、修正轮 previousJson 分级压缩（s08）、**NDJSON 流式输出建议挂本阶段**（与 json_schema 结构化输出互斥，按候选分流） | 输入"画电商架构"→ 看到校验 / 修正事件逐步推进；故意制造不收敛 → 步数上限触发输出 partial；刷新后从 checkpoint 恢复 |
 | **S5** 提示词工程 | prompt 按 Role/Task/Context/Format 重排，加 1~2 few-shot | M11 | 四要素重排 + 路由 + 语义编译清理 + 回归电池升级 | 电池题 2 复跑「≤40」生效；"改图 / 另画 / 问答"判定稳定；`extractJson` 兜底调用 = 0 |
@@ -51,7 +51,7 @@
 | 拆出的块 | 内容 | 归到 | 文件 |
 |---|---|---|---|
 | **M6a** 渲染镜像层 | v2-23 设计稿 + v2-24 的只读渲染（IR → 画布） | S1 | `m6a-render.md` |
-| **M6b①** 双通道交互 | v2-24 的 `onChange` 画布现状回写（**已在 S1 提前交付**）+ v2-25 AI 改图 | S3 | `m6b-interaction.md` |
+| **M6b①** 双通道交互 | v2-24 的 `onChange` 画布现状回写（**已在 S1 提前交付**）+ v2-25 AI 增量改图（**v2-57 承接**） | S3 | `m6b-interaction.md` |
 | **M6b②** 过程可视化 | v2-26 SSE 事件驱动界面 | S4 | `m6b-interaction.md` |
 
 原 `m6-frontend.md` 已拆分为上述两份并删除。这样 M6a 在 S1 完成时即可归档，不必等 M6b 拖到 S4 —— 保住"模块整体完成才归档"的约定。

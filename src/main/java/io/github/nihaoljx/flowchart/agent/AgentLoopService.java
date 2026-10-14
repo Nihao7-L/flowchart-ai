@@ -1,14 +1,14 @@
 package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.AgentTools;
-import io.github.nihaoljx.flowchart.client.LlmProperties;
-import io.github.nihaoljx.flowchart.graph.GeometryAudit;
-import io.github.nihaoljx.flowchart.graph.GraphValidator;
-import io.github.nihaoljx.flowchart.graph.SceneBinder;
-import io.github.nihaoljx.flowchart.graph.SceneDeduper;
-import io.github.nihaoljx.flowchart.graph.SceneDrift;
-import io.github.nihaoljx.flowchart.graph.ScenePlanner;
-import io.github.nihaoljx.flowchart.graph.SceneSanitizer;
+import io.github.nihaoljx.flowchart.llm.LlmProperties;
+import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
+import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
+import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
+import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
+import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
 import io.github.nihaoljx.flowchart.service.PromptService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,17 +20,21 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import io.github.nihaoljx.flowchart.llm.AgentLlmClient;
+import io.github.nihaoljx.flowchart.llm.FailoverAgentClient;
+import io.github.nihaoljx.flowchart.llm.OpenAiToolClient;
+import io.github.nihaoljx.flowchart.llm.AgentResult;
 
 /**
- * Agent Loop 的 Spring 装配与运行入口（v2-55 步骤 3）
+ * Agent Loop 的 Spring 装配与运行入口（步骤 3）
  *
- * <p><b>何时存在</b>：仅当 {@code chartflow.agent-loop.enabled=true} 时
- * 这个 bean 才被创建 —— {@code GenerationService} 用
- * {@code ObjectProvider} 可选注入，bean 不在 = legacy 管线原样服务。
+ * 何时存在：仅当 `chartflow.agent-loop.enabled=true` 时
+ * 这个 bean 才被创建 —— `GenerationService` 用
+ * `ObjectProvider` 可选注入，bean 不在 = legacy 管线原样服务。
  * 这是"feature flag 默认关、老管线保底"的落点。
  *
- * <p><b>候选解析</b>：密钥不在这里复制一份，从既有候选表
- * {@link LlmProperties} 里按 model id 挑（探针 v2-55 验收 5 实测
+ * 候选解析：密钥不在这里复制一份，从既有候选表
+ * LlmProperties 里按 model id 挑（探针  验收 5 实测
  * glm / deepseek / grok 三家 tool_calls 全通过，表内随便选都安全）；
  * 配置留空则取 tier 最小者。刻意**单候选、无故障转移** —— 多候选
  * tool_calls 故障转移是 M13 网关的活，本步先把链路跑通。
@@ -75,7 +79,7 @@ public class AgentLoopService {
         ToolRegistry registry = AgentTools.defaultRegistry(
                 binder, deduper, sanitizer, planner,
                 validator, audit, drift, promptService);
-        // 最小故障转移（v2-55 实测补）：全部候选按 tier 包进
+        // 最小故障转移（实测补）：全部候选按 tier 包进
         // FailoverAgentClient —— 实测 glm 画大图 502，单候选
         // 一步失败 = 整次兜底，可用性显著差于 legacy
         List<LlmProperties.Candidate> usable =
@@ -100,7 +104,7 @@ public class AgentLoopService {
                 clients.size(), AgentLoop.MAX_STEPS);
     }
 
-    /** 供 {@code GenerationService} 驱动一次 agent run（含编辑基线） */
+    /** 供 `GenerationService` 驱动一次 agent run（含编辑基线） */
     public AgentResult run(String systemBlock, String userText,
                            List<Map<String, Object>> userElements,
                            String previousJson,

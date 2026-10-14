@@ -7,6 +7,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutSpec;
 
 /**
  * 布局规格测试（v2-38 起的规格层，2026-09-18 加"渲染尺寸"一节）

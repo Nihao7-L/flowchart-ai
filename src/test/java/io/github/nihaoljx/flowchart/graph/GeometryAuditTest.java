@@ -7,6 +7,8 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
+import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
 
 /**
  * 几何体检器的行为契约（v10.0.0）。

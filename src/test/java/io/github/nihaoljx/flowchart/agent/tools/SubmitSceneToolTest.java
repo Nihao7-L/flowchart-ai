@@ -1,13 +1,13 @@
 package io.github.nihaoljx.flowchart.agent.tools;
 
-import io.github.nihaoljx.flowchart.agent.Observation;
-import io.github.nihaoljx.flowchart.agent.ToolContext;
-import io.github.nihaoljx.flowchart.graph.GeometryAudit;
-import io.github.nihaoljx.flowchart.graph.GraphValidator;
-import io.github.nihaoljx.flowchart.graph.SceneBinder;
-import io.github.nihaoljx.flowchart.graph.SceneDeduper;
-import io.github.nihaoljx.flowchart.graph.ScenePlanner;
-import io.github.nihaoljx.flowchart.graph.SceneSanitizer;
+import io.github.nihaoljx.flowchart.llm.Observation;
+import io.github.nihaoljx.flowchart.llm.ToolContext;
+import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
+import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
+import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
+import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
+import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
 
 /**
  * submit_scene / validate_scene 单元测试（v2-55）

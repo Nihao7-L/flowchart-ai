@@ -17,6 +17,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
+import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 
 /**
  * 排版层（v2-39 / v2-40 P1）的回归。

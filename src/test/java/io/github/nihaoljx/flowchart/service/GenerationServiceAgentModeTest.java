@@ -1,18 +1,18 @@
 package io.github.nihaoljx.flowchart.service;
 
-import io.github.nihaoljx.flowchart.agent.AgentResult;
+import io.github.nihaoljx.flowchart.llm.AgentResult;
 import io.github.nihaoljx.flowchart.agent.AgentLoopService;
-import io.github.nihaoljx.flowchart.client.LlmProvider;
-import io.github.nihaoljx.flowchart.context.ContextAssembler;
-import io.github.nihaoljx.flowchart.context.ContextBudget;
-import io.github.nihaoljx.flowchart.context.ContextReplay;
-import io.github.nihaoljx.flowchart.graph.GeometryAudit;
-import io.github.nihaoljx.flowchart.graph.GraphValidator;
-import io.github.nihaoljx.flowchart.graph.SceneBinder;
-import io.github.nihaoljx.flowchart.graph.SceneDeduper;
-import io.github.nihaoljx.flowchart.graph.SceneDrift;
-import io.github.nihaoljx.flowchart.graph.ScenePlanner;
-import io.github.nihaoljx.flowchart.graph.SceneSanitizer;
+import io.github.nihaoljx.flowchart.llm.LlmProvider;
+import io.github.nihaoljx.flowchart.session.ContextAssembler;
+import io.github.nihaoljx.flowchart.session.ContextBudget;
+import io.github.nihaoljx.flowchart.session.ConversationReplay;
+import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
+import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
+import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
+import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
+import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
+import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
 import io.github.nihaoljx.flowchart.model.ChatEvent;
 import io.github.nihaoljx.flowchart.session.SessionStore;
 import org.junit.jupiter.api.BeforeEach;
@@ -72,7 +72,7 @@ class GenerationServiceAgentModeTest {
         when(agentProvider.getIfAvailable())
                 .thenReturn(agentService);
 
-        ContextReplay replay = new ContextReplay();
+        ConversationReplay replay = new ConversationReplay();
         org.springframework.test.util.ReflectionTestUtils
                 .setField(replay, "enabled", false);
         ContextAssembler contextAssembler = new ContextAssembler(

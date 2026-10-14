@@ -1,9 +1,10 @@
 package io.github.nihaoljx.flowchart.agent.tools;
 
-import io.github.nihaoljx.flowchart.agent.AgentTool;
-import io.github.nihaoljx.flowchart.agent.Observation;
-import io.github.nihaoljx.flowchart.agent.ToolContext;
-import io.github.nihaoljx.flowchart.graph.ValidationIssue;
+import io.github.nihaoljx.flowchart.llm.AgentTool;
+import io.github.nihaoljx.flowchart.llm.Observation;
+import io.github.nihaoljx.flowchart.llm.ToolContext;
+import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
+import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,11 +15,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * validate_scene：对当前已提交场景重跑校验，返回点名化 issue（v2-55）
+ * validate_scene：对当前已提交场景重跑校验，返回点名化 issue
  *
- * <p>定位是"提交前自查"：模型改完想确认一下，不必真的走 submit
+ * 定位是"提交前自查"：模型改完想确认一下，不必真的走 submit
  * （submit 未过会记 processedScene，这里只读不写）。复用
- * {@link SceneGate#validateOnly}（结构校验 + GeometryAudit 点名化）。
+ * validateOnly（结构校验 + GeometryAudit 点名化）。
  */
 public final class ValidateSceneTool implements AgentTool {
 

@@ -1,9 +1,10 @@
 package io.github.nihaoljx.flowchart.agent.tools;
 
-import io.github.nihaoljx.flowchart.agent.AgentTool;
-import io.github.nihaoljx.flowchart.agent.Observation;
-import io.github.nihaoljx.flowchart.agent.ToolContext;
-import io.github.nihaoljx.flowchart.graph.ValidationIssue;
+import io.github.nihaoljx.flowchart.llm.AgentTool;
+import io.github.nihaoljx.flowchart.llm.Observation;
+import io.github.nihaoljx.flowchart.llm.ToolContext;
+import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
+import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,13 +15,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * submit_scene：提交整份场景 JSON，走全管线 + 校验（v2-55 首批工具）
+ * submit_scene：提交整份场景 JSON，走全管线 + 校验（首批工具）
  *
- * <p>结构化输出免费拿：场景 JSON 作为工具参数提交，厂商 function calling
+ * 结构化输出免费拿：场景 JSON 作为工具参数提交，厂商 function calling
  * 的参数体本来就是强 JSON，parseGate 的"读得通"在参数层天然成立；
  * 截断/畸形参数交由既有冷却与重试机制处置（step 3 接线时生效）。
  *
- * <p>写上下文的两个槽位（见 {@link ToolContext}）：
+ * 写上下文的两个槽位（见 ToolContext）：
  * parseGate 过 → processedScene（超限时它是 partial 的来源）；
  * 零 issue → validScene（只有它能作为成品）。
  */

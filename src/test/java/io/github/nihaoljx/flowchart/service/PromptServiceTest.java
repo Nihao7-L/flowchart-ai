@@ -1,7 +1,7 @@
 package io.github.nihaoljx.flowchart.service;
 
-import io.github.nihaoljx.flowchart.graph.RelationCatalog;
-import io.github.nihaoljx.flowchart.graph.ScenePlanner;
+import io.github.nihaoljx.flowchart.graph.validate.RelationCatalog;
+import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -127,6 +127,9 @@ class PromptServiceTest {
                 "必须要求未涉及元素原样保留");
         assertTrue(prompt.contains("删除某元素"),
                 "应说明删除语义 = 结果里不含它");
+        assertTrue(prompt.contains("桥接边"),
+                "删链路中间节点必须要求补桥接边（v2-57 遗留观察项："
+                        + "删中间节点后原图断成两截，模型不会自动补 A→B）");
         assertTrue(prompt.contains("另画一张"),
                 "必须给出「新主题 = 另画一张」的出口，"
                         + "否则用户换主题时会被强行保留旧元素");

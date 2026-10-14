@@ -12,10 +12,11 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 会话存储的内存实现（v2-11）
+ * 会话存储的内存实现
  *
- * <p>开发 / 测试用：重启丢数据，但满足 S1 验收。
- * <p>M5 替换为 Redis 实现，接口不变。
+ * 开发 / 测试用：重启丢数据，但满足 S1 验收。
+ *
+ * M5 替换为 Redis 实现，接口不变。
  */
 @Component
 public class InMemorySessionStore
@@ -24,7 +25,7 @@ public class InMemorySessionStore
     /**
      * 解绑时要从画布侧搬回模型的几何字段
      *
-     * <p>{@code points} 是关键那个：解绑后这条线不再能靠两端图形算位置，
+ * `points` 是关键那个：解绑后这条线不再能靠两端图形算位置，
      * 必须有自己的路径点，否则模型里就是一条算不出长度的坏箭头。
      */
     private static final List<String> FREED_ARROW_FIELDS =

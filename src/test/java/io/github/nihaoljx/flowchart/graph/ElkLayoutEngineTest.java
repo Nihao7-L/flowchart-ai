@@ -12,6 +12,8 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutSpec;
 
 /**
  * ELK 布局引擎测试（v2-38）
