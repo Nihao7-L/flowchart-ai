@@ -7,7 +7,7 @@ import java.util.Map;
  * 一次 agent run 的共享上下文
  *
  * 工具之间通过它传递"当前场景"：`submit_scene` 写入、
- * `validate_scene` / `read_scene` 读取。字段分两级：
+ * `read_scene` 读取。字段分两级：
  *
  * - `processedScene` —— 走完管线且读得通的 JSON（可能带
  *       校验 issue）；超限输出 partial 时用它（最后一份合法进度）；

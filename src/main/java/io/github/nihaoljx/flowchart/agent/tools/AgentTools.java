@@ -29,8 +29,13 @@ public final class AgentTools {
 
     /**
      * 默认注册表：语义工具（submit_spec）+ 场景工具（submit_scene /
-     * update_elements / validate_scene）+ 读取工具（read_scene /
-     * read_contract）。
+     * update_elements）+ 读取工具（read_scene / read_contract）。
+     *
+     * <p>刻意没有校验工具（2026-10-15 用户拍板「那些不是工具」）：
+     * 校验是管线闸门不是模型动作 —— 每次提交在工具内部自动过
+     * SceneGate 全管线，模型只收到「通过」或「机读修复单」，它
+     * 既不能也无需单独调用校验。曾暴露的 validate_scene 已撤下
+     * （模型调它什么都改不了，纯浪费步数的噪音）。
      *
      * @param binder        场景绑定器（现有 bean）
      * @param deduper       场景去重器（现有 bean）
@@ -55,7 +60,6 @@ public final class AgentTools {
                 new SubmitSpecTool(gate, layoutEngine, planner),
                 new SubmitSceneTool(gate),
                 new UpdateElementsTool(gate),
-                new ValidateSceneTool(gate),
                 new ReadSceneTool(),
                 new ReadContractTool(promptService));
         return new ToolRegistry(tools);

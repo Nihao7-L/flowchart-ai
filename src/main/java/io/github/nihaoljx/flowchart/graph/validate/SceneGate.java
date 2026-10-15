@@ -22,8 +22,9 @@ import java.util.Set;
  *
  * 收拢"LLM 交付物能不能收下"的全部分判定，供两条管线共用：
  *
- * - agent 工具（submit_scene / validate_scene / update_elements）
- *   经 process / validateOnly 调用；
+ * - agent 工具（submit_spec / submit_scene / update_elements）
+ *   经 process 调用 —— 校验是闸门不是模型动作（2026-10-15
+ *   用户拍板「那些不是工具」，validate_scene 已撤下）；
  *
  * - 生成编排层（GenerationService）按步组合调用：
  *   runPipeline + parseGate + validateAll + detectRewrite
@@ -340,22 +341,5 @@ public final class SceneGate {
             }
         }
         return result;
-    }
-
-    /**
-     * 只校验（validate_scene 的门）：对已受理场景重跑
-     * parseGate + 结构校验 + 几何体检 + 空场景拦截。
-     */
-    public List<ValidationIssue> validateOnly(String json) {
-        ValidationIssue malformed = parseGate(json);
-        if (malformed != null) {
-            return List.of(malformed);
-        }
-        List<ValidationIssue> issues = new ArrayList<>(validateAll(json));
-        ValidationIssue empty = emptySceneIssue(json);
-        if (empty != null && issues.isEmpty()) {
-            issues.add(empty);
-        }
-        return List.copyOf(issues);
     }
 }

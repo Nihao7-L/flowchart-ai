@@ -14,7 +14,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -45,7 +44,6 @@ class SubmitSceneToolTest {
             """;
 
     private SubmitSceneTool tool;
-    private ValidateSceneTool validateTool;
     private ToolContext ctx;
 
     @BeforeEach
@@ -54,7 +52,6 @@ class SubmitSceneToolTest {
                 new SceneSanitizer(), new ScenePlanner(),
                 new GraphValidator(), new GeometryAudit());
         tool = new SubmitSceneTool(gate);
-        validateTool = new ValidateSceneTool(gate);
         ctx = new ToolContext("画一张流程图", null);
     }
 
@@ -92,22 +89,5 @@ class SubmitSceneToolTest {
         assertFalse(obs.ok());
         assertNull(ctx.processedScene());
         assertNull(ctx.validScene());
-    }
-
-    @Test
-    @DisplayName("validate_scene：有场景时重跑校验；无场景时明确报'先提交'")
-    void validateWithoutSubmitFailsFirst() {
-        Observation obs = validateTool.execute(null, ctx);
-        assertFalse(obs.ok());
-        assertTrue(obs.summary().contains("先"));
-    }
-
-    @Test
-    @DisplayName("validate_scene：提交合法场景后校验通过（0 issue）")
-    void validateAfterGoodSubmit() throws Exception {
-        tool.execute(MAPPER.readTree("{\"scene\":" + GOOD_SCENE + "}"), ctx);
-        Observation obs = validateTool.execute(null, ctx);
-        assertTrue(obs.ok(), "应为通过，实际: " + obs.summary());
-        assertEquals(0, obs.data().get("issueCount").asInt());
     }
 }
