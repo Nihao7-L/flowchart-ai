@@ -144,4 +144,47 @@ class FailoverAgentClientTest {
         verify(a, times(2)).respond(anyList(), anyList(), anyInt());
         verify(b, times(2)).respond(anyList(), anyList(), anyInt());
     }
+
+    @Test
+    @DisplayName("主力让位后：每 5 次成功后回头探主力，主力复活即夺回主选")
+    void periodicProbeReclaimsPrimary() throws Exception {
+        // 主力（下标 0）首调超时让位，之后恢复；备用（下标 1）一直可用
+        AgentLlmClient primary = mock(AgentLlmClient.class);
+        when(primary.respond(anyList(), anyList(), anyInt()))
+                .thenThrow(new IllegalStateException(
+                        "LLM HTTP 408: 请求超时"))   // 第一次：超时让位
+                .thenReturn(turn());                  // 探针轮起：已恢复
+        AgentLlmClient backup = mock(AgentLlmClient.class);
+        when(backup.respond(anyList(), anyList(), anyInt()))
+                .thenReturn(turn());
+
+        FailoverAgentClient client = new FailoverAgentClient(
+                List.of(primary, backup), 1, 0);
+
+        // 第 1 次：主力超时 → 切备用（粘性记住备用）
+        client.respond(List.of(), List.of(), 60);
+        verify(primary, times(1)).respond(anyList(), anyList(), anyInt());
+        verify(backup, times(1)).respond(anyList(), anyList(), anyInt());
+
+        // 第 2~3 次：粘性主选从备用开始，主力不被触碰
+        for (int n = 0; n < 2; n++) {
+            client.respond(List.of(), List.of(), 60);
+        }
+        verify(primary, times(1))
+                .respond(anyList(), anyList(), anyInt());
+        verify(backup, times(3))
+                .respond(anyList(), anyList(), anyInt());
+
+        // 第 4 次：已达 3 次成功 → 强制回头探主力；主力已恢复 → 夺回主选
+        client.respond(List.of(), List.of(), 60);
+        verify(primary, times(2))
+                .respond(anyList(), anyList(), anyInt());
+        verify(backup, times(3))
+                .respond(anyList(), anyList(), anyInt());
+
+        // 第 5 次：主选已回主力，继续从主力开始
+        client.respond(List.of(), List.of(), 60);
+        verify(primary, times(3))
+                .respond(anyList(), anyList(), anyInt());
+    }
 }

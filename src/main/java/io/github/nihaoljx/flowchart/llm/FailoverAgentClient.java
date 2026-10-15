@@ -21,6 +21,14 @@ import java.util.Map;
  * - 粘性主选：记住上一次成功的候选，后续步骤从它开始 —— 正常情况下
  *       不会因为某次 502 就每步都重付一遍前序候选的失败代价；
  *
+ * - 周期性回头探主力：主力（tier 最小的 glm）一旦因一次**超时**（超时
+ *       非瞬时错误、不重试、直接切下家）让出主选，只要后面的候选健康，
+ *       粘性主选就永远停在它们身上、主力长期闲置。为避免这个"被一次超时
+ *       永久挤下"的副作用，每 {@value #PROBE_INTERVAL} 次成功后，下一次
+ *       请求强制从主力下标试一次 —— 主力恢复就自动 reclaim 主选，
+ *       否则照常落到当前粘性候选（代价只是偶尔多付一次主力的失败
+ *       判定，换来"主力复活自动上位"）。
+ *
  * - 瞬时错误退避重试：502/503/504/429 这类**立即返回**
  *       的网关过载错误，对同一候选最多再试 {@value #TRANSIENT_MAX_ATTEMPTS}
  *       次（退避 {@value #BACKOFF_BASE_MS}ms 起、每次翻倍）——实测 r10 大图
@@ -46,8 +54,31 @@ public final class FailoverAgentClient implements AgentLlmClient {
 
     private final List<AgentLlmClient> candidates;
 
+    /**
+     * 主力候选下标：tier 排序后的第一个（tier 最小者 = glm 主力）。
+     * 候选表在 AgentLoopService 里已经按 tier 升序排好，所以下标 0
+     * 必然是 tier 最小的那个；要换主力，改 yml 里对应候选的 tier 即可。
+     */
+    private final int primaryIndex = 0;
+
     /** 上一次成功的候选下标（粘性主选；初始 0 = tier 最小者） */
     private volatile int preferred = 0;
+
+    /**
+     * 连续成功次数（周期性回头探主力的计数器）。每次 {@code respond}
+     * 成功 +1；达到 {@link #PROBE_INTERVAL} 后，下一次请求强制从
+     * {@link #primaryIndex} 开始试一次，给"因一次超时让位的主力"
+     * 一个抢回主选的机会（见下）。
+     */
+    private volatile int successCount = 0;
+
+    /**
+     * 每多少次成功后，强制回头探一次主力。背景：主力（glm）一旦因为
+     * 一次超时（超时非瞬时错误、不重试、直接切下家）让出主选，只要
+     * 后面的候选健康，"粘性主选"就永远停在它们身上，主力长期闲置。
+     * 这个间隔就是让主力定期出镜、证明自己又行了就自动拿回主选。
+     */
+    static final int PROBE_INTERVAL = 3;
 
     /** 测试注入用：重试次数上限与基础退避 */
     private final int maxAttempts;
@@ -73,8 +104,11 @@ public final class FailoverAgentClient implements AgentLlmClient {
                              List<Map<String, Object>> tools,
                              int timeoutSeconds) throws Exception {
         Exception last = null;
+        // 周期性回头探主力：累计成功达到间隔，下一次强制从主力下标开始。
+        boolean probe = successCount >= PROBE_INTERVAL;
+        int start = probe ? primaryIndex : preferred;
         for (int i = 0; i < candidates.size(); i++) {
-            int idx = (preferred + i) % candidates.size();
+            int idx = (start + i) % candidates.size();
             AgentLlmClient client = candidates.get(idx);
             for (int attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
@@ -86,6 +120,9 @@ public final class FailoverAgentClient implements AgentLlmClient {
                                 candidates.size(), attempt);
                     }
                     preferred = idx;
+                    // 探针这次成功也只算"探到一次"，计数器归零重数；
+                    // 非探针则正常 +1。两路都让主力健康时 preferentially 回到主选。
+                    successCount = probe ? 0 : successCount + 1;
                     return turn;
                 } catch (Exception e) {
                     last = e;
