@@ -276,6 +276,10 @@ public class ElkLayoutEngine implements LayoutEngine {
             nodes.put(shape.id, node);
         }
         Map<Edge, ElkEdge> elkEdges = new LinkedHashMap<>();
+        Map<String, String> shapeTypes = new LinkedHashMap<>();
+        for (Shape shape : shapes) {
+            shapeTypes.put(shape.id, shape.type);
+        }
         for (Edge edge : edges) {
             ElkNode from = nodes.get(edge.from);
             ElkNode to = nodes.get(edge.to);
@@ -301,7 +305,7 @@ public class ElkLayoutEngine implements LayoutEngine {
             maxX = Math.max(maxX, shape.px + shape.lw);
             maxY = Math.max(maxY, shape.py + shape.lh);
         }
-        writeBackEdgeRoutes(elkEdges);
+        writeBackEdgeRoutes(elkEdges, shapeTypes);
         return new double[] {
             minX, minY, maxX - minX, maxY - minY,
         };
@@ -324,9 +328,16 @@ public class ElkLayoutEngine implements LayoutEngine {
      *
      * 只处理本次参与布局的边（两端都可移动）：冻结图形的边
      * 不重排，坐标一像素不动。
+     *
+     * 菱形例外（修复）：前端锚点推导对菱形（凸多边形）失效，
+     * 直线边会出现穿框长对角线（实测 12_er）。凡是端点含菱形的
+     * 边一律接管 —— 直线路由也补中点成 3 点共线折线，既给前端
+     * 留住 ELK 的真实走向，又能存活 SceneSanitizer 的
+     * "绑定箭头 <3 点摘除"（2 点数组白写）。
      */
     private void writeBackEdgeRoutes(
-            Map<Edge, ElkEdge> elkEdges) {
+            Map<Edge, ElkEdge> elkEdges,
+            Map<String, String> shapeTypes) {
         for (Map.Entry<Edge, ElkEdge> entry
                 : elkEdges.entrySet()) {
             ElkEdge elkEdge = entry.getValue();
@@ -346,11 +357,17 @@ public class ElkLayoutEngine implements LayoutEngine {
                     || !Double.isFinite(endY)) {
                 continue;
             }
+            Edge edge = entry.getKey();
+            boolean touchesDiamond =
+                    "diamond".equals(shapeTypes.get(edge.from()))
+                            || "diamond".equals(
+                                    shapeTypes.get(edge.to()));
             // 只写"真折线"（有拐点）的边：直线边的几何留给前端
             // 按绑定推导（锚点边缘交点比 ELK 的原始端点更贴合），
             // 这与 SceneSanitizer"绑定箭头只留 ≥3 点折线"的口径
-            // 一致 —— 2 点数组会被它摘掉，白写。
-            if (section.getBendPoints().isEmpty()) {
+            // 一致 —— 2 点数组会被它摘掉，白写。菱形边除外（见上）。
+            if (section.getBendPoints().isEmpty()
+                    && !touchesDiamond) {
                 continue;
             }
             // 先局部收集、全量校验，再一次性写回 —— 半路发现
@@ -372,6 +389,13 @@ public class ElkLayoutEngine implements LayoutEngine {
             }
             if (broken) {
                 continue;
+            }
+            if (section.getBendPoints().isEmpty()) {
+                // 菱形的直线路由：补中点凑足 3 点
+                route.add(new double[] {
+                    round1((endX - startX) / 2),
+                    round1((endY - startY) / 2),
+                });
             }
             route.add(new double[] {
                 round1(endX - startX),

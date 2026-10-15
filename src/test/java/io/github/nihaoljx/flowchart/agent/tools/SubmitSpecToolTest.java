@@ -85,27 +85,23 @@ class SubmitSpecToolTest {
     }
 
     @Test
-    @DisplayName("直线边只带绑定不带 points，label 走 {\"text\":...} 对象形态")
+    @DisplayName("非菱形的直线边只带绑定不带 points，label 走 {\"text\":...} 对象形态")
     void arrowsBindWithoutGeometry() throws Exception {
         Observation obs = submit("""
                 {"nodes":[
-                  {"id":"a","label":"甲","type":"diamond"},
+                  {"id":"a","label":"甲","type":"rectangle"},
                   {"id":"b","label":"乙","type":"ellipse"}],
                  "edges":[
-                  {"from":"a","to":"b","label":"命中"}]}
+                  {"from":"a","to":"b","label":"流转"}]}
                 """);
 
         assertTrue(obs.ok(), "应为通过，实际: " + obs.summary());
         JsonNode elements = MAPPER.readTree(ctx.validScene())
                 .get("elements");
         JsonNode arrow = null;
-        JsonNode diamond = null;
         for (JsonNode el : elements) {
             if ("arrow".equals(el.path("type").asText())) {
                 arrow = el;
-            }
-            if ("diamond".equals(el.path("type").asText())) {
-                diamond = el;
             }
         }
         assertNotNull(arrow, "应有箭头");
@@ -116,9 +112,41 @@ class SubmitSpecToolTest {
         // 见 backEdgeGetsBendPoints 与 SceneSanitizer 的
         // "绑定箭头只留 ≥3 点折线"口径
         assertTrue(!arrow.has("points"),
-                "直线绑端点箭头不应带 points");
-        assertEquals("命中", arrow.path("label").path("text").asText());
-        assertNotNull(diamond, "菱形应保留");
+                "非菱形的直线绑端点箭头不应带 points");
+        assertEquals("流转", arrow.path("label").path("text").asText());
+    }
+
+    @Test
+    @DisplayName("菱形参与的直线边 → 强制写回 3 点路由（前端锚点推导对菱形失效）")
+    void diamondStraightEdgeGetsRoute() throws Exception {
+        Observation obs = submit("""
+                {"nodes":[
+                  {"id":"a","label":"校验","type":"diamond"},
+                  {"id":"b","label":"通过","type":"rectangle"}],
+                 "edges":[
+                  {"from":"a","to":"b","label":"命中"}]}
+                """);
+
+        assertTrue(obs.ok(), "应为通过，实际: " + obs.summary());
+        JsonNode elements = MAPPER.readTree(ctx.validScene())
+                .get("elements");
+        JsonNode arrow = null;
+        for (JsonNode el : elements) {
+            if ("arrow".equals(el.path("type").asText())) {
+                arrow = el;
+            }
+        }
+        assertNotNull(arrow, "应有箭头");
+        // 2026-10-15 修复：菱形端点的前端锚点推导会产生穿框对角线
+        // （实测 12_er），菱形参与的边一律由引擎接管 —— 直线路由
+        // 补中点成 3 点共线折线，恰好存活 SceneSanitizer 的
+        // "绑定箭头只留 ≥3 点"摘除口径
+        assertTrue(arrow.has("points"),
+                "菱形边的直线也应由引擎写回 points，实际: " + arrow);
+        assertEquals(3, arrow.path("points").size(),
+                "直线路由应补中点成 3 点（≥3 才不被摘）");
+        assertTrue(arrow.has("x") && arrow.has("y"),
+                "写回时应一并落 x/y（首点绝对坐标）");
     }
 
     @Test
