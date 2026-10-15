@@ -2,6 +2,7 @@ package io.github.nihaoljx.flowchart.graph.layout;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.eclipse.elk.alg.layered.options.LayeredOptions;
 import org.eclipse.elk.alg.layered.options.WrappingStrategy;
@@ -9,7 +10,11 @@ import org.eclipse.elk.core.RecursiveGraphLayoutEngine;
 import org.eclipse.elk.core.math.ElkPadding;
 import org.eclipse.elk.core.options.CoreOptions;
 import org.eclipse.elk.core.options.Direction;
+import org.eclipse.elk.core.options.EdgeRouting;
 import org.eclipse.elk.core.util.BasicProgressMonitor;
+import org.eclipse.elk.graph.ElkBendPoint;
+import org.eclipse.elk.graph.ElkEdge;
+import org.eclipse.elk.graph.ElkEdgeSection;
 import org.eclipse.elk.graph.ElkNode;
 import org.eclipse.elk.graph.util.ElkGraphUtil;
 import org.slf4j.Logger;
@@ -215,6 +220,11 @@ public class ElkLayoutEngine implements LayoutEngine {
         // （三方对照，用户取竖排）
         graph.setProperty(LayeredOptions.WRAPPING_STRATEGY,
                 WrappingStrategy.OFF);
+        // 显式声明正交布线：ELK 默认值解析后通常也是正交，但
+        // 边路由拐点是下面 writeBackEdgeRoutes 的原料，不依赖
+        // "默认恰好如此" —— 显式设置才保证 sections 一定有折线。
+        graph.setProperty(CoreOptions.EDGE_ROUTING,
+                EdgeRouting.ORTHOGONAL);
 
         Map<String, ElkNode> nodes = new LinkedHashMap<>();
         for (Shape shape : shapes) {
@@ -230,11 +240,13 @@ public class ElkLayoutEngine implements LayoutEngine {
             shape.lh = size[1];
             nodes.put(shape.id, node);
         }
+        Map<Edge, ElkEdge> elkEdges = new LinkedHashMap<>();
         for (Edge edge : edges) {
             ElkNode from = nodes.get(edge.from);
             ElkNode to = nodes.get(edge.to);
             if (from != null && to != null) {
-                ElkGraphUtil.createSimpleEdge(from, to);
+                elkEdges.put(edge,
+                        ElkGraphUtil.createSimpleEdge(from, to));
             }
         }
 
@@ -254,9 +266,102 @@ public class ElkLayoutEngine implements LayoutEngine {
             maxX = Math.max(maxX, shape.px + shape.lw);
             maxY = Math.max(maxY, shape.py + shape.lh);
         }
+        writeBackEdgeRoutes(elkEdges);
         return new double[] {
             minX, minY, maxX - minX, maxY - minY,
         };
+    }
+
+    /**
+     * 把 ELK 算出的边路由（正交折线）写回箭头的 points。
+     *
+     * 修复的真实缺陷：引擎此前只回写节点坐标，边的路由被整个
+     * 丢掉 —— 前端只能拿两端中心连直线，回边（如"校验失败"
+     * 从菱形指回上层的输入框）会**竖着穿过中间层的节点**，
+     * 五图验收里登录流程图首当其冲。ELK 的分层 + 正交路由本
+     * 就是选它的理由之一，拐点白算不用等于买了车不开。
+     *
+     * 写法遵循契约约定：x / y = 折线首点绝对坐标，
+     * points = 相对首点的偏移数组。首末点落在节点边缘（ELK
+     * 的 start/end location），前端吸附逻辑会再做一次锚点
+     * 归位，中段拐点原样保留 —— 见 sceneAdapter 的
+     * withArrowGeometry（自带几何中段不透传改动）。
+     *
+     * 只处理本次参与布局的边（两端都可移动）：冻结图形的边
+     * 不重排，坐标一像素不动。
+     */
+    private void writeBackEdgeRoutes(
+            Map<Edge, ElkEdge> elkEdges) {
+        for (Map.Entry<Edge, ElkEdge> entry
+                : elkEdges.entrySet()) {
+            ElkEdge elkEdge = entry.getValue();
+            if (elkEdge.getSections() == null
+                    || elkEdge.getSections().isEmpty()) {
+                continue;
+            }
+            ElkEdgeSection section =
+                    elkEdge.getSections().get(0);
+            double startX = section.getStartX();
+            double startY = section.getStartY();
+            double endX = section.getEndX();
+            double endY = section.getEndY();
+            if (!Double.isFinite(startX)
+                    || !Double.isFinite(startY)
+                    || !Double.isFinite(endX)
+                    || !Double.isFinite(endY)) {
+                continue;
+            }
+            // 只写"真折线"（有拐点）的边：直线边的几何留给前端
+            // 按绑定推导（锚点边缘交点比 ELK 的原始端点更贴合），
+            // 这与 SceneSanitizer"绑定箭头只留 ≥3 点折线"的口径
+            // 一致 —— 2 点数组会被它摘掉，白写。
+            if (section.getBendPoints().isEmpty()) {
+                continue;
+            }
+            // 先局部收集、全量校验，再一次性写回 —— 半路发现
+            // 坏点时不能留下写了一半的 points 在箭头上
+            List<double[]> route = new ArrayList<>();
+            route.add(new double[] {0, 0});
+            boolean broken = false;
+            for (ElkBendPoint bend
+                    : section.getBendPoints()) {
+                if (!Double.isFinite(bend.getX())
+                        || !Double.isFinite(bend.getY())) {
+                    broken = true;
+                    break;
+                }
+                route.add(new double[] {
+                    round1(bend.getX() - startX),
+                    round1(bend.getY() - startY),
+                });
+            }
+            if (broken) {
+                continue;
+            }
+            route.add(new double[] {
+                round1(endX - startX),
+                round1(endY - startY),
+            });
+            ObjectNode arrow = entry.getKey().json;
+            ArrayNode points = arrow.putArray("points");
+            for (double[] point : route) {
+                appendPoint(points, point[0], point[1]);
+            }
+            arrow.put("x", round1(startX));
+            arrow.put("y", round1(startY));
+        }
+    }
+
+    private void appendPoint(
+            ArrayNode points, double dx, double dy) {
+        ArrayNode point = points.addArray();
+        point.add(round1(dx));
+        point.add(round1(dy));
+    }
+
+    /** 一位小数：布局坐标不需要更多精度，也避免浮点尾巴进契约 */
+    private double round1(double v) {
+        return Math.round(v * 10) / 10.0;
     }
 
     private void snapAll(List<Shape> shapes) {
@@ -368,7 +473,7 @@ public class ElkLayoutEngine implements LayoutEngine {
                     || !shapeIds.contains(to)) {
                 continue;
             }
-            edges.add(new Edge(from, to));
+            edges.add(new Edge(from, to, (ObjectNode) element));
         }
         return edges;
     }
@@ -493,7 +598,8 @@ public class ElkLayoutEngine implements LayoutEngine {
         }
     }
 
-    /** 一条有向边 */
-    private record Edge(String from, String to) {
+    /** 一条有向边（json = 对应箭头元素，路由拐点写回的目标） */
+    private record Edge(
+            String from, String to, ObjectNode json) {
     }
 }

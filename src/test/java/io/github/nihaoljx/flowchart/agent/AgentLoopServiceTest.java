@@ -1,6 +1,7 @@
 package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.llm.LlmProperties;
+import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -47,6 +48,7 @@ class AgentLoopServiceTest {
                         new SceneSanitizer(), new ScenePlanner(),
                         new GraphValidator(), new GeometryAudit(),
                         new SceneDrift(), new PromptService(),
+                        new ElkLayoutEngine(),
                         new LlmProperties(), ""));
     }
 

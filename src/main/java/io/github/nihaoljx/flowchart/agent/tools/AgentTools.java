@@ -2,6 +2,7 @@ package io.github.nihaoljx.flowchart.agent.tools;
 
 import io.github.nihaoljx.flowchart.llm.AgentTool;
 import io.github.nihaoljx.flowchart.agent.ToolRegistry;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
@@ -27,7 +28,9 @@ public final class AgentTools {
     }
 
     /**
-     * 首批 4 工具 +  增量编辑工具的默认注册表。
+     * 默认注册表：语义工具（submit_spec）+ 场景工具（submit_scene /
+     * update_elements / validate_scene）+ 读取工具（read_scene /
+     * read_contract）。
      *
      * @param binder        场景绑定器（现有 bean）
      * @param deduper       场景去重器（现有 bean）
@@ -37,16 +40,19 @@ public final class AgentTools {
      * @param audit         几何体检（现有 bean）
      * @param drift         改图保真（现有 bean；编辑模式首次提交用）
      * @param promptService 提示词服务（契约片段派生）
+     * @param layoutEngine  布局引擎（submit_spec 的坐标来源）
      */
     public static ToolRegistry defaultRegistry(
             SceneBinder binder, SceneDeduper deduper,
             SceneSanitizer sanitizer, ScenePlanner planner,
             GraphValidator validator, GeometryAudit audit,
-            SceneDrift drift, PromptService promptService) {
+            SceneDrift drift, PromptService promptService,
+            LayoutEngine layoutEngine) {
         SceneGate gate = new SceneGate(
                 binder, deduper, sanitizer, planner,
                 validator, audit, drift);
         List<AgentTool> tools = List.of(
+                new SubmitSpecTool(gate, layoutEngine),
                 new SubmitSceneTool(gate),
                 new UpdateElementsTool(gate),
                 new ValidateSceneTool(gate),

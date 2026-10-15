@@ -1,6 +1,7 @@
 package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.SubmitSceneTool;
+import io.github.nihaoljx.flowchart.agent.tools.SubmitSpecTool;
 import io.github.nihaoljx.flowchart.agent.tools.UpdateElementsTool;
 import io.github.nihaoljx.flowchart.service.PromptService;
 
@@ -21,8 +22,8 @@ import io.github.nihaoljx.flowchart.llm.AgentResult;
  * while steps < MAX_STEPS 且预算未耗尽:
  *     resp = client.respond(messages, tools)
  *     一批 tool_calls 全部执行 → observation 逐条追加回 messages
- *     if 提交了 submit_scene 或 update_elements 且通过校验: → COMPLETED
- *     if 提交了 submit_scene 但未过:     → 追加修正指令（点名化 issue），继续
+ *     if 提交了 submit_spec / submit_scene / update_elements 且通过校验: → COMPLETED
+ *     if 提交了 submit_spec / submit_scene 但未过: → 追加修正指令（点名化 issue），继续
  *     if 纯文本轮:                       → 回喂"请用工具或提交"，继续
  * 超限/超时 → PARTIAL（最后一份读得通的进度，不伪装成功）
  *
@@ -39,8 +40,10 @@ public final class AgentLoop {
     /** 纯文本轮的回喂提示（模型只说话不干活时给一条明确的出路） */
     private static final String NO_TOOL_NUDGE =
             "你没有调用任何工具。画图必须通过工具完成："
-                    + "先 submit_scene 提交场景 JSON；"
-                    + "需要字段口径可先 read_contract，需要看当前场景可 read_scene。";
+                    + "结构化图表（流程/架构/时序/组织/思维导图等）"
+                    + "优先 submit_spec 语义提交（只给节点与连线，"
+                    + "坐标由布局引擎算）；自由画/精确摆位才 submit_scene；"
+                    + "需要看当前场景可 read_scene。";
 
     private final AgentLlmClient client;
     private final ToolRegistry registry;
@@ -113,8 +116,12 @@ public final class AgentLoop {
                 Observation obs = registry.dispatch(call, ctx);
                 messages.appendToolResult(call, obs);
                 safeToolResult(listener, call, obs);
+                // 三类提交工具的成功都是终态：submit_spec（语义路径，
+                // validScene 已由布局引擎产出）与 submit_scene /
+                // update_elements（坐标路径）同权 —— 不再继续空转剩余步数
                 if (SubmitSceneTool.NAME.equals(call.name())
-                        || UpdateElementsTool.NAME.equals(call.name())) {
+                        || UpdateElementsTool.NAME.equals(call.name())
+                        || SubmitSpecTool.NAME.equals(call.name())) {
                     submitted = obs;
                 }
             }

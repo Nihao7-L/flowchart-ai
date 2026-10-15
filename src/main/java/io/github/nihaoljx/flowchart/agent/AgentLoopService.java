@@ -2,6 +2,7 @@ package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.AgentTools;
 import io.github.nihaoljx.flowchart.llm.LlmProperties;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -57,6 +58,7 @@ public class AgentLoopService {
             GeometryAudit audit,
             SceneDrift drift,
             PromptService promptService,
+            LayoutEngine layoutEngine,
             LlmProperties llmProperties,
             @Value("${chartflow.agent-loop.model:}")
             String preferredModel) {
@@ -72,7 +74,8 @@ public class AgentLoopService {
         this.candidateName = candidate.getName();
         ToolRegistry registry = AgentTools.defaultRegistry(
                 binder, deduper, sanitizer, planner,
-                validator, audit, drift, promptService);
+                validator, audit, drift, promptService,
+                layoutEngine);
         // 最小故障转移（实测补）：全部候选按 tier 包进
         // FailoverAgentClient —— 实测 glm 画大图 502，单候选
         // 一步失败 = 整次兜底，可用性差

@@ -45,6 +45,8 @@ public final class SubmitSceneTool implements AgentTool {
     @Override
     public String description() {
         return "提交整份白板场景 JSON（{\"elements\":[...]}）。"
+                + "自由画/需要精确摆位时用；流程图/架构图等结构化图表"
+                + "请优先用 submit_spec（只给语义，坐标由布局引擎算）。"
                 + "后端会跑校验：通过则生成结束；未通过则返回点名化的"
                 + "问题清单，请只修正被点名的问题后再提交。";
     }
