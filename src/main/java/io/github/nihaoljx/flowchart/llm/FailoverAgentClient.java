@@ -3,8 +3,12 @@ package io.github.nihaoljx.flowchart.llm;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.ConnectException;
+import java.net.http.HttpTimeoutException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * agent 路径的最小故障转移客户端（粘性主选 + 瞬时错误退避重试 + 调用日志）
@@ -16,7 +20,13 @@ import java.util.Map;
  *
  * 刻意最小（只做候选切换与瞬时重试，判死逻辑从简）：
  *
- * - 无冷却表 / 无错误分类：一步内把候选按序试完，全挂才抛；
+ * - 无错误分类，冷却只认一类：超时 / 连接类失败（候选远端挂死，
+ *       连接活着但就是不回包）后给该候选记 {@value #HANG_COOLDOWN_MS}
+ *       毫秒短冷却，冷却期内后续请求直接跳过它 —— 否则每次新请求都要
+ *       再付一遍"挂满窗口才知道它死了"的代价（2026-10-15 批量实测：
+ *       同一候选一天挂死 4+ 次，每次白烧 300s 硬帽）。瞬时 502 不冷却
+ *       —— 它是立即返回的，代价只是一次请求，退避重试就能过。
+ *       进程内存即可，重启即忘；正式的冷却 / 分类 / 多实例共享归 M13 网关；
  *
  * - 粘性主选：记住上一次成功的候选，后续步骤从它开始 —— 正常情况下
  *       不会因为某次 502 就每步都重付一遍前序候选的失败代价；
@@ -80,6 +90,17 @@ public final class FailoverAgentClient implements AgentLlmClient {
      */
     static final int PROBE_INTERVAL = 3;
 
+    /**
+     * 挂死候选的冷却时长（毫秒）。挂死的定义：连接活着但远端不回包，
+     * 只能等超时（300s 硬帽）——这种失败的信息量大（不是瞬时抖动），
+     * 短冷却期内跳过它，后续请求不再重复付这个代价。
+     */
+    static final long HANG_COOLDOWN_MS = 120_000L;
+
+    /** 候选下标 → 冷却截止时刻（epoch ms）。进程内存，重启即忘 */
+    private final Map<Integer, Long> hangCooldown =
+            new ConcurrentHashMap<>();
+
     /** 测试注入用：重试次数上限与基础退避 */
     private final int maxAttempts;
     private final long backoffBaseMs;
@@ -107,8 +128,23 @@ public final class FailoverAgentClient implements AgentLlmClient {
         // 周期性回头探主力：累计成功达到间隔，下一次强制从主力下标开始。
         boolean probe = successCount >= PROBE_INTERVAL;
         int start = probe ? primaryIndex : preferred;
+        // 冷却过滤：保持从 start 起的环形顺序，跳过冷却中的候选；
+        // 全员都在冷却时无视冷却（避免"没有候选可用"的死路）
+        List<Integer> order = new ArrayList<>();
         for (int i = 0; i < candidates.size(); i++) {
-            int idx = (start + i) % candidates.size();
+            order.add((start + i) % candidates.size());
+        }
+        List<Integer> usable = new ArrayList<>();
+        for (int idx : order) {
+            if (!isCooling(idx)) {
+                usable.add(idx);
+            }
+        }
+        if (usable.isEmpty()) {
+            usable = order;
+        }
+        for (int rank = 0; rank < usable.size(); rank++) {
+            int idx = usable.get(rank);
             AgentLlmClient client = candidates.get(idx);
             for (int attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
@@ -120,18 +156,32 @@ public final class FailoverAgentClient implements AgentLlmClient {
                                 candidates.size(), attempt);
                     }
                     preferred = idx;
+                    hangCooldown.remove(idx);
                     // 探针这次成功也只算"探到一次"，计数器归零重数；
                     // 非探针则正常 +1。两路都让主力健康时 preferentially 回到主选。
                     successCount = probe ? 0 : successCount + 1;
                     return turn;
                 } catch (Exception e) {
                     last = e;
-                    boolean lastCandidate = i == candidates.size() - 1;
+                    boolean lastCandidate = rank == usable.size() - 1;
                     boolean lastAttempt = attempt == maxAttempts;
                     LOG.warn("[AgentFailover] 候选 {}/{} 第 {}/{} 次"
                                     + "失败: {}",
                             idx + 1, candidates.size(), attempt,
                             maxAttempts, brief(e));
+                    if (isHang(e)) {
+                        // 挂死（远端不回包，只能等超时）：短冷却，
+                        // 后续请求不再重复付"挂满窗口"的代价。
+                        // 最后一个候选也记 —— 挂死就是挂死，不能
+                        // 因为"它是最后试的"就下次还当健康候选先试
+                        hangCooldown.put(idx,
+                                System.currentTimeMillis()
+                                        + HANG_COOLDOWN_MS);
+                        LOG.info("[AgentFailover] 候选 {}/{} 判挂死，"
+                                        + "冷却 {}s",
+                                idx + 1, candidates.size(),
+                                HANG_COOLDOWN_MS / 1000);
+                    }
                     if (lastCandidate && lastAttempt) {
                         // 最后一个候选也挂了：抛给循环走兜底语义
                         throw e;
@@ -145,6 +195,13 @@ public final class FailoverAgentClient implements AgentLlmClient {
             }
         }
         throw last;
+    }
+
+    /** 该候选是否在挂死冷却期内 */
+    private boolean isCooling(int idx) {
+        Long until = hangCooldown.get(idx);
+        return until != null
+                && System.currentTimeMillis() < until;
     }
 
     /**
@@ -162,6 +219,29 @@ public final class FailoverAgentClient implements AgentLlmClient {
                 || msg.contains("LLM HTTP 503")
                 || msg.contains("LLM HTTP 504")
                 || msg.contains("LLM HTTP 429");
+    }
+
+    /**
+     * 挂死判定：远端不回包、只能等超时的那类失败
+     * （HTTP 客户端的 HttpTimeoutException、连接层的
+     * ConnectException，以及消息里带 timed out / timeout /
+     * Connection refused / reset 的包装异常）。这类失败与瞬时
+     * 502 的本质区别：它要烧满整个超时窗口才知道死了 —— 值得
+     * 记冷却，让后续请求别再付这个代价。
+     */
+    private static boolean isHang(Exception e) {
+        if (e instanceof HttpTimeoutException
+                || e instanceof ConnectException) {
+            return true;
+        }
+        String msg = e.getMessage();
+        if (msg == null) {
+            return false;
+        }
+        return msg.contains("timed out")
+                || msg.contains("timeout")
+                || msg.contains("Connection refused")
+                || msg.contains("Connection reset");
     }
 
     /** 第 attempt 次失败后的退避：base * 2^(attempt-1)，可被中断 */

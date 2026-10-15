@@ -187,4 +187,61 @@ class FailoverAgentClientTest {
         verify(primary, times(3))
                 .respond(anyList(), anyList(), anyInt());
     }
+
+    @Test
+    @DisplayName("候选挂死（超时）→ 记短冷却，冷却期内后续请求直接跳过它")
+    void hangCandidateCooledDown() throws Exception {
+        // 挂死消息与线上一致：HttpTimeoutException "request timed out"
+        AgentLlmClient hanging = mock(AgentLlmClient.class);
+        when(hanging.respond(anyList(), anyList(), anyInt()))
+                .thenThrow(new IllegalStateException(
+                        "request timed out"));
+        AgentLlmClient good = mock(AgentLlmClient.class);
+        when(good.respond(anyList(), anyList(), anyInt()))
+                .thenReturn(turn());
+
+        FailoverAgentClient client = new FailoverAgentClient(
+                List.of(hanging, good), 1, 0);
+
+        // 第 1 次：候选 1 挂死 → 切候选 2
+        client.respond(List.of(), List.of(), 60);
+        verify(hanging, times(1))
+                .respond(anyList(), anyList(), anyInt());
+        verify(good, times(1))
+                .respond(anyList(), anyList(), anyInt());
+
+        // 第 2 次：候选 1 在冷却期内，即使粘性/探针顺序轮到它也直接跳过
+        // （修复前：每个新请求都要再付一遍挂满窗口的代价）
+        client.respond(List.of(), List.of(), 60);
+        verify(hanging, times(1))
+                .respond(anyList(), anyList(), anyInt());
+        verify(good, times(2))
+                .respond(anyList(), anyList(), anyInt());
+    }
+
+    @Test
+    @DisplayName("全员挂死全在冷却 → 无视冷却照常全试（避免无可用的死路）")
+    void allCoolingFallsBackToFullSweep() throws Exception {
+        AgentLlmClient a = mock(AgentLlmClient.class);
+        when(a.respond(anyList(), anyList(), anyInt()))
+                .thenThrow(new IllegalStateException("request timed out"));
+        AgentLlmClient b = mock(AgentLlmClient.class);
+        when(b.respond(anyList(), anyList(), anyInt()))
+                .thenThrow(new IllegalStateException("request timed out"));
+
+        FailoverAgentClient client = new FailoverAgentClient(
+                List.of(a, b), 1, 0);
+
+        // 第 1 次：全挂，两个都进冷却
+        assertThrows(Exception.class,
+                () -> client.respond(List.of(), List.of(), 60));
+        verify(a, times(1)).respond(anyList(), anyList(), anyInt());
+        verify(b, times(1)).respond(anyList(), anyList(), anyInt());
+
+        // 第 2 次：全员冷却 → 无视冷却再试一遍（否则没有候选可用）
+        assertThrows(Exception.class,
+                () -> client.respond(List.of(), List.of(), 60));
+        verify(a, times(2)).respond(anyList(), anyList(), anyInt());
+        verify(b, times(2)).respond(anyList(), anyList(), anyInt());
+    }
 }
