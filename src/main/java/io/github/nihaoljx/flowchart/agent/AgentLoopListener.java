@@ -4,7 +4,7 @@ import io.github.nihaoljx.flowchart.llm.Observation;
 import io.github.nihaoljx.flowchart.llm.ToolCall;
 
 /**
- * agent 循环的过程监听器（步骤 3）
+ * agent 循环的过程监听器
  *
  * 循环本体不碰 SSE —— 过程可见性通过这个回调交出去（接线层把它
  * 翻译成 `tool_call`/`tool_result` 事件）。所有方法都是

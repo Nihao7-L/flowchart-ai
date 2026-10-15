@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * {@link AgentLoopService} 的装配与候选解析测试（v2-55 步骤 3）
+ * {@link AgentLoopService} 的装配与候选解析测试
  *
  * <p>候选解析是 agent 模式的"选人"逻辑，错了会把请求发给没探针过的
  * 模型或干脆发不出去，必须锁死三条规则：精确匹配 &gt; tier 最小 &gt; null。

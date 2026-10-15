@@ -19,7 +19,7 @@ import java.util.Map;
  *
  * 结构化输出免费拿：场景 JSON 作为工具参数提交，厂商 function calling
  * 的参数体本来就是强 JSON，parseGate 的"读得通"在参数层天然成立；
- * 截断/畸形参数交由既有冷却与重试机制处置（step 3 接线时生效）。
+ * 截断/畸形参数交由客户端的退避重试与故障转移处置。
  *
  * 写上下文的两个槽位（见 ToolContext）：
  * parseGate 过 → processedScene（超限时它是 partial 的来源）；

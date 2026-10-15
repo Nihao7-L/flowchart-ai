@@ -23,7 +23,7 @@ public final class ToolContext {
     private final List<Map<String, Object>> userElements;
 
     /**
-     * 编辑模式的"修改前场景"（步骤 3 补，与 legacy 口径对齐）。
+     * 编辑模式的"修改前场景"。
      *
  * 非 null = 本次是"改这张图"。改图保真检查（防整图重画 /
      * 防保留 id 但整图重排）需要拿提交结果与它对比 —— 只比对提交
@@ -35,7 +35,7 @@ public final class ToolContext {
     /**
      * 改图保真检查是否已做过。
      *
- * legacy 只在第 1 轮做（它是提醒不是门禁，
+ * 保真检查只做一次（它是提醒不是门禁，
      * 第 2 轮 LLM 坚持重画就放行 —— 用户本来就可能明确要求重画）。
      * agent 循环没有"轮"的概念，对齐语义用"只看首次提交"：
      * 首次提交过后即标记，后续提交不再拦。
@@ -61,7 +61,7 @@ public final class ToolContext {
         return previousJson;
     }
 
-    /** 改图保真检查是否已做过（只做一次，对齐 legacy 第 1 轮口径） */
+    /** 改图保真检查是否已做过（只做一次：提醒，不是门禁） */
     public boolean rewriteChecked() {
         return rewriteChecked;
     }

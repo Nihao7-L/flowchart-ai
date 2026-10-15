@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * AgentLlmClient 的 OpenAI 兼容实现（步骤 3 的最小真实件）
+ * AgentLlmClient 的 OpenAI 兼容实现
  *
  * 协议口径（OpenAI Chat Completions + function calling）：
  *
@@ -24,11 +24,11 @@ import java.util.Map;
  *
  * - 响应取 `choices[0].message` 的 `content` 与
  *       `tool_calls`；`reasoning_content`（推理草稿）刻意忽略
- *       —— 与既有 provider「只取 delta.content」同一纪律。
+ *       —— 只取正文与工具调用，草稿不进上下文。
  *
- * 范围刻意收窄：非流式、单候选、无重试——故障转移/冷却/流式是 M13
- * 网关的活，等探针（验收 5）定下支持 tool_calls 的候选子集后再接。
- * 超时直接用调用方传入的剩余预算。
+ * 范围刻意收窄：非流式、单候选、无重试 —— 候选链故障转移由
+ * 外层 FailoverAgentClient 承担，本类只管一家。超时直接用
+ * 调用方传入的剩余预算。
  */
 public final class OpenAiToolClient implements AgentLlmClient {
 

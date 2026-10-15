@@ -3,12 +3,12 @@ package io.github.nihaoljx.flowchart.llm;
 import com.fasterxml.jackson.databind.JsonNode;
 
 /**
- * 一次工具调用请求（，learn-claude-code s02 的 tool_use 对应物）
+ * 一次工具调用请求（learn-claude-code s02 的 tool_use 对应物）
  *
  * 为什么独立成类型：agent 协议里"模型提议调哪个工具、带什么参数"与
- * "执行结果"是两类东西，与 LLM 网关的 com.fasterxml.jackson.databind.JsonNode
- * 参数体分开后，AgentLlmClient 的实现（step 3 接 OpenAI 口径）才知道
- * 怎么把 `id` 回填进 tool_result。
+ * "执行结果"是两类东西；`id` 与 `name` 同 `arguments`（JSON 对象）
+ * 分开后，`AgentLlmClient` 的实现才知道怎么把 `id` 回填进
+ * tool_result 消息对账。
  *
  * @param id        调用 ID（厂商返回的 tool_call id，回喂 observation 时必须带上）
  * @param name      工具名（须是 ToolRegistry 里注册过的名字）

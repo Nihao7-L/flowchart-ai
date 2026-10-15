@@ -5,16 +5,12 @@ import java.util.List;
 /**
  * agent 协议的消息
  *
- * 为什么不复用 `client.Message`：网关的 Message 是"纯文本消息"
- * （system / user / assistant / tool 四角色、只有 content）。而 agent 循环
- * 按厂商协议还需要三个字段 —— assistant 消息上的 `tool_calls`、
- * tool 消息上的 `tool_call_id` 与工具名。这些字段 step 3 接
- * OpenAI 兼容请求体时才真正序列化，现在先在类型上放好位置，
- * 避免 step 3 再回头改 `client.Message` 的构造口径。
+ * 比普通聊天消息多三个字段：assistant 消息上的 `tool_calls`、
+ * tool 消息上的 `tool_call_id` 与工具名 —— 厂商 tool_calls 协议
+ * 回喂观察结果时要靠它们对账。
  *
- * 与 `client.Message` 的关系：本类型是 agent 循环的内部账本，
- * `AgentLlmClient` 的实现负责把它翻译成厂商请求体；
- * system / user 角色的语义与网关 Message 一致。
+ * 本类型是 agent 循环的内部账本；`AgentLlmClient` 的实现
+ * （FailoverAgentClient）负责把它翻译成厂商请求体。
  */
 public record AgentMessage(
         String role,

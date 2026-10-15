@@ -25,7 +25,7 @@ import java.util.Set;
  * - agent 工具（submit_scene / validate_scene / update_elements）
  *   经 process / validateOnly 调用；
  *
- * - legacy 生成主循环（GenerationService）按步组合调用：
+ * - 生成编排层（GenerationService）按步组合调用：
  *   runPipeline + parseGate + validateAll + detectRewrite
  *   + emptySceneIssue —— 兜底语义（解析失败给图、不伪装成功）
  *   留在循环侧，判定逻辑只有这里一份。
@@ -118,7 +118,7 @@ public final class SceneGate {
         if (empty != null && issues.isEmpty()) {
             issues.add(empty);
         }
-        // 编辑保真：与 legacy 第 1 轮同口径 ——
+        // 编辑保真：只提醒一次 ——
         // 只做一次（首次提交），之后坚持重画就放行
         if (issues.isEmpty() && ctx.previousJson() != null
                 && !ctx.rewriteChecked()) {
@@ -142,7 +142,7 @@ public final class SceneGate {
      * 管线四环：bind → dedup → sanitize → claimFramesOnly。
      *
      * 输入不可解析时抛 RuntimeException，由调用方决定语义
-     * （agent 工具转修正 issue；legacy 主循环转兜底场景）——
+     * （agent 工具转修正 issue；编排层转兜底场景）——
      * 这里不吞异常、不把关，判定是后面 parseGate 的职责。
      */
     public String runPipeline(

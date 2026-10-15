@@ -1,6 +1,6 @@
 # reorganize-harness（结构重组）· 用 harness 分层治理代码散落
 
-> 状态：**执行中（2026-10-14 完成步骤 1-4、6、7 与步骤 5 的结构收口；遗留：双路径电池题对照 → 达标后 legacy 物理并入 AgentLoop）**  
+> 状态：**已完成（2026-10-15 全部步骤收口；legacy 生成路径经 4 题双路径对照达标后由用户拍板物理删除，agent 单路径收口）**  
 > 性质：跨模块结构治理（非单一 v2-N）。来源 = `m4-loop-engineering` + `m13-llm-gateway` + `m3-tools` + `m5-session` 的交叉项；本文件是它们共同的「装配形态」约定，**不替代**任何一份模块总计划，只定义零件怎么归位。  
 > 触发：用户 2026-10-14 反馈「代码东一些西一些、看不懂」，要求参照 `learn-claude-code`（Harness Engineering for Real Agents）的组织方式。  
 > 参照（learn-claude-code）：s01（agent loop = 一个 while + tool_use 驱动）、s02（TOOL_HANDLERS 派发表）、s09（跨会话 Memory）、s15（integrated harness = 多机制挂同一根循环）。  
@@ -11,7 +11,7 @@
 ## 一、元信息
 
 - 任务编号：跨模块结构重组（无独立 v2-N，因其横跨 m4/m13/m3/m5）
-- 状态：规划中
+- 状态：已完成（2026-10-15）
 - 创建：2026-10-14
 - 作者：agent（用户授权写规划文档）
 - 关联计划：`v2-55-agent-loop-core.md`（已落地的 ReAct 最小核）、`m13-llm-gateway.md`（故障转移/冷却）、`m3-tools.md`、`m5-session.md`
@@ -98,7 +98,7 @@ Harness = 工具(Tools) + 知识(Knowledge) + 上下文/记忆(Context) + 行动
 
 | 层（harness 零件）          | 现状散落处                                 | 目标归属                                                                     |
 | ---------------------- | ------------------------------------- | ------------------------------------------------------------------------ |
-| **唯一循环（极简核）**          | `AgentLoop` + `GenerationService` 双循环 | 只留 `AgentLoop`；legacy 降级为其「单发策略」分支                                       |
+| **唯一循环（极简核）**          | `AgentLoop` + `GenerationService` 双循环 | 只留 `AgentLoop`；legacy 已由用户拍板删除（2026-10-15）                            |
 | **工具 Tools（手）**        | `agent/tools/*`（已原子化）                 | 保留；新增 `planner` / `memory` 工具（归 m3）                                      |
 | **知识 Knowledge**       | `PromptService` + `context/` 双装配      | `PromptService` 独揽知识装配；`context/` 归位为「会话回放」                              |
 | **上下文/记忆 Context**     | `session/`（仅单会话）                      | `session/` + 新增跨轮 `MemoryStore`（归 m5）                                    |
@@ -158,7 +158,7 @@ io.github.nihaoljx.flowchart
 │   ├── transform/        # SceneBinder / SceneDeduper / SceneDrift / ScenePlanner / SceneSanitizer
 │   └── layout/           # ElkLayoutEngine / LayoutEngine / LayoutSpec / SceneLayout
 └── service/              # GenerationService 瘦身为编排层
-    ├── GenerationService.java    # 只做：选路(agent/legacy) + 落库 + 兜底纪律
+    ├── GenerationService.java    # 只做：驱动 AgentLoopService + 落库 + 兜底纪律
     ├── GenerationBudget.java     # 抽自 totalBudgetMs/planRound
     ├── GenerationEvents.java     # 抽自 onStep/onToolCall/briefArgs
     ├── SceneSeedBuilder.java     # 抽自 buildSeedScene/stampSchemaVersion/syntheticScene
@@ -173,7 +173,7 @@ io.github.nihaoljx.flowchart
 - **不重写校验器**：`GraphValidator` / `GeometryAudit` / `SceneGate` 只搬迁/收口，不重写判定逻辑。
 - **不引入新生成能力**：本次纯结构治理，不新增绘图能力。
 - **不动 `scene.schema.json` / 前端适配层**。
-- **不删 legacy 循环**：先降级为 fallback，双路径对照达标后再考虑移除（见步骤 5 验收）。
+- ~~**不删 legacy 循环**~~：原计划"先降级为 fallback，双路径对照达标后再移除"；2026-10-15 用户拍板「agent 只保留这一个路径」，4 题对照达标后 legacy 已物理删除（见步骤 5 执行记录）。
 
 ---
 
@@ -186,7 +186,7 @@ io.github.nihaoljx.flowchart
 
 ## 八、前置
 
-1. `v2-55` 步骤 4/5 完成：电池题 agent vs legacy 双路径对照，**确认 AgentLoop 可替代 legacy 且质量不劣**（指标入 activeLog）。
+1. ~~`v2-55` 步骤 4/5 完成：电池题 agent vs legacy 双路径对照~~：**已完成（legacy 删除前置验证）** —— 电商订单 / 中台架构+CI-CD 共 4 题双路径对照，AgentLoop 质量不劣（指标入 activeLog）。
 2. 门禁四绿：`mvn -o test` / checkstyle / tsc / `scene-smoke.mjs` 全过。
 3. 备份当前 `GenerationService.java` / `client/` / `graph/` 三处（动码前按规矩先另存，防 `.workbuddy/` 不可恢复）。
 
@@ -222,11 +222,12 @@ io.github.nihaoljx.flowchart
 - 验收：行为等价（双路径出图对比无差异）；单类降到可读规模（< ~1500 行）；门禁绿。
 - **执行记录**：四类已抽出（GenerationBudget 含 totalBudgetMs 防内联读数，DiagramController 改调 `GenerationBudget.totalBudgetMs()`）；GenerationService 1624 → 约 800 行。外部调用面零变化（`issueDigest` 保留包级委托，单测零改动）。
 
-### 步骤 5 · 双循环收口（⚠️ 结构收口已执行，物理并入留待电池题对照）
+### 步骤 5 · 双循环收口（✅ 已执行：2026-10-14 结构收口 + 2026-10-15 物理删除）
 
 - 范围：legacy 生成主循环降级为 `AgentLoop` 的「单发策略」分支；`v2-55` 遗留的「SceneGate 与 GenerationService 双份管线」二选一收口（谁存活删谁）。
 - 验收：flag 关闭时走单发分支、开启时走 agent；双路径电池题对照不劣化；移除死代码。
-- **执行记录（2026-10-14）**：**双份管线已收口** —— SceneGate 搬迁至 `graph/validate/`（判定逻辑单一真相源），拆成可组合分步：`runPipeline`（四环）+ `parseGate` + `validateAll` + `emptySceneIssue` + `detectRewrite`；GenerationService 按步委托（兜底语义留在循环侧：解析失败给图、不伪装成功），agent 三工具走 `process`/`validateOnly` 同一实现。判据：管线顺序、issue 文案、兜底纪律与收口前一致，333 个单测零回归。**遗留**（按风险登记"先对照达标再删"）：① 双路径电池题对照未跑（需真实 LLM 环境）② legacy 循环物理并入 AgentLoop 未做 —— flag 语义保持现状（关=legacy、开=agent），对照达标后再执行。
+- **执行记录（2026-10-14）**：**双份管线已收口** —— SceneGate 搬迁至 `graph/validate/`（判定逻辑单一真相源），拆成可组合分步：`runPipeline`（四环）+ `parseGate` + `validateAll` + `emptySceneIssue` + `detectRewrite`；GenerationService 按步委托（兜底语义留在循环侧：解析失败给图、不伪装成功），agent 三工具走 `process`/`validateOnly` 同一实现。判据：管线顺序、issue 文案、兜底纪律与收口前一致，333 个单测零回归。
+- **执行记录（2026-10-15）**：**legacy 物理删除，agent 单路径收口**（用户拍板「agent 只保留这一个路径」）。删除面：`GenerationService` 内 legacy 生成主循环 + `generate()` 分叉 + `chartflow.agent-loop.enabled` 开关；`llm/{LlmProvider, FailoverLlmProvider, OpenAiCompatibleProvider, LlmEffort, LlmFailureKind, Message}` 与 `session/{AssembleInput, ContextAssembler, ContextBudget, ConversationReplay}` 整类删除（agent 栈零引用）；`GenerationService` 1624 → 372 行（只留驱动 AgentLoopService + 落库 + 兜底纪律）。MemoryStore 记录点从 legacy 循环迁到 agent 监听器 `onToolResult`。删除前验证：电池题 4 题双路径对照达标。测试 333 → 281（删 legacy 专有用例），0 失败。
 
 ### 步骤 6 · 跨轮记忆层（✅ 已执行 2026-10-14，消费策略归 m5）
 
@@ -259,7 +260,7 @@ io.github.nihaoljx.flowchart
 | 风险                                | 等级          | 处置                                |
 | --------------------------------- | ----------- | --------------------------------- |
 | 冷却表单例在合并时语义被破坏 → 并发占位符回归          | 高（P0 级历史事故） | 步骤 1 合并后**必跑并发探针**；冷却表逻辑整段平移不重写   |
-| 双管线收口顺序错（先删 legacy 再发现 agent 有缺口） | 中           | 步骤 5 先做双路径对照达标，再删；保留 fallback 熔断  |
+| 双管线收口顺序错（先删 legacy 再发现 agent 有缺口） | 中           | ✅ 已消项：4 题双路径对照先达标、legacy 后删（2026-10-15） |
 | `graph/` 拆分 import 漏改             | 低           | 步骤 2 后强制 `scene-smoke.mjs` + 全量单测 |
 | `GenerationService` 抽取行为不等价       | 中           | 步骤 4 双路径出图字节/硬指标 diff 比对          |
 | 记忆层引入跨会话串味                        | 低           | 步骤 6 按 session 隔离 + 召回上限          |
@@ -268,8 +269,8 @@ io.github.nihaoljx.flowchart
 
 ## 十一、验收口径（逐条可验证）
 
-1. **单一 LLM 客户端栈**：`client/` 包不存在，`llm/` 是唯一「调模型」入口；grep `FailoverLlmProvider|AgentLlmClient` 仅命中 `llm/`。
-2. **循环唯一**：`AgentLoop` 是唯一的 `while` 生成循环；legacy 循环体不再独立存在（降级为分支）。
+1. **单一 LLM 客户端栈**：`client/` 包不存在，`llm/` 是唯一「调模型」入口；grep `FailoverLlmProvider` 零命中（类已删），`AgentLlmClient` 仅命中 `llm/`。
+2. **循环唯一**：`AgentLoop` 是唯一的 `while` 生成循环；legacy 循环体已物理删除（无分支、无开关）。
 3. **`graph/` 三层清晰**：`validate` / `transform` / `layout` 各司其职，无跨层类。
 4. **知识装配单点**：`PromptService` 是唯一 prompt 组装入口；`session/` 只回放不组装。
 5. **`GenerationService` 可读**：行数降到可审阅规模，职责仅为编排。
@@ -284,9 +285,9 @@ io.github.nihaoljx.flowchart
 
 | 场景 | 输入                | 期望                         |
 | -- | ----------------- | -------------------------- |
-| 正常 | 流程图需求（电池题 2）      | agent/legacy 双路径出图等价，硬指标达标 |
+| 正常 | 流程图需求（电池题 2）      | agent 单路径出图，硬指标达标（legacy 已删） |
 | 异常 | 3 路并发同名需求         | 无「候选均不可用」占位符（步骤 1 后）       |
-| 边界 | 超大型四层分区图          | 单发分支或 agent 多步均可出图，不超时     |
+| 边界 | 超大型四层分区图          | agent 多步出图，不超时（legacy 已删）     |
 | 回归 | `scene-smoke.mjs` | 契约字段 ↔ 前端白名单零差集            |
 
 ---
@@ -298,6 +299,7 @@ io.github.nihaoljx.flowchart
 - 更新 `m4` / `m13` / `m3` / `m5` 对应状态行（结构治理收口）；
 - `state/activeLog/<YYYY-MM-DD>.md` 追加带证据记录（命令 + 退出码 + 双路径 diff 结论）；
 - 改动交用户提交（git 写操作由人执行，约定式提交格式 `refactor: ...`）。
+- 注（2026-10-15）：状态行已改「完成」；移入 `state/completed/underway/` 与 git 提交由用户执行时一并处理。
 
 ---
 

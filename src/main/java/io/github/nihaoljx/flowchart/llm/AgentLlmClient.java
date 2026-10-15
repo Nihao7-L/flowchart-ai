@@ -6,13 +6,10 @@ import java.util.Map;
 /**
  * agent 循环对 LLM 的抽象
  *
- * 为什么不是 `LlmProvider`：现有网关只回纯文本，而 agent 循环
- * 需要 tool_calls 结构化返回。这层抽象让 AgentLoop 可以先拿
- * 桩实现做单测（step 1），真实实现（OpenAI 兼容 tool_calls 协议 +
- * 故障转移复用）在 step 3 接线时落到 `client` 包。
- *
- * 实现纪律（step 3 时生效）：超时 / 空内容 / 截断的处理必须原样
- * 复用 `FailoverLlmProvider` 的既有口径（70e501b 之后），不另起炉灶。
+ * 与普通聊天接口的区别：agent 循环需要 tool_calls 结构化返回
+ * （模型提议调哪个工具、参数是什么），纯文本聊天接口表达不了。
+ * 唯一实现是 FailoverAgentClient（OpenAI 兼容 tool_calls 协议 +
+ * 候选链故障转移）；测试可换桩实现，不让单测碰网络。
  */
 public interface AgentLlmClient {
 

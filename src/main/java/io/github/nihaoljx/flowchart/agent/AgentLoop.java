@@ -62,7 +62,7 @@ public final class AgentLoop {
      * @param deadlineMs   总预算截止时刻（epoch ms）
      * @return 终态（COMPLETED / PARTIAL）
      * @throws Exception LLM 调用的基础设施异常（网络等）—— 交调用方处置，
-     *                   与 legacy 管线"异常打穿到 generate() 统一兜底"同口径
+     *                   由 GenerationService 统一兜底，与本类无关
      */
     public AgentResult run(String systemBlock, String userRequest,
                            List<Map<String, Object>> userElements,
@@ -80,8 +80,8 @@ public final class AgentLoop {
     }
 
     /**
-     * 全参入口（步骤 3）：previousJson 非空 = 编辑模式，
-     * 场景闸门对首次提交跑改图保真检查（对齐 legacy 第 1 轮口径）。
+     * 全参入口：previousJson 非空 = 编辑模式，
+     * 场景闸门对首次提交跑改图保真检查（提醒一次，不是门禁）。
      */
     public AgentResult run(String systemBlock, String userRequest,
                            List<Map<String, Object>> userElements,

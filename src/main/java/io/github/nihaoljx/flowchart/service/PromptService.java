@@ -19,11 +19,11 @@ import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Prompt 内容服务（/ 路线2 重写； 补"编辑模式"； 拆静态/动态两块；
- *  静态层正文改为**直接读 md 文件**；同日补  编辑模式增量）
+ * Prompt 内容服务（拆静态/动态两块；静态层正文改为**直接读 md 文件**；
+ * 含编辑模式增量投喂）
  *
  * 静态层唯一正文来源 = `prompts/whiteboard/system-prompt.md`
- * （用户  「以 system-prompt.md 为准」； 合并掉
+ * （用户「以 system-prompt.md 为准」；合并掉
  * `system-prompt-large.md`，静态层从此只有这一份 md）。运行时**不再维护第二份
  * Java 硬编码文案** —— 改提示词只改那一份 md，从此不存在"两份文本互相漂移"。
  *
@@ -34,13 +34,15 @@ import java.util.concurrent.ConcurrentHashMap;
  *       "契约每轮由运行时注入"）。每轮完全不变，进 system 消息、且是
  *       KV-cache 的稳定前缀；
  *
- * - String) —— 当前场景 + 修改规则 + 用户需求（每轮变化，进 user 消息）。
- *       大图（> {@value #EDIT_INLINE_MAX_ELEMENTS} 元素）走  增量投喂：只给结构摘要，
+ * - buildUserBlock(String, String) —— 当前场景 + 修改规则 + 用户需求
+ *       （每轮变化，进 user 消息）。大图（>
+ *       {@value #EDIT_INLINE_MAX_ELEMENTS} 元素）走增量投喂：只给结构摘要，
  *       不再整份塞场景；
  *
  * - buildFixBlock(List) —— 修正轮追加的校验 issues。
  *
- * 装配由 `context.ContextAssembler` 负责（排序 / 裁剪 / 落盘）；本类只产出文案。
+ * 装配由调用方负责：agent 路径直取两块（system 进 AgentMessages 稳定前缀，
+ * user 块携带动态层），修正块由 AgentLoop 在提交未过时追加；本类只产出文案。
  *
  * 版本号等元数据**不进正文**（否则每轮前缀变化、KV-cache 失效）。
  */
@@ -850,43 +852,6 @@ public class PromptService {
                     .append("\n");
         }
         return fix.toString();
-    }
-
-    /**
-     * 单串等价入口（起仅供"整串 prompt"形态的调用方与测试使用）
-     *
- * 生产路径已改走 `context.ContextAssembler`（system / user 两条消息）。
-     * 本方法内部只是把 buildSystemBlock() 与
-     * String) 首尾相接 —— 因此
-     * **不存在第二份文案、不会漂移**，旧调用点与既有断言可原样保留。
-     *
-     * @param userText         用户在输入框里的原始需求
-     * @param currentSceneJson 会话当前模型的 JSON（新建图时传 null）
-     * @return 完整 prompt（= system 块 + user 块）
-     * @throws IOException 读资源文件失败
-     */
-    public String buildPrompt(String userText, String currentSceneJson) throws IOException {
-        return buildSystemBlock() + buildUserBlock(userText, currentSceneJson);
-    }
-
-    /**
-     * 单串等价入口：修正 prompt
-     *
- * = String) + buildFixBlock(List)。
-     *
-     * @param userText         原始用户需求
-     * @param issues           上一轮校验失败的 issue 列表
-     * @param currentSceneJson 会话当前模型的 JSON（新建图时传 null）
-     * @return 修正 prompt
-     * @throws IOException 读资源文件失败
-     */
-    public String buildFixPrompt(
-            String userText,
-            List<ValidationIssue> issues,
-            String currentSceneJson)
-            throws IOException {
-        return buildPrompt(userText, currentSceneJson)
-                + buildFixBlock(issues);
     }
 
     /**

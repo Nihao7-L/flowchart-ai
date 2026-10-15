@@ -13,7 +13,6 @@ import io.github.nihaoljx.flowchart.service.PromptService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -26,23 +25,19 @@ import io.github.nihaoljx.flowchart.llm.OpenAiToolClient;
 import io.github.nihaoljx.flowchart.llm.AgentResult;
 
 /**
- * Agent Loop 的 Spring 装配与运行入口（步骤 3）
+ * Agent Loop 的 Spring 装配与运行入口
  *
- * 何时存在：仅当 `chartflow.agent-loop.enabled=true` 时
- * 这个 bean 才被创建 —— `GenerationService` 用
- * `ObjectProvider` 可选注入，bean 不在 = legacy 管线原样服务。
- * 这是"feature flag 默认关、老管线保底"的落点。
+ * 这是**唯一**的生成路径：bean 恒被创建、由 GenerationService
+ * 直接注入，没有开关可退。
  *
- * 候选解析：密钥不在这里复制一份，从既有候选表
- * LlmProperties 里按 model id 挑（探针  验收 5 实测
- * glm / deepseek / grok 三家 tool_calls 全通过，表内随便选都安全）；
- * 配置留空则取 tier 最小者。刻意**单候选、无故障转移** —— 多候选
- * tool_calls 故障转移是 M13 网关的活，本步先把链路跑通。
+ * 候选解析：密钥不在这里复制一份，从 LlmProperties 候选表里按
+ * model id 挑（探针实测 glm / deepseek / grok 三家 tool_calls
+ * 全通过，表内随便选都安全），配置留空则取 tier 最小者。
+ * 全部可用候选按 tier 升序包进 FailoverAgentClient 做最小
+ * 故障转移 —— 实测单候选一步失败（如画大图遇 502）会拖垮
+ * 整次生成，可用性差。
  */
 @Service
-@ConditionalOnProperty(
-        name = "chartflow.agent-loop.enabled",
-        havingValue = "true")
 public class AgentLoopService {
 
     private static final Logger LOG =
@@ -70,8 +65,7 @@ public class AgentLoopService {
                         preferredModel);
         if (candidate == null) {
             throw new IllegalStateException(
-                    "chartflow.agent-loop.enabled=true 但候选表里"
-                            + "解析不出可用候选（preferredModel="
+                    "候选表里解析不出可用候选（preferredModel="
                             + preferredModel + "），请检查"
                             + " llm.candidates 配置");
         }
@@ -81,7 +75,7 @@ public class AgentLoopService {
                 validator, audit, drift, promptService);
         // 最小故障转移（实测补）：全部候选按 tier 包进
         // FailoverAgentClient —— 实测 glm 画大图 502，单候选
-        // 一步失败 = 整次兜底，可用性显著差于 legacy
+        // 一步失败 = 整次兜底，可用性差
         List<LlmProperties.Candidate> usable =
                 new ArrayList<>(llmProperties.getCandidates() == null
                         ? List.of() : llmProperties.getCandidates());

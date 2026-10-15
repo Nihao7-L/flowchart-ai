@@ -1,25 +1,20 @@
 package io.github.nihaoljx.flowchart.service;
 
-import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.servlet.mvc.method
         .annotation.SseEmitter;
 
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
 /**
  * 生成失败的兜底纪律（唯一出口）
  *
  * 收拢"这次生成没成，给用户看什么"的全部决策：
- * 兜底话术（fallbackOutcome）、issue 摘要（issueDigest）、
- * 兜底场景选材（fallbackScene）与下发收尾（deliverFallback）。
+ * 兜底话术（fallbackOutcome）、兜底场景选材（fallbackScene）
+ * 与下发收尾（deliverFallback）。
  *
  * 原则：**宁可给一张不完美的图，也不能给空画布** ——
  * 空白画布是这个产品能出的最高危事故。与之相对，
- * 真实后端故障（加载 schema 失败、组装修正消息失败）不走兜底：
+ * 真实后端故障（加载提示词资源失败）不走兜底：
  * 那种情况下后端自己出了问题，给一张假图只是把事故盖住，
  * 必须保持 error 语义。
  */
@@ -38,30 +33,6 @@ public class GenerationFallback {
      */
     private static final boolean DELIVER_LAST_PARSEABLE_ON_FAILURE = true;
 
-    /**
-     * 兜底说明里 issue 摘要的最大字符数
-     *
-     * issues 一多，全量拼出来能有两三千字 —— 那条说明会随 SSE 一起
-     * 推给前端进消息列表，撑爆它比少写点原因糟得多。只截摘要，
-     * 结论（"已把原来的图还给你，请把图形拆小后重试"）始终完整。
-     */
-    private static final int SUMMARY_MAX_LEN = 200;
-
-    /**
-     * 前端可见的校验明细上限
-     *
-     * 比 SUMMARY_MAX_LEN 宽一些：这条是发给"人"看的诊断信息
-     * （前端消息列表 + 排查日志），不是兜底话术的一部分。
-     * 一轮 30+ 个 issue 全量拼出来两三千字，会把通道撑爆。
-     */
-    private static final int DIGEST_MAX_LEN = 320;
-
-    /** 摘要里单个原因最多显示几个字（超了截断，否则一条长原因就吃满额度） */
-    private static final int DIGEST_REASON_CHARS = 18;
-
-    /** 摘要里最多列几类原因 */
-    private static final int DIGEST_TOP_REASONS = 3;
-
     /** 兜底场景选材依赖种子工位（空场景判定 / 版本盖章 / 占位合成） */
     private final SceneSeedBuilder seeds;
 
@@ -72,7 +43,7 @@ public class GenerationFallback {
     /**
      * 兜底说明里"图现在是什么状态"那半句
      *
-     * 四种兜底场景（超时 / LLM 调用失败 / 返回空白 / 多轮修不动）
+     * 两种兜底场景（LLM 调用失败 / agent 循环未通过校验）
      * 统一用它收尾，措辞刻意**中性**：早先写的是「已把原来的图还给你」，
      * 在编辑模式下会被读成"我刚画的图被你退回来了"，把一次"没改动成功"
      * 误读成"出了错"。实际发生的是**图原样没动**，所以这么说。
@@ -90,77 +61,9 @@ public class GenerationFallback {
     }
 
     /**
-     * 把一轮校验问题压成一行"能看懂主因"的摘要。
-     *
-     * 为什么归类而不是原样罗列：大图一轮 30+ 个 issue 里，真正的原因
-     * 往往只有两三类 —— 比如"箭头既给 start/end 又给 points"这一条就能
-     * 同时命中十几个元素。原样罗列时前 200 字全被同一个原因的不同元素
-     * 占满，看的人反而看不出主因是什么。
-     *
-     * 输出形如：
-     * `共 35 个问题，前三类: 箭头路径… x17 / group 只属… x9；例: elements[12] …`
-     *
-     * @param issues 本轮校验问题
-     * @return 单行摘要（长度受 DIGEST_MAX_LEN 约束）
-     */
-    public String issueDigest(List<ValidationIssue> issues) {
-        if (issues == null || issues.isEmpty()) {
-            return "0 个问题";
-        }
-        Map<String, Integer> byReason = new LinkedHashMap<>();
-        for (ValidationIssue issue : issues) {
-            byReason.merge(
-                    shorten(issue.reason(), DIGEST_REASON_CHARS),
-                    1, Integer::sum);
-        }
-        List<Map.Entry<String, Integer>> top = byReason.entrySet()
-                .stream()
-                .sorted((a, b) -> b.getValue() - a.getValue())
-                .limit(DIGEST_TOP_REASONS)
-                .toList();
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("共 ").append(issues.size())
-                .append(" 个问题，前三类: ");
-        for (int i = 0; i < top.size(); i++) {
-            if (i > 0) {
-                sb.append(" / ");
-            }
-            sb.append(top.get(i).getKey())
-                    .append(" x").append(top.get(i).getValue());
-        }
-        ValidationIssue first = issues.get(0);
-        sb.append("；例: ").append(first.field())
-                .append(' ').append(first.reason());
-        return sb.length() > DIGEST_MAX_LEN
-                ? sb.substring(0, DIGEST_MAX_LEN) + "…"
-                : sb.toString();
-    }
-
-    /** 只留前 n 个字符；null 当空串 */
-    private static String shorten(String s, int max) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= max ? s : s.substring(0, max);
-    }
-
-    /**
-     * 兜底说明里的摘要截断：超长截到 SUMMARY_MAX_LEN 加省略号，
-     * 结论部分始终完整
-     */
-    public String truncatedSummary(String digest) {
-        if (digest.length() > SUMMARY_MAX_LEN) {
-            return digest.substring(0, SUMMARY_MAX_LEN)
-                    + "…";
-        }
-        return digest;
-    }
-
-    /**
      * 构造兜底场景：**至少一个能画出来的元素**
      *
-     * 超时 / LLM 调用失败 / 返回空白 / 多轮修不动，都走这里选材。
+     * LLM 调用失败 / agent 循环未通过校验，都走这里选材。
      *
      * 两级降级，顺序不可换：
      *

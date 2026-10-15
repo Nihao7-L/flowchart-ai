@@ -17,7 +17,7 @@ import java.util.List;
 /**
  * agent 工具组的装配入口
  *
- * 生产装配（step 3 接线时在配置类里调用）：把 Spring 容器里
+ * 生产装配（由配置类调用）：把 Spring 容器里
  * 既有的校验链 bean 传进来，产出 ToolRegistry ——
  * "复用现有件、降格为工具与观察"的落点。
  */

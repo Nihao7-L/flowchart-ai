@@ -25,6 +25,17 @@ class PromptServiceTest {
         promptService = new PromptService();
     }
 
+    /**
+     * 测试期便捷入口：system 块 + user 块首尾相接。
+     * 生产路径已直取两块（agent 唯一路径，无"整串 prompt"调用方），
+     * 这里只为让既有的整串断言原样复用。
+     */
+    private String buildPrompt(String userText, String sceneJson)
+            throws IOException {
+        return promptService.buildSystemBlock()
+                + promptService.buildUserBlock(userText, sceneJson);
+    }
+
     @Test
     @DisplayName("buildPrompt 产物应包含用户需求文本")
     void testContainsUserText() throws IOException {
@@ -32,7 +43,7 @@ class PromptServiceTest {
         String userText = "用户输入账号密码 → 系统验证 → 成功进入首页";
 
         // When
-        String prompt = promptService.buildPrompt(userText, null);
+        String prompt = buildPrompt(userText, null);
 
         // Then
         assertTrue(prompt.contains(userText), "用户输入应出现在 prompt 中");
@@ -42,7 +53,7 @@ class PromptServiceTest {
     @DisplayName("buildPrompt 产物应内嵌 scene.schema.json 契约")
     void testEmbedsSchema() throws IOException {
         // When
-        String prompt = promptService.buildPrompt("随便画点东西", null);
+        String prompt = buildPrompt("随便画点东西", null);
 
         // Then
         assertTrue(prompt.contains("\"elements\""), "prompt 应内嵌 schema 的 elements 字段");
@@ -53,7 +64,7 @@ class PromptServiceTest {
     @DisplayName("buildPrompt 应列出全部元素 type（含 freedraw / image / embeddable / magicframe）")
     void testListsElementTypes() throws IOException {
         // When
-        String prompt = promptService.buildPrompt("画个架构示意", null);
+        String prompt = buildPrompt("画个架构示意", null);
 
         // Then
         String[] types = {
@@ -79,7 +90,7 @@ class PromptServiceTest {
     @DisplayName("buildPrompt 应指导箭头优先用 start/end 绑定")
     void testArrowBindingGuidance() throws IOException {
         // When
-        String prompt = promptService.buildPrompt("把 A 连到 B", null);
+        String prompt = buildPrompt("把 A 连到 B", null);
 
         // Then：应同时提到 start 与 end 两种绑定键
         assertTrue(prompt.contains("start"), "应指导 arrow 用 start 绑定");
@@ -90,8 +101,8 @@ class PromptServiceTest {
     @DisplayName("schema 缓存：同一输入两次调用结果一致")
     void testSchemaCache() throws IOException {
         // When：同一输入调用两次
-        String prompt1 = promptService.buildPrompt("缓存测试", null);
-        String prompt2 = promptService.buildPrompt("缓存测试", null);
+        String prompt1 = buildPrompt("缓存测试", null);
+        String prompt2 = buildPrompt("缓存测试", null);
 
         // Then：结果应一致（schema 缓存生效，不产生额外随机性）
         assertEquals(prompt1, prompt2, "同一输入两次调用结果应一致");
@@ -115,8 +126,7 @@ class PromptServiceTest {
                 + "\"width\":100,\"height\":60}]}";
 
         // When
-        String prompt = promptService
-                .buildPrompt("删掉 n1", current);
+        String prompt = buildPrompt("删掉 n1", current);
 
         // Then
         assertTrue(prompt.contains(current),
@@ -150,7 +160,7 @@ class PromptServiceTest {
                 + "\"width\":100,\"height\":60}]}";
 
         // When
-        String prompt = promptService.buildPrompt("再画一只猪", current);
+        String prompt = buildPrompt("再画一只猪", current);
 
         // Then
         assertTrue(prompt.contains("再画一个 X"),
@@ -183,8 +193,7 @@ class PromptServiceTest {
                 + "\"endId\":\"n2\"}]}";
 
         // When
-        String prompt = promptService
-                .buildPrompt("删掉 n2", model);
+        String prompt = buildPrompt("删掉 n2", model);
 
         // Then：用户手绘要出现，且明确要求"别重复画"
         assertTrue(prompt.contains("用户手工添加的内容"),
@@ -218,8 +227,7 @@ class PromptServiceTest {
     @DisplayName("md 提示词应含分组 / 画框约束（v10.9.0 起不再断言阈值与「逐字相同」）")
     void testModuleGroupingGuidance() throws IOException {
         // When
-        String prompt = promptService
-                .buildPrompt("画一个电商微服务架构图", null);
+        String prompt = buildPrompt("画一个电商微服务架构图", null);
 
         // Then
         assertTrue(prompt.contains("group"),
@@ -236,7 +244,7 @@ class PromptServiceTest {
     @Test
     @DisplayName("md 提示词必须列出 RelationCatalog 的全部 relation（单一来源不漂移）")
     void testAllRelationsListed() throws IOException {
-        String prompt = promptService.buildPrompt("画个图", null);
+        String prompt = buildPrompt("画个图", null);
         for (String rel : RelationCatalog.ALL_RELATIONS) {
             assertTrue(prompt.contains(rel), "md 应提及 relation: " + rel);
         }
@@ -251,7 +259,7 @@ class PromptServiceTest {
                 + "\"width\":100,\"height\":60}]}";
 
         assertFalse(
-                promptService.buildPrompt("删掉 n1", current)
+                buildPrompt("删掉 n1", current)
                         .contains("用户手工添加的内容"));
     }
 
@@ -260,10 +268,10 @@ class PromptServiceTest {
     void testBlankSceneFallsBackToCreateMode()
             throws IOException {
         assertFalse(
-                promptService.buildPrompt("画个图", null)
+                buildPrompt("画个图", null)
                         .contains("修改规则"));
         assertFalse(
-                promptService.buildPrompt("画个图", "")
+                buildPrompt("画个图", "")
                         .contains("修改规则"));
     }
 
@@ -279,7 +287,7 @@ class PromptServiceTest {
     @DisplayName("v2-42: >阈值走结构摘要，骨架全量列出 id/type/几何")
     void testCompactModeForLargeScene() throws IOException {
         int n = PromptService.EDIT_INLINE_MAX_ELEMENTS + 1;
-        String prompt = promptService.buildPrompt(
+        String prompt = buildPrompt(
                 "把订单服务改成支付服务", bigScene(n));
 
         assertTrue(prompt.contains("结构摘要"),
@@ -299,7 +307,7 @@ class PromptServiceTest {
     @Test
     @DisplayName("v2-42: 阈值边界 —— 恰好等于阈值仍整份贴出（小图行为零漂移）")
     void testFullDumpAtThreshold() throws IOException {
-        String prompt = promptService.buildPrompt(
+        String prompt = buildPrompt(
                 "删掉 n1",
                 bigScene(PromptService.EDIT_INLINE_MAX_ELEMENTS));
 
@@ -323,7 +331,7 @@ class PromptServiceTest {
         sb.append("{\"id\":\"e1\",\"type\":\"arrow\",\"start\":{\"id\":\"n1\"},"
                 + "\"end\":{\"id\":\"n2\"},\"label\":{\"text\":\"调用\"}}]}");
 
-        String prompt = promptService.buildPrompt("把「订单服务」改名", sb.toString());
+        String prompt = buildPrompt("把「订单服务」改名", sb.toString());
 
         assertTrue(prompt.contains("你可能要改的元素"),
                 "点名元素应有完整定义段");

@@ -6,7 +6,7 @@ import java.util.List;
 /**
  * agent 循环的消息账本（，learn-claude-code s01 的 messages[]）
  *
- * 与 legacy 管线的本质区别：一份消息列表从头追加到尾，模型天然
+ * 核心纪律：一份消息列表从头追加到尾，模型天然
  * 看见自己上一轮干了什么（Manus"保留错误"、12-factor#9 统一执行态）。
  * 两条纪律在这里强制：
  *

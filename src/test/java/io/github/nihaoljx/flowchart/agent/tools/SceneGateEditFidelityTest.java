@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
 
 /**
- * SceneGate 编辑保真检查（v2-55 步骤 3 补）——
+ * SceneGate 编辑保真检查 ——
  * 锁死三条：全换 id 拦下、正常小改放行、只拦首次提交。
  */
 class SceneGateEditFidelityTest {
