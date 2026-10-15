@@ -35,7 +35,7 @@ public final class AgentTools {
      * @param binder        场景绑定器（现有 bean）
      * @param deduper       场景去重器（现有 bean）
      * @param sanitizer     宽容归一化器（现有 bean）
-     * @param planner       场景规划器（只用 claimFramesOnly，现有 bean）
+     * @param planner       场景规划器（分区排版 + claimFramesOnly，现有 bean）
      * @param validator     结构校验器（现有 bean）
      * @param audit         几何体检（现有 bean）
      * @param drift         改图保真（现有 bean；编辑模式首次提交用）
@@ -52,7 +52,7 @@ public final class AgentTools {
                 binder, deduper, sanitizer, planner,
                 validator, audit, drift);
         List<AgentTool> tools = List.of(
-                new SubmitSpecTool(gate, layoutEngine),
+                new SubmitSpecTool(gate, layoutEngine, planner),
                 new SubmitSceneTool(gate),
                 new UpdateElementsTool(gate),
                 new ValidateSceneTool(gate),

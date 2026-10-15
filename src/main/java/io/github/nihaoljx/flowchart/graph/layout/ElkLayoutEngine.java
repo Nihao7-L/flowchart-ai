@@ -163,6 +163,41 @@ public class ElkLayoutEngine implements LayoutEngine {
                     < LayoutSpec.aspectPenalty(down[2], down[3])) {
                 topDown = false;
                 chosen = right;
+            } else if (LayoutSpec.aspectOutOfRange(down[2], down[3])
+                    && LayoutSpec.aspectOutOfRange(
+                            right[2], right[3])) {
+                // 双向都出区间（链状/树形图）：换向只是转置包围盒，
+                // 长宽比判据永远救不了。实测 12 图验收 10_topology /
+                // 11_mindmap 排成竖条（0.14 长宽比）—— 渲染视口是
+                // 横屏，高度决定缩放下限，竖条最伤；取更宽的一侧
+                // （右包围盒更矮 = 更宽），至少与屏幕同向
+                if (right[3] < down[3]) {
+                    topDown = false;
+                    chosen = right;
+                    // RIGHT 那一跑的坐标已是最新，无需重跑
+                    snapAll(movable);
+                    if (!frozen.isEmpty()) {
+                        shiftToFreeSlot(movable, frozen);
+                    }
+                    writeBack(movable);
+                    LOG.info("ELK 布局完成：{} 个图形（冻结 {}），"
+                                    + "主方向 {}（双向出区间取宽），"
+                                    + "包围盒 {}x{}",
+                            movable.size(), frozen.size(), "自左而右",
+                            Math.round(chosen[2]),
+                            Math.round(chosen[3]));
+                    return objectMapper.writeValueAsString(root);
+                }
+                // DOWN 已更宽，坐标就是最新，直接落
+                snapAll(movable);
+                writeBack(movable);
+                LOG.info("ELK 布局完成：{} 个图形（冻结 {}），"
+                                + "主方向 {}（双向出区间取宽），"
+                                + "包围盒 {}x{}",
+                        movable.size(), frozen.size(), "自上而下",
+                        Math.round(chosen[2]),
+                        Math.round(chosen[3]));
+                return objectMapper.writeValueAsString(root);
             } else {
                 // RIGHT 那一跑把坐标覆盖了，重跑 DOWN 取回
                 runElk(movable, movableEdges, width, gap, siblingGap,

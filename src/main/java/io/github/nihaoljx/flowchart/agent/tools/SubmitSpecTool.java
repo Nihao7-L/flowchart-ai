@@ -5,8 +5,10 @@ import io.github.nihaoljx.flowchart.llm.Observation;
 import io.github.nihaoljx.flowchart.llm.ToolContext;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutSpec;
+import io.github.nihaoljx.flowchart.graph.validate.RelationCatalog;
 import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
 import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
+import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -55,12 +57,32 @@ public final class SubmitSpecTool implements AgentTool {
     private static final Set<String> SHAPE_TYPES =
             Set.of("rectangle", "ellipse", "diamond");
 
+    /**
+     * 分区配色盘（Excalidraw 官方浅色系）。spec 不让模型挑颜色 ——
+     * 配色是确定性代码按分组序号给的（2026-10-15 渲染验收：无样式的
+     * 黑白框被评「和屎没有区别」，而旧坐标路径的观感优势恰恰是模型
+     * 直画时自带的配色；把配色从模型手里拿走，与坐标同理）。
+     */
+    private static final String[] PALETTE = {
+        "#a5d8ff", "#b2f2bb", "#ffec99", "#ffc9c9",
+        "#d0bfff", "#ffd8a8", "#99e9f2", "#eebefa",
+    };
+
+    /** frame 标题的最大长度（与 ScenePlanner.MAX_GROUP_NAME 同口径） */
+    private static final int MAX_GROUP_NAME = 24;
+
+    /** frame 包住成员时的四周留白（LayoutSpec.MODULE_PADDING 同源） */
+    private static final double FRAME_PADDING = 40.0;
+
     private final SceneGate gate;
     private final LayoutEngine layoutEngine;
+    private final ScenePlanner planner;
 
-    public SubmitSpecTool(SceneGate gate, LayoutEngine layoutEngine) {
+    public SubmitSpecTool(SceneGate gate,
+            LayoutEngine layoutEngine, ScenePlanner planner) {
         this.gate = gate;
         this.layoutEngine = layoutEngine;
+        this.planner = planner;
     }
 
     @Override
@@ -72,27 +94,41 @@ public final class SubmitSpecTool implements AgentTool {
     public String description() {
         return "以语义方式提交图表（结构化图表的首选，推荐）。"
                 + "只描述节点(nodes)与连线(edges)，不用给任何坐标 —— "
-                + "坐标由后端布局引擎自动计算。适用：流程图/架构图/"
-                + "时序图/组织架构/思维导图/状态图等。自由画（涂鸦/海报/"
-                + "摆位类）才用 submit_scene。";
+                + "坐标由后端布局引擎自动计算。节点可标 group 模块名"
+                + "（自动分区、配色、画框），连线可标 relation 关系语义"
+                + "（自动定线型与箭头）。适用：流程图/架构图/组织架构/"
+                + "思维导图/状态图等。自由画（涂鸦/海报/摆位类）"
+                + "才用 submit_scene。";
     }
 
     @Override
     public Map<String, Object> parametersSchema() {
         Map<String, Object> node = new LinkedHashMap<>();
         node.put("type", "object");
-        node.put("properties", Map.of(
-                "id", Map.of("type", "string"),
-                "label", Map.of("type", "string"),
-                "type", Map.of("type", "string",
-                        "enum", List.of(SHAPE_TYPES))));
+        Map<String, Object> nodeProps = new LinkedHashMap<>();
+        nodeProps.put("id", Map.of("type", "string"));
+        nodeProps.put("label", Map.of("type", "string"));
+        nodeProps.put("type", Map.of("type", "string",
+                "enum", List.of(SHAPE_TYPES)));
+        nodeProps.put("group", Map.of("type", "string",
+                "description", "模块/分区名（可选）。同一 group 的节点"
+                        + "会被自动分区、配色并框进同名画框；架构图的"
+                        + "分层（接入层/服务层…）务必标注"));
+        node.put("properties", nodeProps);
         node.put("required", List.of("id", "label"));
         Map<String, Object> edge = new LinkedHashMap<>();
         edge.put("type", "object");
-        edge.put("properties", Map.of(
-                "from", Map.of("type", "string"),
-                "to", Map.of("type", "string"),
-                "label", Map.of("type", "string")));
+        Map<String, Object> edgeProps = new LinkedHashMap<>();
+        edgeProps.put("from", Map.of("type", "string"));
+        edgeProps.put("to", Map.of("type", "string"));
+        edgeProps.put("label", Map.of("type", "string"));
+        edgeProps.put("relation", Map.of("type", "string",
+                "enum", RelationCatalog.ALL_RELATIONS.stream()
+                        .sorted().toList(),
+                "description", "关系语义（可选）：flow 调用流/"
+                        + "data 数据流/async 异步/dependency 依赖/"
+                        + "inherit 继承/one-to-many 等，决定线型与箭头"));
+        edge.put("properties", edgeProps);
         edge.put("required", List.of("from", "to"));
         Map<String, Object> spec = new LinkedHashMap<>();
         spec.put("type", "object");
@@ -147,8 +183,14 @@ public final class SubmitSpecTool implements AgentTool {
             return fail(issues);
         }
         String scene = buildScene(nodeSpecs, edgeSpecs);
-        String laidOut = layoutEngine.layout(scene, Set.of());
-        SceneGate.Outcome out = gate.process(laidOut, ctx);
+        // 分区排版（ScenePlanner.arrange）：模块内交给布局引擎、
+        // 模块间网格打包、relation 编译成线型/箭头 —— 机制现成，
+        // 此前 submit_spec 直接调 layoutEngine 绕过了它（12 图渲染
+        // 验收「除 07 全是屎」的根因之一：分区与线型语义全被丢弃）
+        String laidOut = planner.arrange(
+                scene, layoutEngine, Set.of());
+        String framed = addGroupFrames(laidOut, nodeSpecs);
+        SceneGate.Outcome out = gate.process(framed, ctx);
         if (!out.parseable()) {
             return Observation.fail(
                     "场景读不通，未受理",
@@ -203,7 +245,9 @@ public final class SubmitSpecTool implements AgentTool {
                     "允许值: " + SHAPE_TYPES));
             return;
         }
-        nodeSpecs.put(id, new NodeSpec(id, label, type));
+        nodeSpecs.put(id, new NodeSpec(
+                id, label, type,
+                node.path("group").asText(null)));
     }
 
     private void collectEdge(JsonNode edge, int index,
@@ -240,7 +284,8 @@ public final class SubmitSpecTool implements AgentTool {
             return;
         }
         edgeSpecs.add(new EdgeSpec(from, to,
-                edge.path("label").asText(null)));
+                edge.path("label").asText(null),
+                edge.path("relation").asText(null)));
     }
 
     // ==================== spec → 场景 JSON ====================
@@ -258,6 +303,15 @@ public final class SubmitSpecTool implements AgentTool {
         List<String> labels = nodeSpecs.values().stream()
                 .map(NodeSpec::label).toList();
         double width = LayoutSpec.nodeWidth(labels);
+        // 分组配色：按分组首次出现的顺序取色盘（确定性，可单测）
+        Map<String, String> colorByGroup = new LinkedHashMap<>();
+        for (NodeSpec node : nodeSpecs.values()) {
+            String group = normalizedGroup(node.group());
+            if (group != null && !colorByGroup.containsKey(group)) {
+                colorByGroup.put(group,
+                        PALETTE[colorByGroup.size() % PALETTE.length]);
+            }
+        }
         for (NodeSpec node : nodeSpecs.values()) {
             ObjectNode shape = elements.addObject();
             shape.put("id", node.id());
@@ -269,6 +323,13 @@ public final class SubmitSpecTool implements AgentTool {
             shape.put("width", size[0]);
             shape.put("height", size[1]);
             shape.putObject("label").put("text", node.label());
+            String group = normalizedGroup(node.group());
+            if (group != null) {
+                shape.put("group", group);
+                shape.put("backgroundColor",
+                        colorByGroup.get(group));
+                shape.put("fillStyle", "solid");
+            }
         }
         Set<String> usedIds = new HashSet<>(nodeSpecs.keySet());
         int index = 0;
@@ -283,6 +344,10 @@ public final class SubmitSpecTool implements AgentTool {
             if (edge.label() != null && !edge.label().isBlank()) {
                 arrow.putObject("label").put("text", edge.label());
             }
+            if (edge.relation() != null
+                    && !edge.relation().isBlank()) {
+                arrow.put("relation", edge.relation());
+            }
             index++;
         }
         ObjectNode root = MAPPER.createObjectNode();
@@ -293,6 +358,129 @@ public final class SubmitSpecTool implements AgentTool {
             throw new IllegalStateException(
                     "spec 场景序列化失败: " + e.getMessage(), e);
         }
+    }
+
+    /** 空白分组名归一为 null（无分组） */
+    private static String normalizedGroup(String group) {
+        if (group == null || group.isBlank()) {
+            return null;
+        }
+        String trimmed = group.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    /**
+     * 按分组合成画框（frame）：bbox 包住同组成员、name = 组名、
+     * children = 成员 id。放在元素数组最前（z 序最底，框压在成员下面）。
+     *
+     * <p>为什么在这里合成而不是让模型给：模型填 frame 几何从来填不准
+     * （旧路径实测），而 bbox 由布局后的真实坐标算出，天然贴身。
+     * ≥2 个分组才画 —— 单组没有「分区」可言。ScenePlanner 的
+     * claimFramesOnly（gate 管线内）会按名字把框认领给模块并按
+     * 其成员口径重填 children，与此处的 id 集合一致。
+     */
+    private String addGroupFrames(
+            String laidOut, Map<String, NodeSpec> nodeSpecs) {
+        try {
+            JsonNode root = MAPPER.readTree(laidOut);
+            JsonNode elementsNode = root.get("elements");
+            if (elementsNode == null || !elementsNode.isArray()) {
+                return laidOut;
+            }
+            // 分组成员（首次出现序）与已有 id 集合
+            Map<String, List<String>> members = new LinkedHashMap<>();
+            Set<String> usedIds = new HashSet<>();
+            for (JsonNode el : elementsNode) {
+                String id = el.path("id").asText(null);
+                if (id != null) {
+                    usedIds.add(id);
+                }
+                String group = normalizedGroup(
+                        el.path("group").asText(null));
+                if (group != null && id != null) {
+                    members.computeIfAbsent(
+                            group, k -> new ArrayList<>()).add(id);
+                }
+            }
+            if (members.size() < 2) {
+                return laidOut;
+            }
+            // 每组 bbox
+            Map<String, double[]> boxes = new LinkedHashMap<>();
+            for (JsonNode el : elementsNode) {
+                String group = normalizedGroup(
+                        el.path("group").asText(null));
+                if (group == null
+                        || !members.containsKey(group)
+                        || !el.hasNonNull("x")
+                        || !el.hasNonNull("y")
+                        || !el.hasNonNull("width")
+                        || !el.hasNonNull("height")) {
+                    continue;
+                }
+                double x = el.path("x").asDouble();
+                double y = el.path("y").asDouble();
+                double w = el.path("width").asDouble();
+                double h = el.path("height").asDouble();
+                double[] box = boxes.get(group);
+                if (box == null) {
+                    boxes.put(group, new double[] {x, y, x + w, y + h});
+                } else {
+                    box[0] = Math.min(box[0], x);
+                    box[1] = Math.min(box[1], y);
+                    box[2] = Math.max(box[2], x + w);
+                    box[3] = Math.max(box[3], y + h);
+                }
+            }
+            ArrayNode frames = MAPPER.createArrayNode();
+            int index = 0;
+            for (Map.Entry<String, List<String>> entry
+                    : members.entrySet()) {
+                double[] box = boxes.get(entry.getKey());
+                if (box == null) {
+                    continue;
+                }
+                String frameId = "frame_" + index;
+                while (usedIds.contains(frameId)) {
+                    frameId = frameId + "_x";
+                }
+                usedIds.add(frameId);
+                ObjectNode frame = frames.addObject();
+                frame.put("id", frameId);
+                frame.put("type", "frame");
+                frame.put("name", truncate(entry.getKey()));
+                frame.put("x", snap(box[0] - FRAME_PADDING));
+                frame.put("y", snap(box[1] - FRAME_PADDING));
+                frame.put("width",
+                        snap(box[2] + FRAME_PADDING)
+                                - snap(box[0] - FRAME_PADDING));
+                frame.put("height",
+                        snap(box[3] + FRAME_PADDING)
+                                - snap(box[1] - FRAME_PADDING));
+                ArrayNode children = frame.putArray("children");
+                entry.getValue().forEach(children::add);
+                index++;
+            }
+            // 拼新数组：frames 在最前（z 序最底）
+            ArrayNode merged = MAPPER.createArrayNode();
+            merged.addAll(frames);
+            elementsNode.forEach(merged::add);
+            ((ObjectNode) root).set("elements", merged);
+            return MAPPER.writeValueAsString(root);
+        } catch (Exception e) {
+            // 画框只是观感件，失败不拦生成
+            return laidOut;
+        }
+    }
+
+    private static String truncate(String name) {
+        return name.length() <= MAX_GROUP_NAME
+                ? name : name.substring(0, MAX_GROUP_NAME);
+    }
+
+    private static double snap(double value) {
+        return Math.round(value / LayoutSpec.GRID)
+                * LayoutSpec.GRID;
     }
 
     /** 箭头 id 避让节点 id（元素 id 必须全局唯一） */
@@ -330,11 +518,13 @@ public final class SubmitSpecTool implements AgentTool {
         return node;
     }
 
-    /** spec 里的一个节点（id + 文字 + 形状，无任何几何） */
-    private record NodeSpec(String id, String label, String type) {
+    /** spec 里的一个节点（id + 文字 + 形状 + 可选模块名，无几何） */
+    private record NodeSpec(
+            String id, String label, String type, String group) {
     }
 
-    /** spec 里的一条连线（起止节点 id + 可选文字） */
-    private record EdgeSpec(String from, String to, String label) {
+    /** spec 里的一条连线（起止节点 id + 可选文字 + 可选关系语义） */
+    private record EdgeSpec(
+            String from, String to, String label, String relation) {
     }
 }
