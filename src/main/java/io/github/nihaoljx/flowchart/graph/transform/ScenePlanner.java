@@ -302,7 +302,12 @@ public class ScenePlanner {
         matchFrames(root, elements);
         // 有 frame 也要进分区：否则 frame 会留在 LLM 给的旧位置、成员却被重排到别处
         // （恰好 15 个图形时 15>MODULE_THRESHOLD 不成立，会漏掉带 frame 的图）
-        boolean active = (nodes.size() > MODULE_THRESHOLD || hasFrame(elements))
+        // LLM 显式标注的 group 也是强意图（2026-10-15 regress_arch 实测）：
+        // 10 个图形 3 组显式标注被 MODULE_THRESHOLD 拦住 → 全局排版 →
+        // 「支付服务」被排进数据层 bbox，画框罩住别人的成员。显式分组
+        // 直通分区排版（模块内独立布局 + 网格打包，天然不穿插）
+        boolean active = (nodes.size() > MODULE_THRESHOLD
+                || hasFrame(elements) || !grouped.isEmpty())
                 && moduleCount >= 2;
         return new Partition(
                 root, elements, nodes, active, moduleCount);

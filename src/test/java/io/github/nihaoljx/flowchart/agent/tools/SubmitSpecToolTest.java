@@ -85,8 +85,8 @@ class SubmitSpecToolTest {
     }
 
     @Test
-    @DisplayName("非菱形的直线边只带绑定不带 points，label 走 {\"text\":...} 对象形态")
-    void arrowsBindWithoutGeometry() throws Exception {
+    @DisplayName("绑定边一律由引擎写回路由（3 点起），直线边不再留给前端重算")
+    void straightEdgesGetEngineRoute() throws Exception {
         Observation obs = submit("""
                 {"nodes":[
                   {"id":"a","label":"甲","type":"rectangle"},
@@ -107,12 +107,15 @@ class SubmitSpecToolTest {
         assertNotNull(arrow, "应有箭头");
         assertEquals("a", arrow.path("start").path("id").asText());
         assertEquals("b", arrow.path("end").path("id").asText());
-        // 直线边（无拐点）不带 points：几何由前端按绑定推导
-        // （锚点边缘交点）；有拐点的回边才由引擎写回真折线 ——
-        // 见 backEdgeGetsBendPoints 与 SceneSanitizer 的
-        // "绑定箭头只留 ≥3 点折线"口径
-        assertTrue(!arrow.has("points"),
-                "非菱形的直线绑端点箭头不应带 points");
+        // 2026-10-15 二次改口径：回归实测前端重算分支 5 条箭头端点
+        // 悬空 70~437px（ELK 写回的吸附分支 0 悬空）—— 直线边一律
+        // 由引擎接管，补中点成 3 点共线折线（≥3 存活 SceneSanitizer）
+        assertTrue(arrow.has("points"),
+                "直线绑定边也应由引擎写回 points，实际: " + arrow);
+        assertEquals(3, arrow.path("points").size(),
+                "直线路由应补中点成 3 点");
+        assertTrue(arrow.has("x") && arrow.has("y"),
+                "写回时应一并落 x/y（首点绝对坐标）");
         assertEquals("流转", arrow.path("label").path("text").asText());
     }
 

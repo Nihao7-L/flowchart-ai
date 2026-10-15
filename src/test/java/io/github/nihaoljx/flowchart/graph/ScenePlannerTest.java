@@ -96,6 +96,40 @@ class ScenePlannerTest {
     // ==================== 分区行为 ====================
 
     @Test
+    @DisplayName("LLM 显式标注分组的小图（< 阈值）：分区也必须生效（模块互不重叠）")
+    void explicitGroupActivatesPartitionBelowThreshold() throws Exception {
+        // 2026-10-15 regress_arch 回归：10 个图形 3 组显式标注被
+        // MODULE_THRESHOLD 拦住 → 全局排版 → 「支付服务」落进数据层
+        // bbox，画框罩住别人的成员。显式分组是强意图，不该受
+        // "图形多才分区"的启发式限制
+        List<String> elements = new ArrayList<>();
+        String[] groups = {"接入层", "服务层", "数据层"};
+        String[] prefixes = {"a", "s", "d"};
+        for (int g = 0; g < groups.length; g++) {
+            for (int i = 0; i < 2; i++) {
+                elements.add(rect(prefixes[g] + i,
+                        groups[g] + i, quote(groups[g])));
+            }
+        }
+        elements.add(arrow("x1", "a0", "s0"));
+        elements.add(arrow("x2", "s0", "d0"));
+        String laid = planner.arrange(
+                sceneOf(elements.toArray(new String[0])),
+                engine, Set.of());
+        Map<String, double[]> boxes = moduleBoxes(laid);
+        assertEquals(3, boxes.size(), "三个显式分组都应参与分区");
+        List<String> names = new ArrayList<>(boxes.keySet());
+        for (int i = 0; i < names.size(); i++) {
+            for (int j = i + 1; j < names.size(); j++) {
+                assertFalse(overlaps(boxes.get(names.get(i)),
+                                boxes.get(names.get(j))),
+                        "模块「" + names.get(i) + "」与「" + names.get(j)
+                                + "」的包围盒相叠（穿插复现）");
+            }
+        }
+    }
+
+    @Test
     @DisplayName("多模块：同模块成员聚成一块，模块之间互不重叠")
     void modulesArePackedApart() throws Exception {
         String laid = planner.arrange(modularScene(), engine, Set.of());
@@ -113,13 +147,16 @@ class ScenePlannerTest {
     }
 
     @Test
-    @DisplayName("多模块：整体长宽比落在 [0.5, 2]（竖排一根窄条的问题已解）")
+    @DisplayName("多模块：整体长宽比落在 [0.5, 2.5]（竖排一根窄条的问题已解）")
     void overallAspectIsReasonable() throws Exception {
         String laid = planner.arrange(modularScene(), engine, Set.of());
         double[] box = shapeBounds(laid);
         double aspect = (box[2] - box[0]) / (box[3] - box[1]);
-        assertTrue(aspect >= 0.5 && aspect <= 2.0,
-                "长宽比应落在 [0.5, 2]，实际 " + aspect);
+        // 2026-10-15 口径放宽 [0.5,2]→[0.5,2.5]：显式分组直通分区后，
+        // 3 模块横排打包实测 2.07 —— 分区块的横排是合理形态，这条
+        // 判据要防的是"文字看不清的病态窄条"（实测 0.14 / 7+）
+        assertTrue(aspect >= 0.5 && aspect <= 2.5,
+                "长宽比应落在 [0.5, 2.5]，实际 " + aspect);
     }
 
     @Test
