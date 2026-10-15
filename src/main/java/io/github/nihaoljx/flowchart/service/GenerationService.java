@@ -170,9 +170,17 @@ public class GenerationService {
         GenerationEvents.sendEvent(emitter, "thinking",
                 "Agent 模式（候选 " + agent.candidateName()
                         + "），messages 单线积累 + 工具循环");
+        // 步级可观测（2026-10-15 gen30 事故补课）：此前生成中途
+        // 控制台零日志，一次远端挂死 27 分钟肉眼只看到"没产出"。
+        // 每步开始打一行已用时，之后哪一步耗时异常一眼可见。
+        final long runStart = System.currentTimeMillis();
         AgentLoopListener listener = new AgentLoopListener() {
             @Override
             public void onStep(int step, int maxSteps) {
+                long elapsed = (System.currentTimeMillis()
+                        - runStart) / 1000;
+                LOG.info("Agent 第 {}/{} 步开始（已用时 {}s）",
+                        step, maxSteps, elapsed);
                 GenerationEvents.sendEvent(emitter, "thinking",
                         "Agent 第 " + step + "/" + maxSteps
                                 + " 步思考中...");
@@ -226,9 +234,10 @@ public class GenerationService {
             return;
         }
 
-        LOG.info("Agent run 终态 {} steps={} reason={}",
+        LOG.info("Agent run 终态 {} steps={} reason={} 用时={}s",
                 result.status(), result.steps(),
-                result.reason());
+                result.reason(),
+                (System.currentTimeMillis() - runStart) / 1000);
         if (result.status() == AgentResult.Status.COMPLETED
                 && result.sceneJson() != null) {
             String json = seedBuilder.stampSchemaVersion(

@@ -37,6 +37,20 @@ public final class AgentLoop {
     /** 步数上限：4 工具的小管线，8 步足够"读契约→提交→修正1~2轮" */
     public static final int MAX_STEPS = 8;
 
+    /**
+     * 单次 LLM 调用的超时硬帽（秒）。
+     *
+     * 2026-10-15 gen30 事故的治本点：此前单轮超时 = 剩余总预算
+     * （TOTAL_BUDGET_MS=1_800_000 → 首轮调用 1800s）。候选一旦在
+     * 远端挂住（连接活着但迟迟不回），这一发就**安静烧满 30 分钟**
+     * —— 不抛异常、不触发故障转移、不打日志，肉眼只看到"卡死"。
+     * 实测正常首步收敛全部落在 5~114s：单次调用 5 分钟还产不出
+     * tool call 就是病态。帽子一超抛 HttpTimeoutException，超时
+     * 刻意不算瞬时错误（FailoverAgentClient.isTransient）→
+     * 立即换下一家候选，并留下一行 WARN。
+     */
+    public static final int CALL_TIMEOUT_CAP_SECONDS = 300;
+
     /** 纯文本轮的回喂提示（模型只说话不干活时给一条明确的出路） */
     private static final String NO_TOOL_NUDGE =
             "你没有调用任何工具。画图必须通过工具完成："
@@ -103,7 +117,7 @@ public final class AgentLoop {
             safeStep(listener, steps);
             AgentTurn turn = client.respond(
                     messages.snapshot(), registry.schemas(),
-                    remainingSeconds(deadlineMs));
+                    callTimeoutSeconds(deadlineMs));
             messages.appendAssistant(turn);
 
             if (turn.toolCalls().isEmpty()) {
@@ -182,5 +196,15 @@ public final class AgentLoop {
     private static int remainingSeconds(long deadlineMs) {
         long remain = deadlineMs - System.currentTimeMillis();
         return (int) Math.max(1, remain / 1000);
+    }
+
+    /**
+     * 单轮调用的实际超时 = 剩余预算与 {@link #CALL_TIMEOUT_CAP_SECONDS}
+     * 取小 —— 预算只决定"整场最多跑多久"，不该被一次远端挂死的花
+     * 整场吃掉。
+     */
+    private static int callTimeoutSeconds(long deadlineMs) {
+        return Math.min(CALL_TIMEOUT_CAP_SECONDS,
+                remainingSeconds(deadlineMs));
     }
 }
