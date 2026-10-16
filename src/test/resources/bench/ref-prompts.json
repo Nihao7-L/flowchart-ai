@@ -1,0 +1,35 @@
+{
+ "note": "真实需求原文（2026-10-16 五张参考图实测，源自上游 next-ai-draw-io README 的 5 个示例）",
+ "cases": [
+  {
+   "id": "ref_transformer",
+   "image": "ref_transformer.png",
+   "expectedIntent": "DIAGRAM",
+   "prompt": "画一张 Transformer 架构图。整图标题：Transformer Architecture。分两个模块（group）：ENCODER 与 DECODER。ENCODER 的节点依次是 Input Embedding、Positional Encoding、Multi-Head Attention、Add & Norm、Feed Forward Network、Add & Norm；DECODER 的节点依次是 Output Embedding、Positional Encoding、Masked Multi-Head Attention、Add & Norm、Multi-Head Cross-Attention、Add & Norm、Feed Forward Network、Add & Norm、Linear & Softmax、Output Probabilities。同模块内按上面的顺序用 flow 依次连线；每个子层的输出连到紧跟的 Add & Norm，另外从子层输入直接连到该 Add & Norm 用 dependency（虚线）表示残差；从 ENCODER 最后一个 Add & Norm 连一条箭头到 DECODER 的 Multi-Head Cross-Attention，标签 Encoder Output。颜色：两个 Embedding 用 blue，Positional Encoding 用 yellow，三个 Attention 用 pink，Add & Norm 用 green，Feed Forward Network 用 orange。只交节点、连线、分组、颜色、标题，版面交给布局引擎。"
+  },
+  {
+   "id": "ref_rag",
+   "image": "ref_rag.png",
+   "expectedIntent": "DIAGRAM",
+   "prompt": "画一张 RAG 架构图。整图标题：RAG (Retrieval-Augmented Generation) Architecture。分两个模块：QUERY PIPELINE 与 DATA INGESTION PIPELINE。QUERY PIPELINE 的节点：User Interface (Chat Client)、Chat Backend (Orchestrator)、Query Embedding Model、Vector Database (Pinecone/Weaviate)、Prompt Engineering (Context + History)、LLM (GPT-4 / Claude)、Post-Processing (Safety/Format)。顺序连线并标上步骤号：User Interface → Chat Backend（1. Query）、Chat Backend → Query Embedding Model（2. Vector Search）、Query Embedding Model → Vector Database（2. Vector Search）、Vector Database → Prompt Engineering（3. Retrieve Context (k=5)）、Prompt Engineering → LLM（4. Generated Prompt）、LLM → Post-Processing（5. Response Generation）、Post-Processing → Chat Backend（6. Final Answer）。DATA INGESTION PIPELINE 的节点依次：Data Sources (PDFs, SQL, APIs)、Data Loader / Crawler、Cleaner / Preprocessor、Chunker (500 tokens)、Embedding Model (e.g., Ada-002)，按 flow 依次连线；再从 Embedding Model 连一条 dependency（虚线）到 Vector Database，标签 Upsert Vectors。颜色：Vector Database 用 yellow 且形状用 ellipse（圆柱示意），Query Embedding Model 与 Embedding Model 用 purple，Prompt Engineering、LLM、Post-Processing 用 pink，Data Sources 用 blue，摄取流水线其余节点用 green。"
+  },
+  {
+   "id": "ref_auth",
+   "image": "ref_auth.png",
+   "expectedIntent": "DIAGRAM",
+   "prompt": "画一张 React + AWS 的认证架构流程图。节点：User、React Client、Amazon Cognito、Amazon API Gateway、AWS Lambda、Amazon DynamoDB、Stripe API、Status?（菱形判断）。分一个模块 AWS Cloud，成员是 Amazon Cognito、Amazon API Gateway、AWS Lambda、Amazon DynamoDB（其余节点不属于任何模块）。连线与标签：User → React Client（Initiates Login）、React Client → Amazon Cognito（Authenticates）、React Client → Amazon API Gateway（Authenticated Request (JWT)）、Amazon API Gateway → AWS Lambda（Invokes）、AWS Lambda → Amazon Cognito（Verifies JWT）、AWS Lambda → Amazon DynamoDB（Reads User Profile）、AWS Lambda → Stripe API（Creates Checkout Session）、Stripe API → Status?（Payment Status）、Status? → React Client（Inactive，用 dependency 虚线）。颜色：Amazon Cognito 用 red，Amazon API Gateway 用 purple，AWS Lambda 用 orange，Amazon DynamoDB 用 blue，Stripe API 用 cyan，Status? 用 yellow。"
+  },
+  {
+   "id": "ref_inno",
+   "image": "ref_inno.png",
+   "expectedIntent": "DIAGRAM",
+   "prompt": "画一张开放式创新模型（Open Innovation）示意图，做成**中心 + 环绕**的放射状构图：正中心一个节点写 Your Company ('Closed' Innovation)，以它为中心，周围环绕五个方框：Technology Spin-offs、Technology Insourcing、Technology Acquisition、Licensing、Venture Capital。每个外围方框各画一条箭头指向中心节点，标签依次是 Other Firm's Market、New Market、Licensing、Venture Capital、Technology Spin-offs。中心节点红色，外围五个方框蓝色，整图标题 Open Innovation Model。这种环绕构图的位置本身就是语义（摆在哪很重要），按你判断走合适的那条提交路径。"
+  },
+  {
+   "id": "ref_cat",
+   "image": "ref_cat.png",
+   "expectedIntent": "NON_DIAGRAM",
+   "prompt": "画一只可爱的卡通猫，用最简单的几何形状拼：一个椭圆当身体、一个圆当脑袋、两个三角形当耳朵、两个小圆当眼睛、一个小三角当鼻子、两条弧线当胡须、一条卷曲线当尾巴，最后在旁边写一行字 Meow~ ♥。整体配色用暖色（浅黄身体、粉色耳朵内侧）。"
+  }
+ ]
+}

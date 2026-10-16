@@ -19,7 +19,8 @@ import java.util.Set;
  * 收拢四类"碰 JSON 但不做校验判断"的纯转换逻辑：
  * 手绘提升种子场景（buildSeedScene）、IR 版本号盖章
  * （stampSchemaVersion）、空场景判定（isEmptyScene）、
- * 元素 id 读取（idsOf / idsOfJson）与占位场景合成（syntheticScene）。
+ * 元素 id 读取（idsOf / idsOfJson）与占位场景合成
+ * （syntheticScene 兜底占位 / limitationScene 能力边界说明）。
  *
  * 共同纪律：任何解析失败都**不抛** —— 或返回原样 / 空集 / null，
  * 让调用方走各自的正常分支。JSON 工具层一旦抛异常，
@@ -42,6 +43,18 @@ public class SceneSeedBuilder {
      */
     private static final String FALLBACK_ELEMENT_ID =
             "chartflow-fallback-note";
+
+    /**
+     * 「能力边界说明」占位场景的两个元素 id
+     *
+     * 说明框固定 id（同 {@link #FALLBACK_ELEMENT_ID} 的理由：便于日志对齐、
+     * 用户可直接删掉），建议行另给一个，方便将来单独替换文案。
+     */
+    private static final String LIMITATION_NOTE_ID =
+            "chartflow-limitation-note";
+
+    private static final String LIMITATION_HINT_ID =
+            "chartflow-limitation-hint";
 
     /** 会话模型的序列化/反序列化 */
     private final ObjectMapper objectMapper;
@@ -233,6 +246,72 @@ public class SceneSeedBuilder {
             LOG.warn("兜底场景合成失败: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 合成「能力边界说明」场景（2026-10-16 ref_cat 事故后新增）
+     *
+     * <p>背景：需求「画一只可爱的卡通猫，用最简单的几何形状拼」——
+     * 模型交出 15 个椭圆/菱形用箭头串成的零件关系图，系统报成功，
+     * 用户看到的却是一堆没有名字的椭圆。这不是"画得差"，是**作品形态
+     * 根本不对**：绘画/构图类需求里，位置本身就是语义，而当前唯一
+     * 提交路径（submit_spec → 布局引擎）把坐标全交给引擎，结构上
+     * 不可能满足它。
+     *
+     * <p>所以对这类需求，产品要交的不是一张图表，而是**一句诚实的说明**：
+     * 一个带【AI 备注】的说明框（我是图解助手、不画写实图像）+
+     * 一行可图解的问法建议。{@link io.github.nihaoljx.flowchart.graph
+     * .validate.SemanticValidator#declaresLimitation} 认这个标记，
+     * 用来把"如实拒绝"与"交假图冒充"区分开。
+     *
+     * @param request 用户需求原文（截断后写进说明框，让用户确认被理解）
+     * @return 场景 JSON；objectMapper 异常时返回 null（调用方退回 error 语义）
+     */
+    public String limitationScene(String request) {
+        try {
+            ObjectNode note = objectMapper.createObjectNode();
+            note.put("id", LIMITATION_NOTE_ID);
+            note.put("type", "rectangle");
+            note.put("x", 120);
+            note.put("y", 120);
+            note.put("width", 880);
+            note.put("height", 110);
+            note.set("label", objectMapper.createObjectNode()
+                    .put("text", "【AI 备注】我是图解助手：画流程图 / "
+                            + "架构图 / 关系图 / 分类图，不画写实图像"
+                            + "（动物、人物、风景、卡通形象这类）。"
+                            + quoteBrief(request)
+                            + "属于绘画类需求，我不会拿一堆图形冒充一张画。"));
+
+            ObjectNode hint = objectMapper.createObjectNode();
+            hint.put("id", LIMITATION_HINT_ID);
+            hint.put("type", "text");
+            hint.put("x", 126);
+            hint.put("y", 280);
+            hint.put("fontSize", 16);
+            hint.put("text", "换成图表类我就行：猫的生命周期 / 养猫流程 / "
+                    + "猫的分类体系 / 动物分类图。");
+
+            ObjectNode root = objectMapper.createObjectNode();
+            root.set("elements",
+                    objectMapper.createArrayNode().add(note).add(hint));
+            root.put("schemaVersion", IR_SCHEMA_VERSION);
+            return objectMapper.writeValueAsString(root);
+        } catch (Exception e) {
+            LOG.warn("能力边界说明场景合成失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 把用户需求截断成可嵌进说明框的一小段（超长需求不塞满占位框） */
+    private static String quoteBrief(String request) {
+        if (request == null || request.isBlank()) {
+            return "这条需求";
+        }
+        String flat = request.replaceAll("\\s+", " ").trim();
+        String brief = flat.length() <= 24
+                ? flat : flat.substring(0, 24) + "…";
+        return "「" + brief + "」";
     }
 
     /**

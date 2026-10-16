@@ -2,6 +2,7 @@ package io.github.nihaoljx.flowchart.service;
 
 import io.github.nihaoljx.flowchart.agent.AgentLoopListener;
 import io.github.nihaoljx.flowchart.agent.AgentLoopService;
+import io.github.nihaoljx.flowchart.graph.validate.RequestIntent;
 import io.github.nihaoljx.flowchart.llm.AgentResult;
 import io.github.nihaoljx.flowchart.llm.Observation;
 import io.github.nihaoljx.flowchart.llm.ToolCall;
@@ -20,8 +21,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 生成编排层（单一 agent 路径）
@@ -153,12 +156,42 @@ public class GenerationService {
             }
         }
 
+        // 需求类别闸门（2026-10-16 ref_cat 事故）：
+        // 绘画/构图类需求（写实物体、人物动物、风景、卡通形象、
+        // 「用几何形状拼出一个形象」这类）在当前唯一提交路径下
+        // **结构上不可能满足** —— 这类需求里"位置本身就是语义"，
+        // 而 submit_spec 把坐标全交布局引擎。过去模型只能把它翻译成
+        // 一张零件关系图（body→head→ears…），系统还报"校验通过"，
+        // 用户看到一堆没有名字的椭圆。
+        // 与其让模型冒充，不如如实说明能力边界：前置拦截 →
+        // 下发带【AI 备注】的说明占位（顺带省掉一次 25~30 秒的调用）。
+        // 编辑模式不动用户的图，只把说明当消息回给他。
+        if (RequestIntent.classify(userText).isNonDiagram()) {
+            LOG.info("需求判定为绘画/构图类，走能力边界说明（不调模型）");
+            String note = "这是绘画类需求（画形象），当前只支持图表类主题："
+                    + "本次不生成图表冒充，已给出说明与可图解的问法";
+            String scene = previousJson != null
+                    ? fallback.fallbackScene(previousJson,
+                            effectiveSceneJson, takeOver, null, note)
+                    : seedBuilder.limitationScene(userText);
+            if (fallback.deliverFallback(emitter, note, scene)) {
+                return;
+            }
+            GenerationEvents.sendError(emitter,
+                    "能力边界说明场景合成失败");
+            return;
+        }
+
         String systemBlock;
         String userBlock;
         try {
             systemBlock = promptService.buildSystemBlock();
             userBlock = promptService.buildUserBlock(
                     userText, effectiveSceneJson);
+            // m5 落地：消费跨轮 issue 历史（MemoryStore 只写不读是
+            // 死路径）。把本会话最近踩过的校验问题压成一小段注入
+            // user block，模型显式避开已知的坑，而不是每轮从零发现
+            userBlock = withIssueHistory(userBlock, sessionId);
         } catch (IOException e) {
             // 读不到提示词资源是后端自己的故障，保持 error 语义，
             // 不下发假图
@@ -302,6 +335,55 @@ public class GenerationService {
             }
         }
         return result;
+    }
+
+    /**
+     * 把本会话的 issue 历史压成一段注入 user block（m5 消费侧）。
+     *
+     * <p>有界：最多 5 条、按 reason 去重、每条截断 —— 它是"避雷
+     * 提示"不是"第二份需求"，绝不能涨到挤压主需求的体量。无历史
+     * 时原样返回，一个字节都不加。
+     */
+    private String withIssueHistory(String userBlock, String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return userBlock;
+        }
+        List<MemoryStore.IssueEntry> recent =
+                memoryStore.recent(sessionId, 8);
+        if (recent.isEmpty()) {
+            return userBlock;
+        }
+        StringBuilder sb = new StringBuilder(userBlock);
+        sb.append("\n\n【历史校验问题（本会话之前踩过，尽量避开）】\n");
+        Set<String> seenReasons = new java.util.HashSet<>();
+        int shown = 0;
+        for (MemoryStore.IssueEntry entry : recent) {
+            if (shown >= 5) {
+                break;
+            }
+            String reason = entry.reason() == null
+                    ? "" : entry.reason().trim();
+            if (reason.isEmpty() || !seenReasons.add(reason)) {
+                continue;
+            }
+            sb.append("- ").append(entry.field()).append(": ")
+                    .append(truncate(reason, 80));
+            if (entry.hint() != null && !entry.hint().isBlank()) {
+                sb.append("（").append(
+                        truncate(entry.hint().trim(), 60)).append("）");
+            }
+            sb.append('\n');
+            shown++;
+        }
+        if (shown == 0) {
+            return userBlock;
+        }
+        return sb.toString();
+    }
+
+    private static String truncate(String text, int max) {
+        return text.length() <= max
+                ? text : text.substring(0, max) + "…";
     }
 
     /**
