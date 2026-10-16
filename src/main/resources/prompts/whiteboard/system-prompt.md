@@ -1,4 +1,5 @@
-<!-- L0 治理头（给人/CI，不属模型指令）：版本 v10.12.0｜绑定模型 mimo-v2.5-pro｜生效 whiteboard 生成接口｜评审 22719｜本次变更：①「提交路径」彻底冻结 submit_scene——v10.12.0 起从工具注册表移除，LLM 可见工具只剩 submit_spec / update_elements / read_scene / read_contract，任何画图一律 submit_spec（含涂鸦/摆位类自由画）；②延续 v10.11.0「用户点名颜色/分区/参考图也仍走 submit_spec」——颜色写节点的 color、分层写 group、线型写 relation、整图标题写 title，绝不手写坐标。背景（2026-10-16 五张参考图实测）：模型一旦转 submit_scene 手写坐标，单次调用 200~300 秒且 cat 直接超时；语义路径同题第 1 步 5~30 秒收敛——≤100 秒 SLA 只有 submit_spec 走得通。-->
+<!-- L0 治理头（给人/CI，不属模型指令）：版本 v10.13.0｜绑定模型 mimo-v2.5-pro｜生效 whiteboard 生成接口｜评审 22719｜本次变更：① 多图型布局家族骨架落地——submit_spec 新增可选 diagramType（generic 默认 / sequence 时序图），SubmitSpecTool 按图型路由到布局家族（未注册或排版异常一律降级 generic，绝不 error）；新增 SequenceLayout：参与者按声明序横排 + 生命线竖虚线 + edges 数组序即消息时间序逐行水平箭头（loop/alt/par 分组框二期）；② AgentLoop 补两条防浪费：同工具同参数原样重发第 2 次软干预、第 4 次硬早退；纯文本空转过一次后下一轮 tool_choice=required 强制出工具；③ MemoryStore m5 落地：会话 issue 历史（有界 5 条、按 reason 去重）注入 user block 供模型避雷；④ OpenAiToolClient 修 siliconflow 流式 tool_calls 续片 name:"" 覆盖首片工具名（空串不覆盖）。背景（2026-10-16）：DeepSeek-V3 非推理型快模型接入主力（siliconflow，stream:false），复杂时序图 550s+ → 77.9s 过校验；但时序图被塞进 generic ELK 排版「和屎没区别」，故立家族骨架。
+-->
 
 # System Prompt
 
@@ -30,6 +31,7 @@
 ## 规则
 
 - 版面按图的种类走，不能一律排成一条横线：树形（组织架构 / 分类 / 目录）父在上、子并排在下一行、连线向下；流程 / 时序单向推进，回流的连线要绕开中间节点；关系 / 状态图把互连密的节点摆近；泳道图按角色分横带。
+- 时序图（参与者 + 按时间顺序的消息）必须声明 diagramType:"sequence"，且 edges 按消息时间先后排列：参与者横排、每人一条生命线、消息逐行水平箭头；不声明则按通用图乱排捆线。
 - 连线接框：绑了两端就只写 start/end，不要再给 points 写坐标 —— 接哪条边由渲染器自己算，手算会把端点算进框里面、压住框里的字。只有真要绕开别的框时才给 points（≥ 3 个点，首点 [0,0]，其余是相对首点的位移）。
 - 节点必须用图形（矩形 / 椭圆 / 菱形）加 label 装名字，不要拿裸 text 当节点：文字没有宽高，箭头绑上去会从字中间穿过去。
 - 连线不要从无关图形身上穿过；同一处来回走的连线不要压在一条直线上（会重叠成一团）。

@@ -10,6 +10,33 @@
 > （漏记一整段，见下方 10.2.0 条的说明）。现按当日工作日志与 md 治理头如实补齐，
 > 日期取当时的实际改动日，非补记日。
 
+## 10.13.0 (2026-10-16)
+
+**目标：多图型布局家族骨架 + loop 防浪费 + 快模型接入收尾。时序图不再被塞进 generic ELK 乱排。**
+
+背景：DeepSeek-V3 / Qwen2.5-72B（siliconflow 非推理型快模型）接入主力候选后，复杂时序图
+从 550s+ 失败变成 77.9s 过校验出图；但渲染验收「和屎没区别」——根因是 submit_spec 把
+所有图型都交给 ELK 通用布局，时序图的「参与者横排 + 时间序」语义全丢。本次立家族骨架，
+时序图做第一个专用排版器。
+
+md 改动（增量）：
+- L0 治理头版本 v10.12.0 → v10.13.0。
+- 「规则」新增一条：时序图必须声明 `diagramType:"sequence"` 且 edges 按时间先后排列。
+
+配套代码（同批）：
+- 新增 `graph/layout/LayoutFamily` 接口 + `LayoutFamilyRegistry`（按图型路由，未注册/异常
+  一律降级 generic，绝不 error）+ `GenericLayoutFamily`（原 SubmitSpecTool 通用路径整体搬入）
+  + `SequenceLayout`（参与者横排 + 生命线竖虚线 + edges 数组序即消息时间序逐行水平箭头；
+  loop/alt/par 分组框二期）。
+- `SubmitSpecTool`：构造改收 `LayoutFamilyRegistry`；spec 新增可选 `diagramType`
+  （enum 来自注册表，未注册给机读修复单）；排版处改为家族路由 + 异常降级。
+- `AgentLoop`：振荡检测（同工具同参数原样重发第 2 次软干预、第 4 次硬早退 PARTIAL）；
+  纯文本空转过一次后下一轮 `tool_choice=required` 强制出工具。
+- `GenerationService`：MemoryStore m5 落地——会话 issue 历史（≤5 条、按 reason 去重）
+  注入 user block 供模型避雷。
+- `OpenAiToolClient.SseAccumulator`：修 siliconflow 流式 tool_calls 续片 `name:""`
+  覆盖首片工具名（空串不覆盖），补两条回归单测。
+
 ## 10.12.0 (2026-10-16)
 
 **目标：冻结 submit_scene（让 LLM 直出 x/y 坐标的反模式路径），让 submit_spec 成为唯一生成路径。**

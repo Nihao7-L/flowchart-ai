@@ -1,7 +1,6 @@
 package io.github.nihaoljx.flowchart.service;
 
 import io.github.nihaoljx.flowchart.graph.validate.RelationCatalog;
-import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -218,8 +217,10 @@ class PromptServiceTest {
      *
      * <p><b>v10.9.0 变化</b>：用户精简版 md 移除了「归属与分区」规则，其中包含
      * 「图形数 &gt; 15 时先按模块打 group」与「框的 name 必须与模块 group 逐字相同」。
-     * {@link ScenePlanner#MODULE_THRESHOLD} 仍然是 15（后端行为没变），但**提示词不再声明
-     * 这个触发阈值** ⇒ LLM 侧不再被要求主动打 group，frame 认领退化到启发式路径。
+     * 2026-10-15 进一步：按节点数触发的后端自动聚类已删
+     * （{@code ScenePlanner.MODULE_THRESHOLD} 随之删除）—— 分区只认 LLM 显式
+     * group / 可认领 frame，分不分区是语义决策，不该有机械阈值。
+     * 提示词不声明阈值 ⇒ LLM 侧由 spec 工具描述与 schema 引导打 group。
      * 原先那两条「阈值一致 / 逐字相同」的断言随之删除 —— 继续断言等于逼 md 把规则写回来，
      * 属于「测试与 md 口径互相绑架」，护栏若真被回退应由 CHANGELOG 与评审记录发现。
      */
