@@ -2,7 +2,10 @@ package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.AgentTools;
 import io.github.nihaoljx.flowchart.llm.LlmProperties;
+import io.github.nihaoljx.flowchart.graph.layout.GenericLayoutFamily;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
+import io.github.nihaoljx.flowchart.graph.layout.SequenceLayout;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -85,10 +88,18 @@ public class AgentLoopService {
                             + " llm.candidates 配置");
         }
         this.candidateName = candidate.getName();
+        // 多图型布局家族（2026-10-16）：generic（ELK 通用图）+ sequence
+        // （时序图确定性排版）。加新图型 = 加一个家族类 + 这里注册一行。
+        LayoutFamilyRegistry families = new LayoutFamilyRegistry(
+                List.of(new GenericLayoutFamily(
+                                new GenericLayoutFamily
+                                        .ScenePlannerHolder(
+                                        planner, layoutEngine)),
+                        new SequenceLayout()));
         ToolRegistry registry = AgentTools.defaultRegistry(
                 binder, deduper, sanitizer, planner,
                 validator, audit, drift, promptService,
-                layoutEngine);
+                families);
         // 最小故障转移（实测补）：全部候选按 tier 包进
         // FailoverAgentClient —— 实测 glm 画大图 502，单候选
         // 一步失败 = 整次兜底，可用性差
@@ -103,7 +114,8 @@ public class AgentLoopService {
         for (LlmProperties.Candidate c : usable) {
             clients.add(new OpenAiToolClient(
                     c.getBaseUrl(), c.getApiKey(),
-                    c.getModel(), c.getMaxTokens()));
+                    c.getModel(), c.getMaxTokens(),
+                    c.isStream(), c.getIdleTimeoutSeconds()));
         }
         this.loop = new AgentLoop(
                 new FailoverAgentClient(clients),

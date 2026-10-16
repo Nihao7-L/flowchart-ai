@@ -3,6 +3,9 @@ package io.github.nihaoljx.flowchart.agent.tools;
 import io.github.nihaoljx.flowchart.llm.Observation;
 import io.github.nihaoljx.flowchart.llm.ToolContext;
 import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
+import io.github.nihaoljx.flowchart.graph.layout.GenericLayoutFamily;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
+import io.github.nihaoljx.flowchart.graph.layout.SequenceLayout;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -43,8 +46,7 @@ class SubmitSpecToolTest {
                 new SceneDeduper(), new SceneSanitizer(),
                 new ScenePlanner(), new GraphValidator(),
                 new GeometryAudit());
-        tool = new SubmitSpecTool(gate, new ElkLayoutEngine(),
-                new ScenePlanner());
+        tool = new SubmitSpecTool(gate, new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
         ctx = new ToolContext("画一张流程图", null);
     }
 
@@ -292,6 +294,45 @@ class SubmitSpecToolTest {
     }
 
     @Test
+    @DisplayName("单组分组：也合成画框（框由语义决定，不是数量决定）")
+    void singleGroupGetsFrame() throws Exception {
+        // 2026-10-16 口径修正：此前用「≥2 组才画框」的数量阈值把单组
+        // 挡掉，等于拿"有几组"替代"要不要框"的语义判断 —— 明明是
+        // 偷懒。现改为：LLM 显式声明了 group，就尊重它。单个模块
+        // （如 AWS Cloud / 数据摄入流水线）同样是真实语义容器，必须
+        // 画框；模型没声明分组时后端绝不自己造框。
+        Observation obs = submit("""
+                {"nodes":[
+                  {"id":"c1","label":"Cognito","group":"AWS Cloud"},
+                  {"id":"c2","label":"Lambda","group":"AWS Cloud"},
+                  {"id":"c3","label":"DynamoDB","group":"AWS Cloud"}],
+                 "edges":[
+                  {"from":"c1","to":"c2"},
+                  {"from":"c2","to":"c3"}]}
+                """);
+        assertTrue(obs.ok(), "应为通过，实际: " + obs.summary());
+        JsonNode elements = MAPPER.readTree(ctx.validScene())
+                .get("elements");
+        JsonNode frame = null;
+        int colored = 0;
+        for (JsonNode el : elements) {
+            if ("frame".equals(el.path("type").asText())) {
+                frame = el;
+            }
+            if (el.has("backgroundColor")
+                    && !el.path("backgroundColor").asText().isEmpty()) {
+                colored++;
+            }
+        }
+        assertNotNull(frame, "单组也应画框（AWS Cloud 是真实语义容器）");
+        assertEquals("AWS Cloud", frame.path("name").asText(),
+                "画框名应等于分组名");
+        assertEquals(3, frame.path("children").size(),
+                "画框应包住 3 个成员");
+        assertEquals(3, colored, "该分组的 3 个节点都应有配色");
+    }
+
+    @Test
     @DisplayName("无分组 → 不画框不配色；relation → 编译成线型")
     void noGroupNoFrameRelationCompiles() throws Exception {
         Observation obs = submit("""
@@ -320,5 +361,159 @@ class SubmitSpecToolTest {
         assertNotNull(arrow);
         assertEquals("solid", arrow.path("strokeStyle").asText(),
                 "inherit 应编译为实线");
+    }
+
+    @Test
+    @DisplayName("几何 issue 不打回模型：audit 只报交叉/穿身 → 放行并落 validScene")
+    void geometryIssuesDoNotBounceBack() throws Exception {
+        // 2026-10-15 regress_arch2 教训：spec 路径坐标全由布局引擎出，
+        // 几何 issue（交叉/穿身）打回给模型 = 让它盲改拓扑重抽，
+        // 实测 62s 生成 → 27s 修正 → 仍未过 → 下一轮挂死 300s。
+        // 几何问题只交布局层，模型只修它真正能修的。
+        GeometryAudit geometryOnly = new GeometryAudit() {
+            @Override
+            public java.util.List<io.github.nihaoljx.flowchart.graph.validate.ValidationIssue> audit(
+                    String json) {
+                return java.util.List.of(
+                        new io.github.nihaoljx.flowchart.graph.validate.ValidationIssue(
+                                "geometry.crossing",
+                                "连线 e1 与连线 e2 交叉",
+                                "请绕开"),
+                        new io.github.nihaoljx.flowchart.graph.validate.ValidationIssue(
+                                "geometry.through",
+                                "连线 e3 穿过了无关图形 n2",
+                                "请绕开"));
+            }
+        };
+        SceneGate gate = new SceneGate(new SceneBinder(),
+                new SceneDeduper(), new SceneSanitizer(),
+                new ScenePlanner(), new GraphValidator(),
+                geometryOnly);
+        SubmitSpecTool gated = new SubmitSpecTool(gate, new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
+        Observation obs = gated.execute(MAPPER.readTree("""
+                {"spec":{"nodes":[
+                  {"id":"n1","label":"网关","group":"接入层"},
+                  {"id":"n2","label":"用户服务","group":"服务层"},
+                  {"id":"n3","label":"数据库","group":"数据层"}],
+                 "edges":[
+                  {"from":"n1","to":"n2"},
+                  {"from":"n2","to":"n3"}]}}
+                """), ctx);
+
+        assertTrue(obs.ok(),
+                "纯几何 issue 不该 fail，实际: " + obs.summary());
+        assertNotNull(ctx.validScene(),
+                "放行时必须落 validScene（AgentLoop 终态取自它）");
+        assertTrue(obs.summary().contains("布局层自愈"),
+                "摘要应说明几何问题交布局层: " + obs.summary());
+    }
+
+    @Test
+    @DisplayName("几何 + 结构混合 issue → 仍 fail，但只点名模型能修的")
+    void mixedIssuesStillFailButOnlyActionable() throws Exception {
+        GeometryAudit geometryOnly = new GeometryAudit() {
+            @Override
+            public java.util.List<io.github.nihaoljx.flowchart.graph.validate.ValidationIssue> audit(
+                    String json) {
+                return java.util.List.of(
+                        new io.github.nihaoljx.flowchart.graph.validate.ValidationIssue(
+                                "geometry.crossing",
+                                "连线 e1 与连线 e2 交叉",
+                                "请绕开"));
+            }
+        };
+        SceneGate gate = new SceneGate(new SceneBinder(),
+                new SceneDeduper(), new SceneSanitizer(),
+                new ScenePlanner(), new GraphValidator(),
+                geometryOnly);
+        SubmitSpecTool gated = new SubmitSpecTool(gate, new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
+        // e1 引用不存在的节点 → 结构 issue（模型能修）
+        Observation obs = gated.execute(MAPPER.readTree("""
+                {"spec":{"nodes":[
+                  {"id":"n1","label":"网关"}],
+                 "edges":[
+                  {"from":"n1","to":"ghost"}]}}
+                """), ctx);
+
+        assertFalse(obs.ok(), "结构 issue 仍应 fail");
+        String payload = String.valueOf(obs.data());
+        assertFalse(payload.contains("geometry.crossing"),
+                "几何 issue 不该进修复单: " + payload);
+        assertTrue(payload.contains("ghost"),
+                "结构 issue 必须点名: " + payload);
+    }
+    @Test
+    @DisplayName("节点 color → 命中具名色表（填充 + 描边），不必再手写坐标")
+    void namedColorApplies() throws Exception {
+        Observation obs = submit("""
+                {"nodes":[
+                  {"id":"n1","label":"编码器","color":"purple"},
+                  {"id":"n2","label":"注意力","color":"pink"}],
+                 "edges":[{"from":"n1","to":"n2"}]}
+                """);
+
+        assertTrue(obs.ok(), "应为通过，实际: " + obs.summary());
+        JsonNode elements = MAPPER.readTree(ctx.validScene())
+                .get("elements");
+        JsonNode encoder = null;
+        for (JsonNode el : elements) {
+            if ("n1".equals(el.path("id").asText())) {
+                encoder = el;
+            }
+        }
+        assertNotNull(encoder, "应有 id=n1 的节点");
+        assertEquals("#d0bfff",
+                encoder.path("backgroundColor").asText(),
+                "purple 的填充色由代码定，不由模型填");
+        assertEquals("#7048e8",
+                encoder.path("strokeColor").asText(),
+                "purple 的描边色由代码定");
+        assertEquals("solid", encoder.path("fillStyle").asText());
+    }
+
+    @Test
+    @DisplayName("spec.title → 合成一行落在全图包围盒上沿的标题文字")
+    void titleBecomesTextElement() throws Exception {
+        Observation obs = submit("""
+                {"title":"Transformer 架构",
+                 "nodes":[{"id":"n1","label":"编码器"},
+                          {"id":"n2","label":"解码器"}],
+                 "edges":[{"from":"n1","to":"n2"}]}
+                """);
+
+        assertTrue(obs.ok(), "应为通过，实际: " + obs.summary());
+        JsonNode elements = MAPPER.readTree(ctx.validScene())
+                .get("elements");
+        JsonNode title = null;
+        for (JsonNode el : elements) {
+            if ("text".equals(el.path("type").asText())) {
+                title = el;
+            }
+        }
+        assertNotNull(title, "应有一个 text 元素承载标题");
+        assertEquals("Transformer 架构",
+                title.path("text").asText());
+        for (JsonNode el : elements) {
+            if (el == title) {
+                continue;
+            }
+            assertTrue(title.path("y").asDouble()
+                            <= el.path("y").asDouble(),
+                    "标题应在全图最上方");
+        }
+    }
+
+    @Test
+    @DisplayName("非法颜色名 → 机读修复单点名 spec.nodes[i].color")
+    void badColorNameRejected() throws Exception {
+        Observation obs = submit("""
+                {"nodes":[{"id":"n1","label":"开始",
+                           "color":"chartreuse"}],
+                 "edges":[]}
+                """);
+
+        assertFalse(obs.ok());
+        assertEquals("spec.nodes[0].color",
+                obs.issues().get(0).field());
     }
 }

@@ -3,17 +3,21 @@ package io.github.nihaoljx.flowchart.agent.tools;
 import io.github.nihaoljx.flowchart.llm.AgentTool;
 import io.github.nihaoljx.flowchart.llm.Observation;
 import io.github.nihaoljx.flowchart.llm.ToolContext;
-import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutSpec;
+import io.github.nihaoljx.flowchart.graph.layout.SpecEdge;
+import io.github.nihaoljx.flowchart.graph.layout.SpecNode;
 import io.github.nihaoljx.flowchart.graph.validate.RelationCatalog;
 import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
 import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
-import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,12 +41,20 @@ import java.util.regex.Pattern;
      * 自由画摆位等「节点 + 连线」形态）统一用本工具。submit_scene（让
      * LLM 直出 x/y）已在 v10.12.0 冻结，不再注册。
  *
+ * <p>多图型家族（2026-10-16）：spec 可声明 {@code diagramType}
+ * （sequence = 时序图：参与者横排 + 生命线 + 消息按时间序逐行）。
+ * 不声明 / 未注册 ⇒ generic 家族（ELK 通用图），运行时零风险。
+ * 布局家族见 {@code io.github.nihaoljx.flowchart.graph.layout}。
+ *
  * <p>流程：spec 校验（机读修复单：field+reason+hint）→ 生成带占位
- * 坐标的场景 JSON → {@link LayoutEngine#layout} 全量排版 → 复用
+ * 坐标的场景 JSON → 按 diagramType 交布局家族排版 → 复用
  * {@link SceneGate} 全管线校验。绑端点箭头不带坐标（前端按绑定
  * 关系推导几何，见 sceneAdapter.withArrowGeometry）。
  */
 public final class SubmitSpecTool implements AgentTool {
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(SubmitSpecTool.class);
 
     public static final String NAME = "submit_spec";
 
@@ -102,21 +114,13 @@ public final class SubmitSpecTool implements AgentTool {
     /** 整图标题字号（比节点字号大一档） */
     private static final int TITLE_FONT_SIZE = 28;
 
-    /** frame 标题的最大长度（与 ScenePlanner.MAX_GROUP_NAME 同口径） */
-    private static final int MAX_GROUP_NAME = 24;
-
-    /** frame 包住成员时的四周留白（LayoutSpec.MODULE_PADDING 同源） */
-    private static final double FRAME_PADDING = 40.0;
-
     private final SceneGate gate;
-    private final LayoutEngine layoutEngine;
-    private final ScenePlanner planner;
+    private final LayoutFamilyRegistry families;
 
     public SubmitSpecTool(SceneGate gate,
-            LayoutEngine layoutEngine, ScenePlanner planner) {
+            LayoutFamilyRegistry families) {
         this.gate = gate;
-        this.layoutEngine = layoutEngine;
-        this.planner = planner;
+        this.families = families;
     }
 
     @Override
@@ -131,7 +135,9 @@ public final class SubmitSpecTool implements AgentTool {
                 + "坐标由后端布局引擎自动计算。节点可标 group 模块名"
                 + "（自动分区、配色、画框），连线可标 relation 关系语义"
                 + "（自动定线型与箭头）。适用：流程图/架构图/组织架构/"
-                + "思维导图/状态图/自由画摆位等所有「节点 + 连线」形态。";
+                + "思维导图/状态图/自由画摆位等所有「节点 + 连线」形态。"
+                + "时序图（参与者生命线 + 按时间顺序的消息）必须声明 "
+                + "diagramType=sequence，并把 edges 按时间先后排序。";
     }
 
     @Override
@@ -173,6 +179,12 @@ public final class SubmitSpecTool implements AgentTool {
         specProps.put("title", Map.of("type", "string",
                 "description", "整图标题（可选）。给了就画在全图正上方"
                         + "一行大字 —— 不要再自己画一个标题节点"));
+        specProps.put("diagramType", Map.of("type", "string",
+                "enum", families.types(),
+                "description", "图型（可选，默认 generic）。时序图"
+                        + "（参与者 + 按时间顺序的消息）填 sequence："
+                        + "参与者横排、每人一条生命线、edges 数组序"
+                        + "即消息时间序"));
         specProps.put("nodes", Map.of("type", "array", "items", node));
         specProps.put("edges", Map.of("type", "array", "items", edge));
         spec.put("properties", specProps);
@@ -208,31 +220,47 @@ public final class SubmitSpecTool implements AgentTool {
                     "拆成多张图，或精简节点"));
             return fail(issues);
         }
-        Map<String, NodeSpec> nodeSpecs = new LinkedHashMap<>();
+        Map<String, SpecNode> nodeSpecs = new LinkedHashMap<>();
         for (int i = 0; i < nodes.size(); i++) {
             collectNode(nodes.get(i), i, nodeSpecs, issues);
         }
         JsonNode edges = spec.path("edges");
-        List<EdgeSpec> edgeSpecs = new ArrayList<>();
+        List<SpecEdge> edgeSpecs = new ArrayList<>();
         if (edges.isArray()) {
             for (int i = 0; i < edges.size(); i++) {
                 collectEdge(edges.get(i), i,
                         nodeSpecs.keySet(), edgeSpecs, issues);
             }
         }
+        // 图型声明：未注册 ⇒ 机读修复单（模型写错图型名时它改得了；
+        // 与注册表运行时的 generic 兜底是两层，不重复）
+        String diagramType = spec.path("diagramType").asText("generic");
+        if (!families.has(diagramType)) {
+            issues.add(issue("spec.diagramType",
+                    "未知图型: " + diagramType,
+                    "允许值: " + families.types()
+                            + "（不填 = generic 通用图）"));
+        }
         if (!issues.isEmpty()) {
             return fail(issues);
         }
         String title = spec.path("title").asText(null);
         String scene = buildScene(nodeSpecs, edgeSpecs);
-        // 分区排版（ScenePlanner.arrange）：模块内交给布局引擎、
-        // 模块间网格打包、relation 编译成线型/箭头 —— 机制现成，
-        // 此前 submit_spec 直接调 layoutEngine 绕过了它（12 图渲染
-        // 验收「除 07 全是屎」的根因之一：分区与线型语义全被丢弃）
-        String laidOut = planner.arrange(
-                scene, layoutEngine, Set.of());
-        String framed = addGroupFrames(laidOut, nodeSpecs);
-        SceneGate.Outcome out = gate.process(framed, ctx);
+        // 按图型路由到布局家族（多图型架构，2026-10-16）：
+        // generic = 分区排版 + 布局引擎 + 分组合框；
+        // sequence = 参与者横排 + 生命线 + 消息按时间序逐行。
+        // 家族抛异常 ⇒ 降级 generic，绝不让排版失败炸掉整轮。
+        String arranged;
+        try {
+            arranged = families.forType(diagramType)
+                    .arrange(scene, nodeSpecs, edgeSpecs);
+        } catch (Exception e) {
+            LOG.warn("布局家族 {} 排版失败（{}），降级 generic",
+                    diagramType, e.getMessage());
+            arranged = families.forType("generic")
+                    .arrange(scene, nodeSpecs, edgeSpecs);
+        }
+        SceneGate.Outcome out = gate.process(arranged, ctx);
         if (!out.parseable()) {
             return Observation.fail(
                     "场景读不通，未受理",
@@ -242,6 +270,11 @@ public final class SubmitSpecTool implements AgentTool {
         // 不该反过来变成一条要模型修的校验问题
         String finalJson = addTitle(out.json(), title);
         ctx.processedScene(finalJson);
+        String layoutNote = "sequence".equals(diagramType)
+                ? "时序图已排版 " + nodeSpecs.size()
+                        + " 个参与者、" + edgeSpecs.size() + " 条消息"
+                : "布局引擎已排版 " + nodeSpecs.size()
+                        + " 个节点、" + edgeSpecs.size() + " 条连线";
         if (!out.issues().isEmpty()) {
             // 几何 issue（交叉/穿身/标签被压/端点内插）是布局引擎的
             // 产物，模型在 spec 路径下手里没有任何坐标，修不了 ——
@@ -268,25 +301,22 @@ public final class SubmitSpecTool implements AgentTool {
             }
             ctx.validScene(finalJson);
             return Observation.ok(
-                    "语义提交受理：布局引擎已排版 " + nodeSpecs.size()
-                            + " 个节点、" + edgeSpecs.size()
-                            + " 条连线，生成完成（存在 "
+                    "语义提交受理：" + layoutNote
+                            + "，生成完成（存在 "
                             + out.issues().size()
                             + " 条几何观感问题，已交布局层自愈）",
                     payload(List.of()));
         }
         ctx.validScene(finalJson);
         return Observation.ok(
-                "语义提交受理：布局引擎已排版 " + nodeSpecs.size()
-                        + " 个节点、" + edgeSpecs.size()
-                        + " 条连线，并通过校验，生成完成",
+                "语义提交受理：" + layoutNote + "，并通过校验，生成完成",
                 payload(List.of()));
     }
 
     // ==================== spec 校验（机读修复单） ====================
 
     private void collectNode(JsonNode node, int index,
-            Map<String, NodeSpec> nodeSpecs,
+            Map<String, SpecNode> nodeSpecs,
             List<ValidationIssue> issues) {
         String path = "spec.nodes[" + index + "]";
         if (!node.isObject()) {
@@ -327,13 +357,13 @@ public final class SubmitSpecTool implements AgentTool {
                 return;
             }
         }
-        nodeSpecs.put(id, new NodeSpec(
+        nodeSpecs.put(id, new SpecNode(
                 id, label, type,
                 node.path("group").asText(null), color));
     }
 
     private void collectEdge(JsonNode edge, int index,
-            Set<String> ids, List<EdgeSpec> edgeSpecs,
+            Set<String> ids, List<SpecEdge> edgeSpecs,
             List<ValidationIssue> issues) {
         String path = "spec.edges[" + index + "]";
         if (!edge.isObject()) {
@@ -365,7 +395,7 @@ public final class SubmitSpecTool implements AgentTool {
                     "起止必须是不同节点"));
             return;
         }
-        edgeSpecs.add(new EdgeSpec(from, to,
+        edgeSpecs.add(new SpecEdge(from, to,
                 edge.path("label").asText(null),
                 edge.path("relation").asText(null)));
     }
@@ -379,16 +409,16 @@ public final class SubmitSpecTool implements AgentTool {
      * （前端按绑定推导，见 sceneAdapter.withArrowGeometry）。
      * label 一律写成 {"text":...} 对象形态（GraphValidator 口径）。
      */
-    private String buildScene(Map<String, NodeSpec> nodeSpecs,
-            List<EdgeSpec> edgeSpecs) {
+    private String buildScene(Map<String, SpecNode> nodeSpecs,
+            List<SpecEdge> edgeSpecs) {
         ArrayNode elements = MAPPER.createArrayNode();
         List<String> labels = nodeSpecs.values().stream()
-                .map(NodeSpec::label).toList();
+                .map(SpecNode::label).toList();
         double width = LayoutSpec.nodeWidth(labels);
         // 分组配色：按分组首次出现的顺序取色盘（确定性，可单测）
         Map<String, String> fillByGroup = new LinkedHashMap<>();
         Map<String, String> strokeByGroup = new LinkedHashMap<>();
-        for (NodeSpec node : nodeSpecs.values()) {
+        for (SpecNode node : nodeSpecs.values()) {
             String group = normalizedGroup(node.group());
             if (group != null && !fillByGroup.containsKey(group)) {
                 String[] palette = COLORS.get(GROUP_CYCLE.get(
@@ -397,7 +427,7 @@ public final class SubmitSpecTool implements AgentTool {
                 strokeByGroup.put(group, palette[1]);
             }
         }
-        for (NodeSpec node : nodeSpecs.values()) {
+        for (SpecNode node : nodeSpecs.values()) {
             ObjectNode shape = elements.addObject();
             shape.put("id", node.id());
             shape.put("type", node.type());
@@ -426,7 +456,7 @@ public final class SubmitSpecTool implements AgentTool {
         }
         Set<String> usedIds = new HashSet<>(nodeSpecs.keySet());
         int index = 0;
-        for (EdgeSpec edge : edgeSpecs) {
+        for (SpecEdge edge : edgeSpecs) {
             String arrowId = uniqueArrowId(usedIds, index);
             usedIds.add(arrowId);
             ObjectNode arrow = elements.addObject();
@@ -460,110 +490,6 @@ public final class SubmitSpecTool implements AgentTool {
         }
         String trimmed = group.trim();
         return trimmed.isEmpty() ? null : trimmed;
-    }
-
-    /**
-     * 按分组合成画框（frame）：bbox 包住同组成员、name = 组名、
-     * children = 成员 id。放在元素数组最前（z 序最底，框压在成员下面）。
-     *
-     * <p>为什么在这里合成而不是让模型给：模型填 frame 几何从来填不准
-     * （旧路径实测），而 bbox 由布局后的真实坐标算出，天然贴身。
-     * 单分组也画框：只要 LLM 显式声明了 group，就尊重它的语义意图。
-     * ScenePlanner 的 claimFramesOnly（gate 管线内）会按名字把框
-     * 认领给模块并按其成员口径重填 children，与此处的 id 集合一致。
-     */
-    private String addGroupFrames(
-            String laidOut, Map<String, NodeSpec> nodeSpecs) {
-        try {
-            JsonNode root = MAPPER.readTree(laidOut);
-            JsonNode elementsNode = root.get("elements");
-            if (elementsNode == null || !elementsNode.isArray()) {
-                return laidOut;
-            }
-            // 分组成员（首次出现序）与已有 id 集合
-            Map<String, List<String>> members = new LinkedHashMap<>();
-            Set<String> usedIds = new HashSet<>();
-            for (JsonNode el : elementsNode) {
-                String id = el.path("id").asText(null);
-                if (id != null) {
-                    usedIds.add(id);
-                }
-                String group = normalizedGroup(
-                        el.path("group").asText(null));
-                if (group != null && id != null) {
-                    members.computeIfAbsent(
-                            group, k -> new ArrayList<>()).add(id);
-                }
-            }
-            if (members.isEmpty()) {
-                return laidOut;
-            }
-            // 每组 bbox
-            Map<String, double[]> boxes = new LinkedHashMap<>();
-            for (JsonNode el : elementsNode) {
-                String group = normalizedGroup(
-                        el.path("group").asText(null));
-                if (group == null
-                        || !members.containsKey(group)
-                        || !el.hasNonNull("x")
-                        || !el.hasNonNull("y")
-                        || !el.hasNonNull("width")
-                        || !el.hasNonNull("height")) {
-                    continue;
-                }
-                double x = el.path("x").asDouble();
-                double y = el.path("y").asDouble();
-                double w = el.path("width").asDouble();
-                double h = el.path("height").asDouble();
-                double[] box = boxes.get(group);
-                if (box == null) {
-                    boxes.put(group, new double[] {x, y, x + w, y + h});
-                } else {
-                    box[0] = Math.min(box[0], x);
-                    box[1] = Math.min(box[1], y);
-                    box[2] = Math.max(box[2], x + w);
-                    box[3] = Math.max(box[3], y + h);
-                }
-            }
-            ArrayNode frames = MAPPER.createArrayNode();
-            int index = 0;
-            for (Map.Entry<String, List<String>> entry
-                    : members.entrySet()) {
-                double[] box = boxes.get(entry.getKey());
-                if (box == null) {
-                    continue;
-                }
-                String frameId = "frame_" + index;
-                while (usedIds.contains(frameId)) {
-                    frameId = frameId + "_x";
-                }
-                usedIds.add(frameId);
-                ObjectNode frame = frames.addObject();
-                frame.put("id", frameId);
-                frame.put("type", "frame");
-                frame.put("name", truncate(entry.getKey()));
-                frame.put("x", snap(box[0] - FRAME_PADDING));
-                frame.put("y", snap(box[1] - FRAME_PADDING));
-                frame.put("width",
-                        snap(box[2] + FRAME_PADDING)
-                                - snap(box[0] - FRAME_PADDING));
-                frame.put("height",
-                        snap(box[3] + FRAME_PADDING)
-                                - snap(box[1] - FRAME_PADDING));
-                ArrayNode children = frame.putArray("children");
-                entry.getValue().forEach(children::add);
-                index++;
-            }
-            // 拼新数组：frames 在最前（z 序最底）
-            ArrayNode merged = MAPPER.createArrayNode();
-            merged.addAll(frames);
-            elementsNode.forEach(merged::add);
-            ((ObjectNode) root).set("elements", merged);
-            return MAPPER.writeValueAsString(root);
-        } catch (Exception e) {
-            // 画框只是观感件，失败不拦生成
-            return laidOut;
-        }
     }
 
     /**
@@ -616,11 +542,6 @@ public final class SubmitSpecTool implements AgentTool {
         }
     }
 
-    private static String truncate(String name) {
-        return name.length() <= MAX_GROUP_NAME
-                ? name : name.substring(0, MAX_GROUP_NAME);
-    }
-
     private static double snap(double value) {
         return Math.round(value / LayoutSpec.GRID)
                 * LayoutSpec.GRID;
@@ -659,15 +580,5 @@ public final class SubmitSpecTool implements AgentTool {
             entry.put("hint", item.hint());
         }
         return node;
-    }
-
-    /** spec 里的一个节点（id + 文字 + 形状 + 可选模块名，无几何） */
-    private record NodeSpec(String id, String label, String type,
-            String group, String color) {
-    }
-
-    /** spec 里的一条连线（起止节点 id + 可选文字 + 可选关系语义） */
-    private record EdgeSpec(
-            String from, String to, String label, String relation) {
     }
 }

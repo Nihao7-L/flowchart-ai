@@ -2,7 +2,7 @@ package io.github.nihaoljx.flowchart.agent.tools;
 
 import io.github.nihaoljx.flowchart.llm.AgentTool;
 import io.github.nihaoljx.flowchart.agent.ToolRegistry;
-import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
@@ -49,19 +49,19 @@ public final class AgentTools {
      * @param audit         几何体检（现有 bean）
      * @param drift         改图保真（现有 bean；编辑模式首次提交用）
      * @param promptService 提示词服务（契约片段派生）
-     * @param layoutEngine  布局引擎（submit_spec 的坐标来源）
+     * @param families      布局家族注册表（多图型路由：generic/sequence）
      */
     public static ToolRegistry defaultRegistry(
             SceneBinder binder, SceneDeduper deduper,
             SceneSanitizer sanitizer, ScenePlanner planner,
             GraphValidator validator, GeometryAudit audit,
             SceneDrift drift, PromptService promptService,
-            LayoutEngine layoutEngine) {
+            LayoutFamilyRegistry families) {
         SceneGate gate = new SceneGate(
                 binder, deduper, sanitizer, planner,
                 validator, audit, drift);
         List<AgentTool> tools = List.of(
-                new SubmitSpecTool(gate, layoutEngine, planner),
+                new SubmitSpecTool(gate, families),
                 new UpdateElementsTool(gate),
                 new ReadSceneTool(),
                 new ReadContractTool(promptService));
