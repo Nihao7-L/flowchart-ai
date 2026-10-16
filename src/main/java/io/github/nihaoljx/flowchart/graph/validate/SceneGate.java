@@ -55,6 +55,14 @@ public final class SceneGate {
     private final GeometryAudit audit;
 
     /**
+     * 语义校验（D3）：场景内保守语义检查（现阶段只报同向同标签
+     * 重复连线这类高置信问题）。参考结构比对（checkAgainstReference）
+     * 不进闸门 —— 它是按需调用的硬指标（D5 打分 / 参考图验证），不是
+     * 每次提交都必须有的门禁。
+     */
+    private final SemanticValidator semantic = new SemanticValidator();
+
+    /**
      * 改图保真检查（可选）。编辑模式首次提交时跑
      * `check(基线, 提交结果)`，防"保留 id 但整图重排"。
      * null = 不做（新建模式 / 单测省事）。
@@ -162,6 +170,9 @@ public final class SceneGate {
     public List<ValidationIssue> validateAll(String json) {
         List<ValidationIssue> issues = new ArrayList<>(
                 validator.validate(json));
+        // 语义校验（D3）：连接语义的高置信问题（重复连线等），
+        // 与结构校验同权 —— 是闸门的一部分
+        issues.addAll(semantic.validate(json));
         // 几何体检：结构合法不等于画得能看。体检器只报告、
         // 绝不改坐标（怎么挪由 LLM 在修正轮里自己决定）。
         issues.addAll(audit.audit(json));
