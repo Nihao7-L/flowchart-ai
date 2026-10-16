@@ -2,6 +2,8 @@ package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.SubmitSpecTool;
 import io.github.nihaoljx.flowchart.agent.tools.UpdateElementsTool;
+import io.github.nihaoljx.flowchart.critique.CritiqueReport;
+import io.github.nihaoljx.flowchart.critique.VisualFeedbackService;
 import io.github.nihaoljx.flowchart.service.PromptService;
 
 import java.util.List;
@@ -21,7 +23,9 @@ import io.github.nihaoljx.flowchart.llm.AgentResult;
  * while steps < MAX_STEPS 且预算未耗尽:
  *     resp = client.respond(messages, tools)
  *     一批 tool_calls 全部执行 → observation 逐条追加回 messages
- *     if 提交了 submit_spec / update_elements 且通过校验: → COMPLETED
+ *     if 提交了 submit_spec / update_elements 且通过校验:
+ *        → 跑视觉自纠批判（若启用且有问题）：回写结构化引导 → 再来一轮
+ *        → 否则 COMPLETED
  *     if 提交了 submit_spec / update_elements 但未过: → 追加修正指令（点名化 issue），继续
  *     if 纯文本轮:                       → 回喂"请用工具或提交"，继续
  * 超限/超时 → PARTIAL（最后一份读得通的进度，不伪装成功）
@@ -72,12 +76,34 @@ public final class AgentLoop {
     private final AgentLlmClient client;
     private final ToolRegistry registry;
     private final PromptService promptService;
+    private VisualFeedbackService visualFeedback;
 
+    /**
+     * 完整构造（含视觉自纠闭环）。
+     *
+     * @param visualFeedback 可为 null：null 时等同于关闭视觉反馈，
+     *                      管线行为与旧版完全一致（见 D2 视觉自纠闭环）。
+     */
     public AgentLoop(AgentLlmClient client, ToolRegistry registry,
-                     PromptService promptService) {
+                     PromptService promptService,
+                     VisualFeedbackService visualFeedback) {
         this.client = client;
         this.registry = registry;
         this.promptService = promptService;
+        this.visualFeedback = visualFeedback;
+    }
+
+    /** 向后兼容：不接视觉反馈（默认关闭） */
+    public AgentLoop(AgentLlmClient client, ToolRegistry registry,
+                     PromptService promptService) {
+        this(client, registry, promptService, null);
+    }
+
+    /** 注入视觉自纠服务（供 Spring 装配在构造后设置；仅允许从 null 设置一次） */
+    public void setVisualFeedback(VisualFeedbackService visualFeedback) {
+        if (this.visualFeedback == null) {
+            this.visualFeedback = visualFeedback;
+        }
     }
 
     /**
@@ -150,6 +176,17 @@ public final class AgentLoop {
             }
             }
             if (submitted != null && submitted.ok()) {
+                // D2 视觉自纠闭环：给 LLM「装眼睛」。校验通过不代表渲染好看，
+                // 让几何/视觉批判器看一眼布局后的图，有问题就回写**结构性**
+                // 引导（间距/加宽/走向），再来一轮修正；反馈必须是结构性的，
+                // 不做像素修补（D6）。visualFeedback 为 null 或开关关闭时等于
+                // 旧行为。steps < MAX_STEPS 保证还有至少一轮可用来修正。
+                CritiqueReport report = visualFeedback == null ? null
+                        : visualFeedback.critique(ctx.validScene(), userRequest);
+                if (report != null && report.needsFix() && steps < MAX_STEPS) {
+                    messages.appendUser(report.guidance());
+                    continue;
+                }
                 return new AgentResult(AgentResult.Status.COMPLETED,
                         ctx.validScene(), steps, "校验通过");
             }

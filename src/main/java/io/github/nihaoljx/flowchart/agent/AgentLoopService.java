@@ -11,6 +11,11 @@ import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
 import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
 import io.github.nihaoljx.flowchart.service.PromptService;
+import io.github.nihaoljx.flowchart.critique.GeometricCritic;
+import io.github.nihaoljx.flowchart.critique.NoopVisionCritic;
+import io.github.nihaoljx.flowchart.critique.VisualFeedbackConfig;
+import io.github.nihaoljx.flowchart.critique.VisualFeedbackService;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -48,6 +53,14 @@ public class AgentLoopService {
 
     /** 解析出的候选逻辑名（SSE/日志溯源用） */
     private final String candidateName;
+
+    /** 视觉自纠闭环开关（D2）。默认全关，开启需显式配置且接好渲染+视觉模型 */
+    @Value("${chartflow.visual-feedback.enabled:false}")
+    private boolean vfEnabled;
+    @Value("${chartflow.visual-feedback.geometric:true}")
+    private boolean vfGeometric;
+    @Value("${chartflow.visual-feedback.vision:false}")
+    private boolean vfVision;
 
     public AgentLoopService(
             SceneBinder binder,
@@ -99,6 +112,22 @@ public class AgentLoopService {
                         + "MAX_STEPS={}，契约按 read_contract 按需取",
                 candidateName, candidate.getModel(),
                 clients.size(), AgentLoop.MAX_STEPS);
+    }
+
+    /**
+     * 构造后注入视觉自纠服务（D2）。字段注入在构造后完成，故放 @PostConstruct。
+     * 默认开关全关，{@link AgentLoop} 行为与改造前完全一致；开启后由
+     * {@link VisualFeedbackService} 在每轮校验通过后多做一次结构化几何/视觉批判。
+     */
+    @PostConstruct
+    void wireVisualFeedback() {
+        this.loop.setVisualFeedback(new VisualFeedbackService(
+                new VisualFeedbackConfig(vfEnabled, vfGeometric, vfVision),
+                new GeometricCritic(), new NoopVisionCritic()));
+        if (vfEnabled) {
+            LOG.info("视觉自纠闭环已启用（geometric={}, vision={}）",
+                    vfGeometric, vfVision);
+        }
     }
 
     /** 供 `GenerationService` 驱动一次 agent run（含编辑基线） */
