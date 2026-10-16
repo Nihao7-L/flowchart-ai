@@ -2,6 +2,9 @@ package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.AgentTools;
 import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
+import io.github.nihaoljx.flowchart.graph.layout.GenericLayoutFamily;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
+import io.github.nihaoljx.flowchart.graph.layout.SequenceLayout;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -98,7 +101,7 @@ class AgentLoopTest {
                 new SceneBinder(), new SceneDeduper(), new SceneSanitizer(),
                 new ScenePlanner(), new GraphValidator(),
                 new GeometryAudit(), new SceneDrift(), promptService,
-                new ElkLayoutEngine());
+                new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
     }
 
     @Test

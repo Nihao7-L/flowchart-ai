@@ -18,9 +18,10 @@ import static org.mockito.Mockito.when;
 /**
  * {@link FailoverAgentClient} 最小故障转移测试（v2-55 实测补）
  *
- * <p>锁死口径（2026-10-14 增补 502 退避重试后共六条）：瞬时错误同候选
- * 退避重试、非瞬时错误立即切下一家、首候选挂切下一个、粘性主选
- * （成功者下次先试）、全挂抛最后一个异常、空候选列表构造即拒。
+ * <p>锁死口径（2026-10-16 取消「粘性主选」后）：瞬时错误同候选退避重试、
+ * 非瞬时错误立即切下一家、首候选挂切下一个、**每次调用都从主力（下标 0）
+ * 重新试起**（不沿用上一次成功的候选）、全挂抛最后一个异常、空候选列表
+ * 构造即拒；另有挂死冷却与冷却倍率边界两条。
  */
 class FailoverAgentClientTest {
 
@@ -29,8 +30,8 @@ class FailoverAgentClientTest {
     }
 
     @Test
-    @DisplayName("首候选 502 → 重试仍挂切第二个，粘性记住成功者")
-    void failoverToNextAndStick() throws Exception {
+    @DisplayName("首候选 502 → 切第二个；下次调用仍从候选 1 重新试起（无粘性）")
+    void failoverToNextWithoutStick() throws Exception {
         AgentLlmClient broken = mock(AgentLlmClient.class);
         when(broken.respond(anyList(), anyList(), anyInt()))
                 .thenThrow(new IllegalStateException("LLM HTTP 502"));
@@ -41,16 +42,14 @@ class FailoverAgentClientTest {
         // attempts=1：本条只锁「切候选」语义，重试语义另有专门用例
         FailoverAgentClient client = new FailoverAgentClient(
                 List.of(broken, good), 1, 0);
-        AgentTurn result = client.respond(
-                List.of(), List.of(), 60);
+        client.respond(List.of(), List.of(), 60);
 
-        assertSame(result, result);
         verify(broken, times(1)).respond(anyList(), anyList(), anyInt());
         verify(good, times(1)).respond(anyList(), anyList(), anyInt());
 
-        // 第二次调用：粘性主选直接从 good 开始，不再碰 broken
+        // 第二次调用：无粘性 —— 仍从候选 1 开始试（每张图都从主力试起）
         client.respond(List.of(), List.of(), 60);
-        verify(broken, times(1))
+        verify(broken, times(2))
                 .respond(anyList(), anyList(), anyInt());
         verify(good, times(2))
                 .respond(anyList(), anyList(), anyInt());
@@ -146,14 +145,14 @@ class FailoverAgentClientTest {
     }
 
     @Test
-    @DisplayName("主力让位后：每 5 次成功后回头探主力，主力复活即夺回主选")
-    void periodicProbeReclaimsPrimary() throws Exception {
-        // 主力（下标 0）首调超时让位，之后恢复；备用（下标 1）一直可用
+    @DisplayName("主力超时让位后，下次请求仍先试主力（无粘性，主力恢复即直接用）")
+    void primaryRetriedOnNextCall() throws Exception {
+        // 主力（下标 0）第 1 次超时，之后恢复；备用（下标 1）一直可用
         AgentLlmClient primary = mock(AgentLlmClient.class);
         when(primary.respond(anyList(), anyList(), anyInt()))
                 .thenThrow(new IllegalStateException(
-                        "LLM HTTP 408: 请求超时"))   // 第一次：超时让位
-                .thenReturn(turn());                  // 探针轮起：已恢复
+                        "LLM HTTP 408: 请求超时"))   // 第 1 次：超时让位
+                .thenReturn(turn());                  // 之后：已恢复
         AgentLlmClient backup = mock(AgentLlmClient.class);
         when(backup.respond(anyList(), anyList(), anyInt()))
                 .thenReturn(turn());
@@ -161,31 +160,16 @@ class FailoverAgentClientTest {
         FailoverAgentClient client = new FailoverAgentClient(
                 List.of(primary, backup), 1, 0);
 
-        // 第 1 次：主力超时 → 切备用（粘性记住备用）
+        // 第 1 次：主力超时 → 备用接住
         client.respond(List.of(), List.of(), 60);
         verify(primary, times(1)).respond(anyList(), anyList(), anyInt());
         verify(backup, times(1)).respond(anyList(), anyList(), anyInt());
 
-        // 第 2~3 次：粘性主选从备用开始，主力不被触碰
-        for (int n = 0; n < 2; n++) {
-            client.respond(List.of(), List.of(), 60);
-        }
-        verify(primary, times(1))
-                .respond(anyList(), anyList(), anyInt());
-        verify(backup, times(3))
-                .respond(anyList(), anyList(), anyInt());
-
-        // 第 4 次：已达 3 次成功 → 强制回头探主力；主力已恢复 → 夺回主选
+        // 第 2 次：无粘性 —— 仍从主力开始；主力已恢复 → 直接用主力，
+        // 备用本轮不被触碰（旧行为是粘在备用上，要等 3 次成功才回头探）
         client.respond(List.of(), List.of(), 60);
-        verify(primary, times(2))
-                .respond(anyList(), anyList(), anyInt());
-        verify(backup, times(3))
-                .respond(anyList(), anyList(), anyInt());
-
-        // 第 5 次：主选已回主力，继续从主力开始
-        client.respond(List.of(), List.of(), 60);
-        verify(primary, times(3))
-                .respond(anyList(), anyList(), anyInt());
+        verify(primary, times(2)).respond(anyList(), anyList(), anyInt());
+        verify(backup, times(1)).respond(anyList(), anyList(), anyInt());
     }
 
     @Test
@@ -210,13 +194,25 @@ class FailoverAgentClientTest {
         verify(good, times(1))
                 .respond(anyList(), anyList(), anyInt());
 
-        // 第 2 次：候选 1 在冷却期内，即使粘性/探针顺序轮到它也直接跳过
-        // （修复前：每个新请求都要再付一遍挂满窗口的代价）
+        // 第 2 次：候选 1 在冷却期内 → 跳过它（修复前：每个新请求都要
+        // 再付一遍挂满窗口的代价）
         client.respond(List.of(), List.of(), 60);
         verify(hanging, times(1))
                 .respond(anyList(), anyList(), anyInt());
         verify(good, times(2))
                 .respond(anyList(), anyList(), anyInt());
+    }
+
+    @Test
+    @DisplayName("挂死冷却倍率：1 次 ×1、2 次 ×5、3 次 ×15 且封顶 30 分钟")
+    void strikeMultiplierBoundaries() {
+        assertEquals(1, FailoverAgentClient.strikeMultiplier(1));
+        assertEquals(5, FailoverAgentClient.strikeMultiplier(2));
+        assertEquals(15, FailoverAgentClient.strikeMultiplier(3));
+        assertEquals(15, FailoverAgentClient.strikeMultiplier(99));
+        // 封顶 = 基础冷却 ×15（3 次及以上都封顶）
+        assertEquals(FailoverAgentClient.HANG_COOLDOWN_MS * 15,
+                FailoverAgentClient.HANG_COOLDOWN_CAP_MS);
     }
 
     @Test

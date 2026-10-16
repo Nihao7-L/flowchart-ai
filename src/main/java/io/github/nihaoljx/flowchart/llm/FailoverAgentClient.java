@@ -71,25 +71,6 @@ public final class FailoverAgentClient implements AgentLlmClient {
      */
     private final int primaryIndex = 0;
 
-    /** 上一次成功的候选下标（粘性主选；初始 0 = tier 最小者） */
-    private volatile int preferred = 0;
-
-    /**
-     * 连续成功次数（周期性回头探主力的计数器）。每次 {@code respond}
-     * 成功 +1；达到 {@link #PROBE_INTERVAL} 后，下一次请求强制从
-     * {@link #primaryIndex} 开始试一次，给"因一次超时让位的主力"
-     * 一个抢回主选的机会（见下）。
-     */
-    private volatile int successCount = 0;
-
-    /**
-     * 每多少次成功后，强制回头探一次主力。背景：主力（glm）一旦因为
-     * 一次超时（超时非瞬时错误、不重试、直接切下家）让出主选，只要
-     * 后面的候选健康，"粘性主选"就永远停在它们身上，主力长期闲置。
-     * 这个间隔就是让主力定期出镜、证明自己又行了就自动拿回主选。
-     */
-    static final int PROBE_INTERVAL = 3;
-
     /**
      * 挂死候选的冷却时长（毫秒）。挂死的定义：连接活着但远端不回包，
      * 只能等超时（300s 硬帽）——这种失败的信息量大（不是瞬时抖动），
@@ -99,6 +80,16 @@ public final class FailoverAgentClient implements AgentLlmClient {
 
     /** 候选下标 → 冷却截止时刻（epoch ms）。进程内存，重启即忘 */
     private final Map<Integer, Long> hangCooldown =
+            new ConcurrentHashMap<>();
+
+    /**
+     * 候选下标 → 连续挂死次数（成功一次清零）。挂死冷却逐级升级：
+     * 今天（2026-10-15）主力候选反复挂死，固定 120s 冷却意味着每
+     * 2 分钟就要重新烧一遍 180s 硬帽 —— regress_arch7 实测一次生成
+     * 201.9s 里 180s 是挂死白烧。连续挂 2 次 ×5、3 次以上 ×15，
+     * 把「病候选」快速隔离出本进程生命周期。
+     */
+    private final Map<Integer, Integer> hangStrikes =
             new ConcurrentHashMap<>();
 
     /** 测试注入用：重试次数上限与基础退避 */
@@ -124,10 +115,19 @@ public final class FailoverAgentClient implements AgentLlmClient {
     public AgentTurn respond(List<AgentMessage> messages,
                              List<Map<String, Object>> tools,
                              int timeoutSeconds) throws Exception {
+        return respond(messages, tools, timeoutSeconds, "auto");
+    }
+
+    @Override
+    public AgentTurn respond(List<AgentMessage> messages,
+                             List<Map<String, Object>> tools,
+                             int timeoutSeconds,
+                             String toolChoice) throws Exception {
         Exception last = null;
-        // 周期性回头探主力：累计成功达到间隔，下一次强制从主力下标开始。
-        boolean probe = successCount >= PROBE_INTERVAL;
-        int start = probe ? primaryIndex : preferred;
+        // 每次都从主力（下标 0 = tier 最小者）重新试起，不做"粘性主选"。
+        // 2026-10-16 用户拍板：每张图都从主力开始试（主力质量最好），
+        // 主力失败才按序往后转移 —— 上一张图成功用过的候选不带到下一张。
+        int start = primaryIndex;
         // 冷却过滤：保持从 start 起的环形顺序，跳过冷却中的候选；
         // 全员都在冷却时无视冷却（避免"没有候选可用"的死路）
         List<Integer> order = new ArrayList<>();
@@ -148,18 +148,23 @@ public final class FailoverAgentClient implements AgentLlmClient {
             AgentLlmClient client = candidates.get(idx);
             for (int attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
-                    AgentTurn turn = client
-                            .respond(messages, tools, timeoutSeconds);
+                    // auto 语义走老三参：测试桩（Mockito mock 不认
+                    // 接口 default 方法）与旧行为都照旧；只有显式
+                    // required 才走四参
+                    AgentTurn turn =
+                            (toolChoice == null
+                                    || "auto".equals(toolChoice))
+                            ? client.respond(messages, tools,
+                                    timeoutSeconds)
+                            : client.respond(messages, tools,
+                                    timeoutSeconds, toolChoice);
                     if (attempt > 1) {
                         LOG.info("[AgentFailover] 候选 {}/{} 第 {} 次"
                                         + "重试命中", idx + 1,
                                 candidates.size(), attempt);
                     }
-                    preferred = idx;
                     hangCooldown.remove(idx);
-                    // 探针这次成功也只算"探到一次"，计数器归零重数；
-                    // 非探针则正常 +1。两路都让主力健康时 preferentially 回到主选。
-                    successCount = probe ? 0 : successCount + 1;
+                    hangStrikes.remove(idx);
                     return turn;
                 } catch (Exception e) {
                     last = e;
@@ -170,17 +175,22 @@ public final class FailoverAgentClient implements AgentLlmClient {
                             idx + 1, candidates.size(), attempt,
                             maxAttempts, brief(e));
                     if (isHang(e)) {
-                        // 挂死（远端不回包，只能等超时）：短冷却，
+                        // 挂死（远端不回包，只能等超时）：逐级升级冷却，
                         // 后续请求不再重复付"挂满窗口"的代价。
                         // 最后一个候选也记 —— 挂死就是挂死，不能
                         // 因为"它是最后试的"就下次还当健康候选先试
+                        int strikes = hangStrikes.merge(idx, 1,
+                                Integer::sum);
+                        long cooldown = Math.min(
+                                HANG_COOLDOWN_MS
+                                        * strikeMultiplier(strikes),
+                                HANG_COOLDOWN_CAP_MS);
                         hangCooldown.put(idx,
-                                System.currentTimeMillis()
-                                        + HANG_COOLDOWN_MS);
-                        LOG.info("[AgentFailover] 候选 {}/{} 判挂死，"
-                                        + "冷却 {}s",
-                                idx + 1, candidates.size(),
-                                HANG_COOLDOWN_MS / 1000);
+                                System.currentTimeMillis() + cooldown);
+                        LOG.info("[AgentFailover] 候选 {}/{} 判挂死（连续"
+                                        + "第 {} 次），冷却 {}s",
+                                idx + 1, candidates.size(), strikes,
+                                cooldown / 1000);
                     }
                     if (lastCandidate && lastAttempt) {
                         // 最后一个候选也挂了：抛给循环走兜底语义
@@ -203,6 +213,17 @@ public final class FailoverAgentClient implements AgentLlmClient {
         return until != null
                 && System.currentTimeMillis() < until;
     }
+
+    /** 连续挂死次数 → 冷却倍率：1 次 ×1、2 次 ×5、3 次及以上 ×15（封顶 30 分钟） */
+    static long strikeMultiplier(int strikes) {
+        if (strikes <= 1) {
+            return 1;
+        }
+        return strikes == 2 ? 5 : 15;
+    }
+
+    /** 挂死冷却的绝对上限（30 分钟）：进程内存冷却是会话级隔离手段，不是死刑 */
+    static final long HANG_COOLDOWN_CAP_MS = 1_800_000L;
 
     /**
      * 瞬时错误判定：只认「立即返回」的网关过载状态码

@@ -6,6 +6,7 @@ import io.github.nihaoljx.flowchart.critique.CritiqueReport;
 import io.github.nihaoljx.flowchart.critique.VisualFeedbackService;
 import io.github.nihaoljx.flowchart.service.PromptService;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import io.github.nihaoljx.flowchart.llm.AgentTurn;
@@ -28,6 +29,8 @@ import io.github.nihaoljx.flowchart.llm.AgentResult;
  *        → 否则 COMPLETED
  *     if 提交了 submit_spec / update_elements 但未过: → 追加修正指令（点名化 issue），继续
  *     if 纯文本轮:                       → 回喂"请用工具或提交"，继续
+ *                                        （下一轮 tool_choice=required 强制出工具）
+ *     if 同工具同参数原样重发:            → 第2次软干预、第4次硬早退
  * 超限/超时 → PARTIAL（最后一份读得通的进度，不伪装成功）
  *
  * 双闸门：步数上限 {@value #MAX_STEPS} + 总预算 `deadlineMs`
@@ -63,8 +66,22 @@ public final class AgentLoop {
      * 实测第 1 步 5~30 秒收敛，100s 是 3 倍以上的裕量；反过来说，
      * 一份需要 >100s 的调用必然是又回到了"自己算坐标画样式"的老路，
      * 那时候早掐断、换候选，比等它画完更接近用户要的结果。
+     *
+     * ⚠️ 2026-10-16 深夜修正（两轮实测迭代）：
+     * ① 复杂图（8 参与者时序图）让模型自选 submit_scene，合法地慢，
+     *    100s 总帽误杀正在吐字的 GLM（后端已生成成功却因 SSE 140s 先关
+     *    而送达失败）—— 故接入流式 + 空闲判死（见 OpenAiToolClient），
+     *    本帽退居"单次调用的绝对天花板"而非主判据。
+     * ② 但第一版把本帽抬到 950s 踩坑：GLM（tier1 主力）画该时序图单跳
+     *    流式狂奔 366s 且输出非法（8 轮校验全打回 → 占位符）。空闲判死
+     *    救不了它（它在持续吐字、不是卡死，即"流着垃圾"盲区）。
+     *    而实测 GLM 一旦被切、deepseek（tier2）84s 就产出合法 41 节点图。
+     * ③ 故定 180s：足够合法候选跑完（deepseek ~84s，2 倍余量），又能在
+     *    狂奔候选（GLM ~366s）烧穿预算前切断、逼故障转移到下家。真正
+     *    的根治是候选排序（见 AgentLoopService / application.yml）——
+     *    本帽只是防"单次调用无限跑"的理智线。
      */
-    public static final int CALL_TIMEOUT_CAP_SECONDS = 100;
+    public static final int CALL_TIMEOUT_CAP_SECONDS = 180;
 
     /** 纯文本轮的回喂提示（模型只说话不干活时给一条明确的出路） */
     private static final String NO_TOOL_NUDGE =
@@ -72,6 +89,23 @@ public final class AgentLoop {
                     + "所有结构化图表（流程/架构/时序/组织/思维导图等）"
                     + "都用 submit_spec 语义提交（只给节点与连线，"
                     + "坐标由布局引擎算）；需要看当前场景可 read_scene。";
+
+    /**
+     * 振荡干预提示（2026-10-16 补）：同工具同参数原样重发第二次时回喂。
+     *
+     * <p>实测病态模式：同一个坏调用（如早期 siliconflow 流式空工具名）
+     * 原样重复 3~4 次，8 步烧完只落占位符。市场共识做法是重复检测 +
+     * 硬干预；这里是软干预版（第 2 次提示、第 4 次早退），既给模型
+     * 留一轮自救，又不让整场预算被空转吃光。
+     */
+    private static final String OSCILLATION_NUDGE =
+            "你在原样重复同一个调用。重复同样的输入不会换来新结果："
+                    + "要么按上一条工具反馈真正修改参数，要么承认这一步"
+                    + "做不了、换一种做法（拆小图 / 换工具），"
+                    + "不要原样重发。";
+
+    /** 同一调用原样重复到这么多次 ⇒ 提前收手（PARTIAL），不烧完步数 */
+    private static final int OSCILLATION_HARD_STOP = 4;
 
     private final AgentLlmClient client;
     private final ToolRegistry registry;
@@ -145,6 +179,10 @@ public final class AgentLoop {
         ToolContext ctx = new ToolContext(
                 userRequest, userElements, previousJson);
         int steps = 0;
+        // 振荡检测账本：调用摘要（工具名 + 参数 JSON）→ 原样重复次数
+        Map<String, Integer> callDigests = new LinkedHashMap<>();
+        // 纯文本空转过一次后，下一轮物理上强制调工具（tool_choice=required）
+        boolean forceTool = false;
         while (steps < MAX_STEPS) {
             if (System.currentTimeMillis() >= deadlineMs) {
                 return partial(ctx, steps, "总预算耗尽");
@@ -153,21 +191,36 @@ public final class AgentLoop {
             safeStep(listener, steps);
             AgentTurn turn = client.respond(
                     messages.snapshot(), registry.schemas(),
-                    callTimeoutSeconds(deadlineMs));
+                    callTimeoutSeconds(deadlineMs),
+                    forceTool ? "required" : "auto");
             messages.appendAssistant(turn);
 
             if (turn.toolCalls().isEmpty()) {
                 messages.appendUser(NO_TOOL_NUDGE);
+                forceTool = true;
                 continue;
             }
+            forceTool = false;
             Observation submitted = null;
             for (ToolCall call : turn.toolCalls()) {
                 safeToolCall(listener, call);
                 Observation obs = registry.dispatch(call, ctx);
                 messages.appendToolResult(call, obs);
                 safeToolResult(listener, call, obs);
+                // 振荡检测（2026-10-16）：同工具同参数原样重发。
+                // 第 2 次软干预（给一轮自救），第 4 次硬早退（PARTIAL）。
+                String digest = call.name() + "|"
+                        + (call.arguments() == null
+                        ? "{}" : call.arguments().toString());
+                int seen = callDigests.merge(digest, 1, Integer::sum);
+                if (seen == 2) {
+                    messages.appendUser(OSCILLATION_NUDGE);
+                } else if (seen >= OSCILLATION_HARD_STOP) {
+                    return partial(ctx, steps,
+                            "振荡：同一调用原样重复 " + seen + " 次，提前收手");
+                }
             // 两类提交工具的成功都是终态：submit_spec（语义路径，
-            // validScene 已由布局引擎产出）与 update_elements（增量编辑）
+            // validScene 已由布局家族产出）与 update_elements（增量编辑）
             // 同权 —— 不再继续空转剩余步数。submit_scene 已在 v10.12.0
             // 冻结，不再注册（让 LLM 算坐标是反模式，见战略报告）
             if (UpdateElementsTool.NAME.equals(call.name())

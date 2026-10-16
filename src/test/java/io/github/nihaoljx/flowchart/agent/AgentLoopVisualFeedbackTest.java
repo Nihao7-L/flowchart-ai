@@ -7,6 +7,9 @@ import io.github.nihaoljx.flowchart.critique.NoopVisionCritic;
 import io.github.nihaoljx.flowchart.critique.VisualFeedbackConfig;
 import io.github.nihaoljx.flowchart.critique.VisualFeedbackService;
 import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
+import io.github.nihaoljx.flowchart.graph.layout.GenericLayoutFamily;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
+import io.github.nihaoljx.flowchart.graph.layout.SequenceLayout;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -97,7 +100,7 @@ class AgentLoopVisualFeedbackTest {
         PromptService ps = new PromptService();
         return AgentTools.defaultRegistry(new SceneBinder(), new SceneDeduper(),
                 new SceneSanitizer(), new ScenePlanner(), new GraphValidator(),
-                new GeometryAudit(), new SceneDrift(), ps, new ElkLayoutEngine());
+                new GeometryAudit(), new SceneDrift(), ps, new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
     }
 
     @Test
