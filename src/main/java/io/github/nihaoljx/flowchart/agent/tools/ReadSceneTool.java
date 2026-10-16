@@ -60,8 +60,8 @@ public final class ReadSceneTool implements AgentTool {
         String current = ctx.processedScene();
         if (current == null) {
             return Observation.fail(
-                    "还没有场景可读：先 submit_scene（"
-                            + "第一次生成时直接画即可）", null, null);
+                    "还没有场景可读：先 submit_spec（结构化图用 submit_spec "
+                            + "交语义 spec 即可）", null, null);
         }
         JsonNode root;
         try {

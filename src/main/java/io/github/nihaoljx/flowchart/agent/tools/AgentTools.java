@@ -28,8 +28,12 @@ public final class AgentTools {
     }
 
     /**
-     * 默认注册表：语义工具（submit_spec）+ 场景工具（submit_scene /
-     * update_elements）+ 读取工具（read_scene / read_contract）。
+     * 默认注册表：语义提交工具（submit_spec，唯一生成路径：坐标全交布局引擎）+
+     * 增量编辑工具（update_elements）+ 读取工具（read_scene / read_contract）。
+     *
+     * <p>submit_scene（让 LLM 直出 x/y 坐标）已在 v10.12.0 冻结：它是
+     * 文章点名的反模式（让 LLM 当几何排版引擎），cat 超时 / 坐标漂移的根。
+     * 不再注册 = LLM 看不到也调不到该工具，所有画图强制走 submit_spec。
      *
      * <p>刻意没有校验工具（2026-10-15 用户拍板「那些不是工具」）：
      * 校验是管线闸门不是模型动作 —— 每次提交在工具内部自动过
@@ -58,7 +62,6 @@ public final class AgentTools {
                 validator, audit, drift);
         List<AgentTool> tools = List.of(
                 new SubmitSpecTool(gate, layoutEngine, planner),
-                new SubmitSceneTool(gate),
                 new UpdateElementsTool(gate),
                 new ReadSceneTool(),
                 new ReadContractTool(promptService));

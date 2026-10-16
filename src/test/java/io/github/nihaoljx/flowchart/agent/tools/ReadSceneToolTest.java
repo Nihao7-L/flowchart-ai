@@ -72,6 +72,6 @@ class ReadSceneToolTest {
     void failsWithoutScene() {
         Observation obs = tool.execute(null, new ToolContext(null, null));
         assertFalse(obs.ok());
-        assertTrue(obs.summary().contains("submit_scene"));
+        assertTrue(obs.summary().contains("submit_spec"));
     }
 }

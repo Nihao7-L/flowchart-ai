@@ -10,6 +10,56 @@
 > （漏记一整段，见下方 10.2.0 条的说明）。现按当日工作日志与 md 治理头如实补齐，
 > 日期取当时的实际改动日，非补记日。
 
+## 10.12.0 (2026-10-16)
+
+**目标：冻结 submit_scene（让 LLM 直出 x/y 坐标的反模式路径），让 submit_spec 成为唯一生成路径。**
+
+背景（承接 10.11.0 实测）：submit_scene 让 LLM 当几何排版引擎，模型在推理里穷举布局、逐条手算连线，
+实测 glm-5.3-flash 硬架构图 12 分钟写出 11.9 万字推理、零工具调用、零产出；cat 直接 120s 超时；
+auth/rag 坐标漂移严重。文章框架（Adding Visual Feedback to LLMs via Drawing DSL and Compiler）点明：
+文本模型被放到需要视觉反馈与全局几何规划的岗位是架构错位，坐标必须由确定性布局引擎负责。
+
+md 改动（增量）：
+- L0 治理头版本 v10.11.0 → v10.12.0，新增「彻底冻结 submit_scene」变更说明。
+- 「输出格式·提交」删去「自由画用 submit_scene」引导。
+- 「执行过程·选提交路径」删去「自由画（涂鸦/插画/猫咪/伪 3D/摆位类）才用 submit_scene 直出 elements」
+  分句，收敛为「所有『节点+连线』形态一律 submit_spec，submit_scene 已冻结」。
+
+配套代码（同批）：
+- `AgentTools.defaultRegistry`：从工具清单移除 `new SubmitSceneTool(gate)`，LLM 再也看不到、
+  调不到该工具；保留 `SubmitSceneTool` 类本身（其单测仍直接构造）。
+- `AgentLoop`：移除 `SubmitSceneTool` import 与终态判定里的 `submit_scene` 分支；NO_TOOL_NUDGE
+  与类注释同步收敛到 submit_spec。
+- `SubmitSpecTool` / `ReadSceneTool` / `UpdateElementsTool`：收敛引导文案中对 submit_scene 的指引
+  到 submit_spec（避免模型被指去调一个不存在的工具）。
+- 测试：`AgentLoopTest` 的提交桩由 `submit_scene`（整份 scene）改为 `submit_spec`（语义 spec），
+  `GenerationServiceTest` 的模拟提交回放同步改名；两测试均仍校验「提交通过→COMPLETED」等原语义。
+
+## 10.11.0 (2026-10-16)
+
+**目标：语义路径补上「颜色/标题」表达能力，把「用户点名了颜色」这条逼模型回退手写坐标的旁路堵死。**
+
+背景（2026-10-16 五张参考图实测）：v10.10.0 虽已要求结构化图表一律 submit_spec，但 spec 当时
+**既没有颜色也没有标题字段** —— 提示词一旦点名「Encoder 容器紫色、Attention 粉红」，模型为了让
+需求落地只能改走 submit_scene 自己算坐标画样式，输出 44 个元素 × 11 字段，单次调用 200~300 秒
+（Transformer 309.5s / RAG 999.6s / 认证 226.8s），而同一请求走语义路径第 1 步只需 5~30 秒
+（3 节点流程图实测 5.3s）。结论：**颜色是语义（这一层是什么），该留在 spec 里用有限词表表达；
+坐标才是几何，必须拿走**。
+
+md 改动（增量，未回退既有口径）：
+- 「选提交路径」补一句：用户点名颜色/分区/参考图/摆位也仍走 submit_spec —— 颜色写节点的
+  `color`（blue/green/yellow/red/purple/orange/cyan/pink/gray 九个名字，色值由代码定）、
+  分层写 `group`、线型写 `relation`、整图标题写 `title`，绝不因此改用 submit_scene 手写坐标。
+- 「计划」一句精简（省下的字节抵掉新增，system 块仍 < 10000B 上限）。
+
+配套代码（同批）：
+- `SubmitSpecTool`：节点新增 `color`（具名枚举，填充 + 同色系深一档描边）；spec 新增 `title`
+  （合成一个落在全图包围盒上沿的 text 元素，位置由代码算）；分区自动配色改为「名字轮转 + 描边」。
+- 顺带修一个工具 schema 缺陷：`enum: List.of(SHAPE_TYPES)` 把 Set 当单元素包成嵌套数组
+  （`[["rectangle",...]]`），改为有序 `List` 直用。
+- 时间口径：`AgentLoop.CALL_TIMEOUT_CAP_SECONDS` 300→100、`GenerationBudget.TOTAL_BUDGET_MS`
+  3600s→120s（单图 SLA = ≤100 秒，超时即判失败；120s = SLA + 20s 故障转移余量）。
+
 ## 10.10.0 (2026-10-15)
 
 **目标：提示词切主路径——结构化图表一律 submit_spec 语义提交，坐标交给布局引擎（S2 语义-坐标分离落地）。**

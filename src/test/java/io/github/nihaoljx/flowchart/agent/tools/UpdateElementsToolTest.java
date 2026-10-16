@@ -73,8 +73,8 @@ class UpdateElementsToolTest {
                 {"ops":[{"action":"remove","id":"a"}]}
                 """), new ToolContext("画一张图", null));
         assertFalse(obs.ok());
-        assertTrue(obs.summary().contains("submit_scene"),
-                "应引导回 submit_scene: " + obs.summary());
+        assertTrue(obs.summary().contains("submit_spec"),
+                "应引导回 submit_spec: " + obs.summary());
     }
 
     @Test

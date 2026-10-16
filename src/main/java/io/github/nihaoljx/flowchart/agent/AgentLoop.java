@@ -1,6 +1,5 @@
 package io.github.nihaoljx.flowchart.agent;
 
-import io.github.nihaoljx.flowchart.agent.tools.SubmitSceneTool;
 import io.github.nihaoljx.flowchart.agent.tools.SubmitSpecTool;
 import io.github.nihaoljx.flowchart.agent.tools.UpdateElementsTool;
 import io.github.nihaoljx.flowchart.service.PromptService;
@@ -22,8 +21,8 @@ import io.github.nihaoljx.flowchart.llm.AgentResult;
  * while steps < MAX_STEPS 且预算未耗尽:
  *     resp = client.respond(messages, tools)
  *     一批 tool_calls 全部执行 → observation 逐条追加回 messages
- *     if 提交了 submit_spec / submit_scene / update_elements 且通过校验: → COMPLETED
- *     if 提交了 submit_spec / submit_scene 但未过: → 追加修正指令（点名化 issue），继续
+ *     if 提交了 submit_spec / update_elements 且通过校验: → COMPLETED
+ *     if 提交了 submit_spec / update_elements 但未过: → 追加修正指令（点名化 issue），继续
  *     if 纯文本轮:                       → 回喂"请用工具或提交"，继续
  * 超限/超时 → PARTIAL（最后一份读得通的进度，不伪装成功）
  *
@@ -44,20 +43,31 @@ public final class AgentLoop {
      * （TOTAL_BUDGET_MS=1_800_000 → 首轮调用 1800s）。候选一旦在
      * 远端挂住（连接活着但迟迟不回），这一发就**安静烧满 30 分钟**
      * —— 不抛异常、不触发故障转移、不打日志，肉眼只看到"卡死"。
-     * 实测正常首步收敛全部落在 5~114s：单次调用 5 分钟还产不出
-     * tool call 就是病态。帽子一超抛 HttpTimeoutException，超时
-     * 刻意不算瞬时错误（FailoverAgentClient.isTransient）→
-     * 立即换下一家候选，并留下一行 WARN。
+     * 实测正常首步收敛全部落在 5~114s：帽子先设 300s（regress_arch2
+     * 第 4 步实测仍被挂死候选烧满 5 分钟），2026-10-15 收到 180s
+     * —— 给正常收敛留 60% 裕量的同时，把挂死代价从 5 分钟压到
+     * 3 分钟。帽子一超抛 HttpTimeoutException，超时刻意不算瞬时
+     * 错误（FailoverAgentClient.isTransient）→ 立即换下一家候选，
+     * 并留下一行 WARN。
+     *
+     * 2026-10-16 用户拍板收回到 100s：这一版的 SLA 是「单图 ≤100 秒，
+     * 超 100 秒即判失败」。单次调用既然不许超过 100s，整图（含可能的
+     * 修正轮）就只可能更快 —— 把帽子和 SLA 对齐，才不会出现"每张图
+     * 合法地跑 300 秒"这种与 SLA 互相打架的口径。
+     *
+     * 前提是模型不再手算几何：语义路径（submit_spec，只交节点与连线）
+     * 实测第 1 步 5~30 秒收敛，100s 是 3 倍以上的裕量；反过来说，
+     * 一份需要 >100s 的调用必然是又回到了"自己算坐标画样式"的老路，
+     * 那时候早掐断、换候选，比等它画完更接近用户要的结果。
      */
-    public static final int CALL_TIMEOUT_CAP_SECONDS = 300;
+    public static final int CALL_TIMEOUT_CAP_SECONDS = 100;
 
     /** 纯文本轮的回喂提示（模型只说话不干活时给一条明确的出路） */
     private static final String NO_TOOL_NUDGE =
             "你没有调用任何工具。画图必须通过工具完成："
-                    + "结构化图表（流程/架构/时序/组织/思维导图等）"
-                    + "优先 submit_spec 语义提交（只给节点与连线，"
-                    + "坐标由布局引擎算）；自由画/精确摆位才 submit_scene；"
-                    + "需要看当前场景可 read_scene。";
+                    + "所有结构化图表（流程/架构/时序/组织/思维导图等）"
+                    + "都用 submit_spec 语义提交（只给节点与连线，"
+                    + "坐标由布局引擎算）；需要看当前场景可 read_scene。";
 
     private final AgentLlmClient client;
     private final ToolRegistry registry;
@@ -130,14 +140,14 @@ public final class AgentLoop {
                 Observation obs = registry.dispatch(call, ctx);
                 messages.appendToolResult(call, obs);
                 safeToolResult(listener, call, obs);
-                // 三类提交工具的成功都是终态：submit_spec（语义路径，
-                // validScene 已由布局引擎产出）与 submit_scene /
-                // update_elements（坐标路径）同权 —— 不再继续空转剩余步数
-                if (SubmitSceneTool.NAME.equals(call.name())
-                        || UpdateElementsTool.NAME.equals(call.name())
-                        || SubmitSpecTool.NAME.equals(call.name())) {
-                    submitted = obs;
-                }
+            // 两类提交工具的成功都是终态：submit_spec（语义路径，
+            // validScene 已由布局引擎产出）与 update_elements（增量编辑）
+            // 同权 —— 不再继续空转剩余步数。submit_scene 已在 v10.12.0
+            // 冻结，不再注册（让 LLM 算坐标是反模式，见战略报告）
+            if (UpdateElementsTool.NAME.equals(call.name())
+                    || SubmitSpecTool.NAME.equals(call.name())) {
+                submitted = obs;
+            }
             }
             if (submitted != null && submitted.ok()) {
                 return new AgentResult(AgentResult.Status.COMPLETED,

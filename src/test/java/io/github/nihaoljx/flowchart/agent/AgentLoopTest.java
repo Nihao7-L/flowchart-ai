@@ -41,15 +41,15 @@ class AgentLoopTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private static final String GOOD_SCENE = """
-            {"elements":[
-              {"id":"a","type":"rectangle","x":0,"y":0,"width":160,"height":70,
-               "label":{"text":"开始"}},
-              {"id":"b","type":"rectangle","x":400,"y":0,"width":160,"height":70,
-               "label":{"text":"结束"}},
-              {"id":"a2b","type":"arrow","x":160,"y":35,
-               "start":{"id":"a"},"end":{"id":"b"}}
-            ]}
+    private static final String GOOD_SPEC = """
+            {"nodes":[
+              {"id":"a","label":"开始"},
+              {"id":"b","label":"结束"}
+            ],"edges":[{"from":"a","to":"b"}]}
+            """;
+
+    private static final String EMPTY_SPEC = """
+            {"nodes":[],"edges":[]}
             """;
 
     private ToolRegistry registry;
@@ -84,10 +84,10 @@ class AgentLoopTest {
         }
     }
 
-    private static AgentTurn submit(String sceneJson) throws Exception {
+    private static AgentTurn submit(String specJson) throws Exception {
         ToolCall call = new ToolCall("c" + System.nanoTime(),
-                "submit_scene",
-                MAPPER.readTree("{\"scene\":" + sceneJson + "}"));
+                "submit_spec",
+                MAPPER.readTree("{\"spec\":" + specJson + "}"));
         return new AgentTurn("", List.of(call));
     }
 
@@ -104,7 +104,7 @@ class AgentLoopTest {
     @Test
     @DisplayName("一次提交直通 → COMPLETED，步数 1")
     void completesOnFirstSubmit() throws Exception {
-        StubClient client = new StubClient(submit(GOOD_SCENE));
+        StubClient client = new StubClient(submit(GOOD_SPEC));
         AgentLoop loop = new AgentLoop(client, registry, promptService);
 
         AgentResult result = loop.run("SYS", "画流程图",
@@ -120,7 +120,7 @@ class AgentLoopTest {
     @DisplayName("空场景被拒 → 修正指令（buildFixBlock）回喂 → 二次提交通过")
     void fixLoopReruns() throws Exception {
         StubClient client = new StubClient(
-                submit("{\"elements\":[]}"), submit(GOOD_SCENE));
+                submit(EMPTY_SPEC), submit(GOOD_SPEC));
         AgentLoop loop = new AgentLoop(client, registry, promptService);
 
         AgentResult result = loop.run("SYS", "画流程图",
@@ -137,7 +137,7 @@ class AgentLoopTest {
     void nudgeOnTextOnlyTurn() throws Exception {
         StubClient client = new StubClient(
                 new AgentTurn("好的，我来画。", null),
-                submit(GOOD_SCENE));
+                submit(GOOD_SPEC));
         AgentLoop loop = new AgentLoop(client, registry, promptService);
 
         AgentResult result = loop.run("SYS", "画流程图",
@@ -173,7 +173,7 @@ class AgentLoopTest {
                 unknown,
                 new ToolCall("c10", "read_contract",
                         MAPPER.readTree("{\"section\":\"arrow\"}")))),
-                submit(GOOD_SCENE));
+                submit(GOOD_SPEC));
         AgentLoop loop = new AgentLoop(client, registry, promptService);
 
         AgentResult result = loop.run("SYS", "画流程图",

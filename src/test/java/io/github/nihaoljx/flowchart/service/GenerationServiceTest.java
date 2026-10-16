@@ -245,7 +245,7 @@ class GenerationServiceTest {
             AgentLoopListener listener =
                     invocation.getArgument(5);
             listener.onToolResult(
-                    new ToolCall("c1", "submit_scene", null),
+                    new ToolCall("c1", "submit_spec", null),
                     Observation.fail("校验未过", null,
                             List.of(new ValidationIssue(
                                     "arrow", "箭头路径不合法",

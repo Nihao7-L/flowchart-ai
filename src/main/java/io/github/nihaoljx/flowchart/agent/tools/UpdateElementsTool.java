@@ -26,7 +26,7 @@ import java.util.Set;
  * 消灭"整图重画"一类事故，而不是靠提示词劝。
  *
  * 基座选择：本次 run 已有校验通过的场景（validScene）用它；否则编辑
- * 基线（previousJson）；两者皆空（新建模式）→ fail 引导回 submit_scene。
+ * 基线（previousJson）；两者皆空（新建模式）→ fail 引导回 submit_spec。
  *
  * update 是整元素替换而非字段级合并：与全量协议的字段语义 100%
  * 一致，模型零新知识；合并语义（深度合并 / 数组叠加）出脏数据的面大，
@@ -60,7 +60,7 @@ public final class UpdateElementsTool implements AgentTool {
                 + "必须优先用本工具，不要整图重画。删链路中间节点时，要同时删掉连到它的箭头"
                 + "并 add 一条前驱→后继的桥接箭头，保持链路连通。update 必须给完整替换体"
                 + "（整元素全字段，不是只给变化的字段）；只有新建图或用户明确要求"
-                + "重画时才用 submit_scene。";
+                + "重画时才走 submit_spec（同样不交坐标）。";
     }
 
     @Override
@@ -94,7 +94,7 @@ public final class UpdateElementsTool implements AgentTool {
         if (baseJson == null) {
             return fail(
                     "当前没有可编辑的基线场景：这是新建请求，请改用 "
-                            + "submit_scene 提交整份场景 JSON",
+                            + "submit_spec 提交语义 spec（nodes/edges）",
                     null);
         }
         JsonNode base;
@@ -117,7 +117,7 @@ public final class UpdateElementsTool implements AgentTool {
         } catch (Exception e) {
             return fail("应用 ops 后无法序列化: " + e.getMessage(), null);
         }
-        // 与 submit_scene 同一条闸门：增量产物不降校验标准（不回退红线）
+        // 与 submit_spec 同一条闸门：增量产物不降校验标准（不回退红线）
         SceneGate.Outcome out = gate.process(merged, ctx);
         if (!out.parseable()) {
             return Observation.fail(
@@ -289,7 +289,7 @@ public final class UpdateElementsTool implements AgentTool {
                 payload(List.of(issue)), List.of(issue));
     }
 
-    /** 结构化载荷：issue 三元组（与 SubmitSceneTool 同形态，有界可回喂） */
+    /** 结构化载荷：issue 三元组（与 submit_spec 同形态，有界可回喂） */
     private static JsonNode payload(List<ValidationIssue> issues) {
         ObjectNode node = MAPPER.createObjectNode();
         node.put("issueCount", issues.size());
