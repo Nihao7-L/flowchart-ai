@@ -49,22 +49,22 @@ class RelationCompileTest {
     }
 
     @Test
-    @DisplayName("flow → 实线 + 末端三角")
-    void flowCompilesToSolidTriangle() {
+    @DisplayName("flow → 实线 + 末端原生箭头头(arrow)")
+    void flowCompilesToSolidArrow() {
         ObjectNode a = arrowWithRelation("flow");
         assertTrue(ScenePlanner.compileRelations(listOf(a)));
         assertEquals("solid", a.get("strokeStyle").asText());
-        assertEquals("triangle", a.get("endArrowhead").asText());
+        assertEquals("arrow", a.get("endArrowhead").asText());
         assertFalse(a.has("startArrowhead"));
     }
 
     @Test
-    @DisplayName("call → 实线 + 末端三角（与 flow 同款）")
-    void callCompilesToSolidTriangle() {
+    @DisplayName("call → 实线 + 末端原生箭头头(arrow)（与 flow 同款）")
+    void callCompilesToSolidArrow() {
         ObjectNode a = arrowWithRelation("call");
         ScenePlanner.compileRelations(listOf(a));
         assertEquals("solid", a.get("strokeStyle").asText());
-        assertEquals("triangle", a.get("endArrowhead").asText());
+        assertEquals("arrow", a.get("endArrowhead").asText());
     }
 
     @Test
@@ -77,11 +77,11 @@ class RelationCompileTest {
     }
 
     @Test
-    @DisplayName("data → 点线，无端点形状")
-    void dataCompilesToDotted() {
+    @DisplayName("data → 实线，无端点形状（mermaid 口径：读写不是虚线）")
+    void dataCompilesToSolid() {
         ObjectNode a = arrowWithRelation("data");
         ScenePlanner.compileRelations(listOf(a));
-        assertEquals("dotted", a.get("strokeStyle").asText());
+        assertEquals("solid", a.get("strokeStyle").asText());
         assertFalse(a.has("startArrowhead"));
         assertFalse(a.has("endArrowhead"));
     }

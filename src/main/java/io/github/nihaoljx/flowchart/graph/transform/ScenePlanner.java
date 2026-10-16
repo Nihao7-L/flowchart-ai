@@ -8,10 +8,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -42,15 +40,21 @@ import io.github.nihaoljx.flowchart.graph.layout.LayoutSpec;
  * （列数按长宽比择优）—— 后者只有几十行、纯函数、可单测，而 compound graph
  * 要处理父子坐标系换算与跨层边路由，踩坑面大得多。
  *
- * 模块从哪来（5.2 的三级降级）：
+ * 模块从哪来（2026-10-15 收紧：分区是**语义决策**，只认显式声明）：
  *
- * - ① LLM 标注（主）：提示词要求图形数超 MODULE_THRESHOLD
- *       时给每个图形写 `group`；
+ * - ① LLM 标注（唯一来源）：图形自带 `group`（或 group 数组层级）
+ *       → 按标注建模块树。模型读了用户需求，分不分区、怎么分
+ *       它最清楚 —— 与 mermaid 的 subgraph 同一个哲学：
+ *       分区由图作者显式声明，工具不猜；
  *
- * - ② 后端聚类兜底：LLM 没给 → 按拓扑连通分量 / 标签前缀聚类
- *       （见 inferGroups，有 frame 时不启用）；
+ * - ② frame 认领：画布上已有 frame 且名字对得上模块 → 认领进树；
  *
- * - ③ 不分组：兜底也拿不到成形分区 → 走单层布局，行为与改造前一致。
+ * - ③ 不分组：两者都没有 → 单层布局，行为与改造前一致。
+ *       此前还有一条「节点数 > 15 就后端自动聚类」的兜底
+ *       （inferGroups，按拓扑/标签前缀猜模块），已删：猜错的模块
+ *      比不分区更难看，且「大于 15」这种机械阈值不该存在。
+ *       （2026-10-16：阈值从"模块数 ≥ 2"降到"≥ 1"—— 一个分组
+ *       也值得走分区路径，理由见 partition() 内注释。）
  *
  * 零回归是硬约束：以下三种情况完全不介入，直接返回引擎输出
  * （字节级原样）——
@@ -58,8 +62,7 @@ import io.github.nihaoljx.flowchart.graph.layout.LayoutSpec;
  * - 编辑模式（`fixedIds` 非空）：既有坐标一个不许动，否则与
  *       SceneDrift 当场打架；
  *
- * - 图形数 ≤ MODULE_THRESHOLD（默认 15）：小图不该为不存在的
- *       复杂度买单，也避免把"加一个审批节点"这类图排变样；
+ * - 无显式分组（无 group / 无可认领 frame）：不做任何猜测；
  *
  * - 模块数 < 2：只有"有分组"才谈得上分区。
  *
@@ -76,9 +79,6 @@ public class ScenePlanner {
     private static final Set<String> SHAPE_TYPES =
             Set.of("rectangle", "ellipse", "diamond");
 
-    /** 图形数超过它才做分区（**唯一真相源**：PromptService 的提示词与契约描述都引用它） */
-    public static final int MODULE_THRESHOLD = 15;
-
     /**
      * 关系语义 → 视觉样式（P2）。
      *
@@ -89,29 +89,38 @@ public class ScenePlanner {
      * 枚举与提示词仍各手抄一份，扩值时须与 RelationCatalog 同步。
      */
 
-    /** 一个模块至少要有几个图形（兜底聚类用；1 个图形的"模块"没有意义） */
-    private static final int MIN_CLUSTER_SIZE = 2;
-
-    /** 模块数上限：超出说明聚得没有意义，宁可退回单层布局 */
-    private static final int MAX_MODULE_COUNT = 5;
-
-    /** 兜底聚类的最低覆盖率：簇只装下少数图形时不值得为它重排整张图 */
-    private static final double MIN_CLUSTER_COVERAGE = 0.6;
-
-    /** 标签前缀聚类用的分隔符（"订单-创建" → 模块"订单"） */
-    private static final String LABEL_SEPARATORS = "-_/·:：|｜ ";
-
     /** 模块名的最大长度：超长截断（LLM 偶尔会把一句话填进来） */
     private static final int MAX_GROUP_NAME = 24;
 
     /** 打包时的目标长宽比：模块横排 + 模块内竖排 → 整体略宽比正方好看 */
     private static final double TARGET_ASPECT = 1.5;
 
+    /**
+     * 整图方向试排的目标长宽比 = 渲染视口（16:9 ≈ 1.78）。
+     *
+     * 为什么与 TARGET_ASPECT 分开：pack 的择列管的是"模块网格排成
+     * 什么形状"（1.5 是网格形态的中间值），而方向试排管的是"整张图
+     * 与屏幕同不同向"—— 前端按内容缩放取景，整图贴着视口比例时
+     * 缩放最大、留边最小。五张参考图没有一张低于 0.91，最高 1.71。
+     */
+    private static final double VIEWPORT_ASPECT = 16.0 / 9.0;
+
+    /**
+     * 方向试排的横排倾斜系数：右排惩罚 < 竖排惩罚 × 1.1 就选横排。
+     *
+     * 为什么需要（2026-10-16 五图实测）：RAG 参考图是"横向查询流在
+     * 上、摄入横带在下"的堆叠构成，竖排等价打包（两列并排）的长宽比
+     * 惩罚与横排堆叠几乎相等 —— 惩罚值是按估算宽度算的（节点宽度
+     * ±30% 误差），near-tie 时它分不清真假。此时倒向横排：渲染视口
+     * 是横屏，且五张参考图里横向流占多数（流程自左而右读）。
+     * 竖排要赢必须明显更好（惩罚低 10% 以上）。
+     */
+    private static final double HORIZONTAL_TIE_BREAK = 1.1;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public ScenePlanner() {
-        LOG.info("排版层：结构规划已就绪（图形数 > {} 且模块数 ≥ 2 时生效）",
-                MODULE_THRESHOLD);
+        LOG.info("排版层：结构规划已就绪（LLM 显式分组或可认领 frame 且模块数 ≥ 1 时生效）");
     }
 
     /**
@@ -286,29 +295,21 @@ public class ScenePlanner {
         Block root = buildTree(nodes, grouped);
         int moduleCount = countModules(root);
 
-        // ② 后端聚类兜底：图形多、而 LLM 没给出成形分组时才启用
-        // （5.2 的降级设计；③ 兜底也拿不到 → 单层布局，行为与改造前一致）
-        if (moduleCount < 2 && nodes.size() > MODULE_THRESHOLD
-                && !hasFrame(elements)) {
-            Map<String, List<String>> inferred = inferGroups(nodes, elements);
-            if (!inferred.isEmpty()) {
-                root = buildTree(nodes, inferred);
-                moduleCount = countModules(root);
-                LOG.info("分组兜底：LLM 未标注模块，按拓扑/标签聚出 {} 个模块",
-                        moduleCount);
-            }
-        }
+        // ② 后端聚类兜底已删（2026-10-15）：此前「节点数 > 15 就按
+        // 拓扑/标签前缀猜模块」。分不分区是语义决策 —— 模型读了用户
+        // 需求，它不标组说明需求里没有分区语义；后端按前缀猜错的
+        // 模块比不分区更难看（mermaid 的 subgraph 同哲学：只认显式声明）。
 
         matchFrames(root, elements);
-        // 有 frame 也要进分区：否则 frame 会留在 LLM 给的旧位置、成员却被重排到别处
-        // （恰好 15 个图形时 15>MODULE_THRESHOLD 不成立，会漏掉带 frame 的图）
-        // LLM 显式标注的 group 也是强意图（2026-10-15 regress_arch 实测）：
-        // 10 个图形 3 组显式标注被 MODULE_THRESHOLD 拦住 → 全局排版 →
-        // 「支付服务」被排进数据层 bbox，画框罩住别人的成员。显式分组
-        // 直通分区排版（模块内独立布局 + 网格打包，天然不穿插）
-        boolean active = (nodes.size() > MODULE_THRESHOLD
-                || hasFrame(elements) || !grouped.isEmpty())
-                && moduleCount >= 2;
+        // 2026-10-16 数量阈值正式废弃：分区是语义决策，不是数量决策。
+        // 只要 LLM 显式标注了 group（哪怕只有一组），就按它分区 ——
+        // 单组同样值得走分区路径（模块内自排、与其他图形分开打包），
+        // 不再用 moduleCount ≥ 2 把单组挡在门外。
+        //
+        // 没有显式分组时不介入：画布上孤立、名字认领不上任何模块的
+        // frame 不足以成为分区理由（frame 只能挂到已存在的模块上，
+        // 不会凭空造模块 —— inferenceIsSkippedWhenFramesExist 锁这条）。
+        boolean active = moduleCount >= 1;
         return new Partition(
                 root, elements, nodes, active, moduleCount);
     }
@@ -363,182 +364,6 @@ public class ScenePlanner {
         List<Block> all = new ArrayList<>();
         flatten(root, all);
         return all.size();
-    }
-
-    private boolean hasFrame(List<JsonNode> elements) {
-        for (JsonNode element : elements) {
-            if (element.isObject()
-                    && "frame".equals(text(element, "type"))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // ==================== ② 聚类兜底 ====================
-
-    /**
-     * LLM 没标注模块时的兜底聚类（5.2 第 ② 级）。
-     *
- * 两步，按可靠性排序，任一步拿到「成形分区」就用它：
-     *
- * - 拓扑连通性：只看"两端都是图形"的箭头，取无向连通分量。
-     *       天然把"互不相连的几块"分开 —— 这在架构图里就是子系统；
-     *
- * - 标签前缀：图形文字形如 `订单-创建` / `订单_支付`
-     *       时，按分隔符取首段当模块名（中文标签常见的命名习惯）。
-     *
- * 为什么有 frame 时不做兜底：兜底聚类只能给出「模块1 / 模块2」
-     * 这类无名模块，而 matchFrames 是按名字认领 frame 的 ——
-     * 认领不上就"原样不动"。于是节点被重排到别处、框还留在 LLM 给的旧位置，
-     * 正是 5.4 实测的那个病症（24/42 个图形跑出框）被加重。这种情况交给
-     * 提示词去修（要求 frame 的 name 与模块名逐字相同），不做几何猜测。
-     *
-     * @return 图形 id → 模块名路径；拿不到成形分区时返回空表（= 不分组）
-     */
-    private Map<String, List<String>> inferGroups(
-            List<Node> nodes, List<JsonNode> elements) {
-        Map<String, Node> byId = new LinkedHashMap<>();
-        for (Node node : nodes) {
-            byId.put(node.id, node);
-        }
-        Map<String, List<String>> named = new LinkedHashMap<>();
-
-        List<List<Node>> components =
-                connectedComponents(nodes, elements, byId);
-        if (validClusters(components, nodes.size())) {
-            int index = 0;
-            for (List<Node> cluster : components) {
-                index++;
-                String name = "模块" + index;
-                for (Node node : cluster) {
-                    named.put(node.id, List.of(name));
-                }
-            }
-            return named;
-        }
-
-        Map<String, List<Node>> byPrefix = clusterByLabelPrefix(nodes);
-        if (validClusters(new ArrayList<>(byPrefix.values()), nodes.size())) {
-            for (Map.Entry<String, List<Node>> entry : byPrefix.entrySet()) {
-                for (Node node : entry.getValue()) {
-                    named.put(node.id, List.of(entry.getKey()));
-                }
-            }
-            return named;
-        }
-        named.clear();
-        return named;
-    }
-
-    /** 无向连通分量（只认两端都落在图形集合里的箭头；孤立图形自成一份） */
-    private List<List<Node>> connectedComponents(
-            List<Node> nodes, List<JsonNode> elements,
-            Map<String, Node> byId) {
-        Map<String, List<String>> adjacency = new LinkedHashMap<>();
-        for (Node node : nodes) {
-            adjacency.put(node.id, new ArrayList<>());
-        }
-        for (JsonNode element : elements) {
-            if (!"arrow".equals(text(element, "type"))) {
-                continue;
-            }
-            String from = bindingId(element, "start");
-            String to = bindingId(element, "end");
-            if (from == null || to == null
-                    || !adjacency.containsKey(from)
-                    || !adjacency.containsKey(to)) {
-                continue;
-            }
-            adjacency.get(from).add(to);
-            adjacency.get(to).add(from);
-        }
-
-        Set<String> seen = new LinkedHashSet<>();
-        List<List<Node>> clusters = new ArrayList<>();
-        // 按 nodes 的顺序起步 → 同一份输入必得同一份分区（确定性）
-        for (Node node : nodes) {
-            if (!seen.add(node.id)) {
-                continue;
-            }
-            List<Node> cluster = new ArrayList<>();
-            Deque<String> queue = new ArrayDeque<>();
-            queue.add(node.id);
-            while (!queue.isEmpty()) {
-                String id = queue.poll();
-                cluster.add(byId.get(id));
-                for (String next : adjacency.get(id)) {
-                    if (seen.add(next)) {
-                        queue.add(next);
-                    }
-                }
-            }
-            clusters.add(cluster);
-        }
-        return clusters;
-    }
-
-    /** 按标签首段聚类（没有分隔符的标签不参与） */
-    private Map<String, List<Node>> clusterByLabelPrefix(List<Node> nodes) {
-        Map<String, List<Node>> byPrefix = new LinkedHashMap<>();
-        for (Node node : nodes) {
-            String prefix = labelPrefix(node.json);
-            if (prefix == null) {
-                continue;
-            }
-            byPrefix.computeIfAbsent(prefix, key -> new ArrayList<>())
-                    .add(node);
-        }
-        return byPrefix;
-    }
-
-    /** 取图形标签的首段（"订单-创建" → "订单"）；无分隔符 / 空首段返回 null */
-    private String labelPrefix(JsonNode element) {
-        JsonNode label = element.get("label");
-        if (label == null || !label.isObject()) {
-            return null;
-        }
-        String value = text(label, "text");
-        if (value == null) {
-            return null;
-        }
-        String trimmed = value.trim();
-        for (int i = 0; i < trimmed.length(); i++) {
-            if (LABEL_SEPARATORS.indexOf(trimmed.charAt(i)) < 0) {
-                continue;
-            }
-            String prefix = trimmed.substring(0, i).trim();
-            if (prefix.isEmpty() || prefix.length() > MAX_GROUP_NAME) {
-                return null;
-            }
-            return prefix;
-        }
-        return null;
-    }
-
-    /**
-     * 一个分区是否"成形"：模块数在 2~MAX_MODULE_COUNT 之间、
-     * 每块至少 MIN_CLUSTER_SIZE 个图形、且这些块合起来覆盖了
-     * MIN_CLUSTER_COVERAGE 以上的图形。
-     *
- * 覆盖率是关键的一条：只圈住 2 个图形的"分区"会让其余 40 个图形
-     * 无家可归，重排之后比不排更乱。要求每块 ≥2 个则把孤立点"
-     * 自然放回根块，不必单独处理。
-     */
-    private boolean validClusters(List<List<Node>> clusters, int total) {
-        List<List<Node>> kept = new ArrayList<>();
-        int covered = 0;
-        for (List<Node> cluster : clusters) {
-            if (cluster.size() >= MIN_CLUSTER_SIZE) {
-                kept.add(cluster);
-                covered += cluster.size();
-            }
-        }
-        if (kept.size() < 2 || kept.size() > MAX_MODULE_COUNT) {
-            return false;
-        }
-        return total <= 0
-                || (double) covered / total >= MIN_CLUSTER_COVERAGE;
     }
 
     /**
@@ -637,10 +462,32 @@ public class ScenePlanner {
     private String arrangeModules(
             JsonNode root, Partition partition, LayoutEngine engine) {
         Block top = partition.root;
-        layoutBlock(top, engine, partition);
+        orderModulesByFlow(partition);
+        // 整图方向试排（2026-10-16 五图实测）：模块内方向不再由模块
+        // 自己的长宽比决定 —— 认证图「AWS Cloud」4 节点横排成一条带
+        // 是对的（参考图就是横带），Transformer「DECODER」10 节点竖排
+        // 成一列也是对的（参考图就是竖列），模块自己的长宽比说明不了
+        // 该横还是该竖。判断依据在整图打包后，那只有这里看得见：
+        // 两个全局取向各排一遍（layoutBlock 只算尺寸与块内坐标，
+        // 不做全局平移，可重复跑），按整图与视口长宽比的距离定稿。
+        layoutBlock(top, engine, partition, false);
+        double downW = top.contentW;
+        double downH = top.contentH;
+        layoutBlock(top, engine, partition, true);
+        double rightW = top.contentW;
+        double rightH = top.contentH;
+        boolean horizontal = viewportPenalty(rightW, rightH)
+                < viewportPenalty(downW, downH)
+                        * HORIZONTAL_TIE_BREAK;
+        if (!horizontal) {
+            // 定稿跑必须与当选取向一致（上一遍跑的是横排）
+            layoutBlock(top, engine, partition, false);
+        }
         place(top, 0, 0);
         writeShapes(partition.nodes);
         writeFrames(top);
+        routeCrossModuleArrows(partition);
+        placeEdgeLabels(root, partition);
 
         double minX = Double.MAX_VALUE;
         double minY = Double.MAX_VALUE;
@@ -652,10 +499,917 @@ public class ScenePlanner {
             maxX = Math.max(maxX, node.x + node.w);
             maxY = Math.max(maxY, node.y + node.h);
         }
-        LOG.info("排版完成：{} 个图形分入 {} 个模块，包围盒 {}x{}",
+        LOG.info("排版完成：{} 个图形分入 {} 个模块，主方向 {}"
+                        + "（试排：竖 {}x{} / 横 {}x{}），包围盒 {}x{}",
                 partition.nodes.size(), partition.moduleCount,
+                horizontal ? "自左而右" : "自上而下",
+                Math.round(downW), Math.round(downH),
+                Math.round(rightW), Math.round(rightH),
                 Math.round(maxX - minX), Math.round(maxY - minY));
         return root.toString();
+    }
+
+    /**
+     * 整图尺寸与视口长宽比的对数距离（方向试排的择优函数）。
+     *
+     * <p>与 {@link LayoutSpec#aspectPenalty} 分开：那个按理想区间
+     * [0.7, 2.0] 算"出不出区间"，治的是病态窄条/宽条；这个按
+     * {@link #VIEWPORT_ASPECT} 算"贴不贴屏幕"，治的是两个合法形态
+     * （竖堆 / 横堆）之间选哪个。
+     */
+    private static double viewportPenalty(double width, double height) {
+        if (width <= 0 || height <= 0) {
+            return Double.MAX_VALUE;
+        }
+        return Math.abs(Math.log((width / height) / VIEWPORT_ASPECT));
+    }
+
+    /**
+     * 分区路径的跨模块箭头正交避障路由。
+     *
+     * 为什么需要：模块内边在 layoutOwnShapes 里随子图进过 ELK，points 已由
+     * 引擎写回；**跨模块边不属于任何模块子图**，从头到尾没人给它们几何。
+     *
+     * v2（2026-10-15 regress_arch3 被用户判「一坨狗屎」后重写）：此前的
+     * 朴素 L 形有三宗罪 —— ① 起笔从框中心穿出、压过框内标签；② 拐点
+     * 通道压在实体上（x=380 直接穿过三个服务框）；③ 所有边共用同一条
+     * 通道叠成一股。现按 draw.io 观感标准重写，三件套：
+     *
+     *  ① 贴边进出：锚点落在源/目标框朝向走廊的边缘中点；
+     *  ② 走空隙：拐点落在「无任何节点覆盖」的自由走廊（节点 bbox 外扩
+     *     4px 后的一维补区间），竖线/横线永不穿框；
+     *  ③ 通道分配：共用同一条走廊的边均摊布线（最小间距 14px）。
+     *
+     * 路由模板按观感优先级依次尝试，取首条零碰撞的：
+     *   T1 H-V-H（侧面进出）→ T2 V-H-V（上下进出）→
+     *   T3 H-V-H-V（侧出 + 绕水平走廊、从上/下进）→ T4（对称）。
+     * 全败时取碰撞最少方案；连走廊都没有时退化为贴边 L 形。
+     *
+     * 坐标口径与 ElkLayoutEngine.writeBackEdgeRoutes 一致：
+     * x/y = 首点绝对坐标，points = 相对首点的偏移、首点 [0,0]。
+     */
+    private void routeCrossModuleArrows(Partition partition) {
+        Map<String, Node> byId = new LinkedHashMap<>();
+        for (Node node : partition.nodes) {
+            byId.put(node.id, node);
+        }
+        List<ObjectNode> arrows = new ArrayList<>();
+        List<Node> froms = new ArrayList<>();
+        List<Node> tos = new ArrayList<>();
+        for (JsonNode element : partition.rawElements) {
+            if (!"arrow".equals(text(element, "type"))
+                    || !(element instanceof ObjectNode arrow)) {
+                continue;
+            }
+            JsonNode existing = arrow.get("points");
+            if (existing != null && existing.isArray()
+                    && !existing.isEmpty()) {
+                continue;
+            }
+            Node from = byId.get(bindingId(element, "start"));
+            Node to = byId.get(bindingId(element, "end"));
+            if (from != null && to != null && from != to) {
+                arrows.add(arrow);
+                froms.add(from);
+                tos.add(to);
+            }
+        }
+        if (arrows.isEmpty()) {
+            return;
+        }
+        // 同源第几条出边 / 同目标第几条入边（0 起）与总数：
+        // 锚点沿边分散靠它 —— 全挤边中点就是「一坨线分不清谁连谁」
+        // 的直接原因（regress_arch6 实测 198 交叉 + 28 共线重叠）。
+        Map<String, Integer> outCnt = new LinkedHashMap<>();
+        Map<String, Integer> inCnt = new LinkedHashMap<>();
+        for (int i = 0; i < arrows.size(); i++) {
+            outCnt.merge(froms.get(i).id, 1, Integer::sum);
+            inCnt.merge(tos.get(i).id, 1, Integer::sum);
+        }
+        Map<Integer, Integer> outIdx = new LinkedHashMap<>();
+        Map<Integer, Integer> inIdx = new LinkedHashMap<>();
+        Map<String, Integer> outSeen = new LinkedHashMap<>();
+        Map<String, Integer> inSeen = new LinkedHashMap<>();
+        for (int i = 0; i < arrows.size(); i++) {
+            outIdx.put(i, outSeen.merge(froms.get(i).id, 0,
+                    (old, none) -> old + 1));
+            inIdx.put(i, inSeen.merge(tos.get(i).id, 0,
+                    (old, none) -> old + 1));
+        }
+        // 短边先路由：短边容易零交叉占内侧走廊，长边自然绕外侧
+        List<Integer> order = new ArrayList<>();
+        for (int i = 0; i < arrows.size(); i++) {
+            order.add(i);
+        }
+        order.sort((a, b) -> {
+            double sa = span(froms.get(a), tos.get(a));
+            double sb = span(froms.get(b), tos.get(b));
+            return Double.compare(sa, sb);
+        });
+        List<double[]> vCorridors = freeIntervals(partition.nodes, true);
+        List<double[]> hCorridors = freeIntervals(partition.nodes, false);
+        Map<Integer, List<Double>> usedV = new LinkedHashMap<>();
+        Map<Integer, List<Double>> usedH = new LinkedHashMap<>();
+        List<double[][]> routed = new ArrayList<>();
+        OrthoAStarRouter.Grid occupancy =
+                new OrthoAStarRouter.Grid(partition.nodes);
+        int routedCount = 0;
+        for (int slot : order) {
+            Fan fan = new Fan(
+                    outIdx.getOrDefault(slot, 0),
+                    outCnt.getOrDefault(froms.get(slot).id, 1),
+                    inIdx.getOrDefault(slot, 0),
+                    inCnt.getOrDefault(tos.get(slot).id, 1));
+            // A* 优先（全走廊空间搜索 + 已路由边占用惩罚），
+            // 模板候选制兜底（A* 网格不可达等极端情况）
+            List<double[]> astar = OrthoAStarRouter.route(
+                    froms.get(slot), tos.get(slot),
+                    fan.outIdx(), fan.outCnt(),
+                    fan.inIdx(), fan.inCnt(),
+                    partition.nodes, occupancy);
+            double[][] route = astar == null
+                    ? null : dedupe(astar.toArray(new double[0][]));
+            if (route == null) {
+                route = routeOne(froms.get(slot), tos.get(slot),
+                        fan, partition.nodes, vCorridors, hCorridors,
+                        usedV, usedH, routed);
+            }
+            if (route == null) {
+                continue;
+            }
+            occupancy.mark(route);
+            routed.add(route);
+            writeRoute(arrows.get(slot), route);
+            routedCount++;
+        }
+        if (routedCount > 0) {
+            LOG.info("跨模块箭头补正交避障路由 {}/{} 条", routedCount,
+                    arrows.size());
+        }
+    }
+
+    /** 两节点中心距（曼哈顿）：路由顺序的排序键 */
+    private static double span(Node f, Node t) {
+        return Math.abs(f.x + f.w / 2 - (t.x + t.w / 2))
+                + Math.abs(f.y + f.h / 2 - (t.y + t.h / 2));
+    }
+
+    /** 一条边的扇出/扇入参数：出边序号/总数、入边序号/总数 */
+    private record Fan(int outIdx, int outCnt, int inIdx, int inCnt) {
+    }
+
+    /** 一条跨模块边被摆成逆流时，给该打包方案加的罚分 */
+    private static final double BACKWARD_EDGE_COST = 2.0;
+
+    /**
+     * 顶层模块按跨模块边方向重排，并把流向记录进 partition.flow。
+     *
+     * regress_arch6 实测教训：「接入→服务→数据」3 模块链被网格打包成
+     * 2 列两行，数据层落到服务层左下方 —— 一条对角线边被迫绕外圈
+     * 走廊，跟别的边交叉成坨。好图的标准（mermaid/draw.io 的 layered
+     * 同理）：上游模块排左上、下游排右下。拓扑序排 children，打包
+     * 评估再按 flow 罚逆流摆法，链式依赖自然展开成一行。
+     */
+    private void orderModulesByFlow(Partition partition) {
+        Block top = partition.root;
+        if (top.children.size() < 2) {
+            return;
+        }
+        Map<String, Block> owner = new LinkedHashMap<>();
+        for (Block b : top.children) {
+            collectMemberIds(b, owner);
+        }
+        Map<String, Node> byId = new LinkedHashMap<>();
+        for (Node n : partition.nodes) {
+            byId.put(n.id, n);
+        }
+        Map<String, Map<String, Integer>> flow = new LinkedHashMap<>();
+        for (JsonNode element : partition.rawElements) {
+            if (!"arrow".equals(text(element, "type"))) {
+                continue;
+            }
+            Node from = byId.get(bindingId(element, "start"));
+            Node to = byId.get(bindingId(element, "end"));
+            if (from == null || to == null) {
+                continue;
+            }
+            Block bf = owner.get(from.id);
+            Block bt = owner.get(to.id);
+            if (bf == null || bt == null || bf == bt) {
+                continue;
+            }
+            flow.computeIfAbsent(bf.name, k -> new LinkedHashMap<>())
+                    .merge(bt.name, 1, Integer::sum);
+        }
+        partition.flow = flow;
+        if (flow.isEmpty()) {
+            return;
+        }
+        Map<String, Block> byName = new LinkedHashMap<>();
+        for (Block b : top.children) {
+            byName.put(b.name, b);
+        }
+        // 稳定拓扑排序：上游全部出列后自己才出列；环时按原序出首个
+        List<Block> ordered = new ArrayList<>();
+        List<Block> remaining = new ArrayList<>(top.children);
+        while (!remaining.isEmpty()) {
+            Block pick = null;
+            for (Block b : remaining) {
+                if (hasUnplacedUpstream(b, flow, byName, ordered)) {
+                    continue;
+                }
+                pick = b;
+                break;
+            }
+            if (pick == null) {
+                pick = remaining.get(0);
+            }
+            ordered.add(pick);
+            remaining.remove(pick);
+        }
+        top.children.clear();
+        top.children.addAll(ordered);
+    }
+
+    /** 块 b 是否还有「有边指向它、且尚未排定」的上游顶层块 */
+    private static boolean hasUnplacedUpstream(
+            Block b, Map<String, Map<String, Integer>> flow,
+            Map<String, Block> byName, List<Block> ordered) {
+        for (Map.Entry<String, Map<String, Integer>> e : flow.entrySet()) {
+            if (e.getKey().equals(b.name)
+                    || !byName.containsKey(e.getKey())
+                    || !e.getValue().containsKey(b.name)) {
+                continue;
+            }
+            boolean placed = false;
+            for (Block done : ordered) {
+                if (done.name.equals(e.getKey())) {
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 递归收集一个块的全体成员图形 id（含嵌套子块），归属到该块 */
+    private static void collectMemberIds(Block block, Map<String, Block> owner) {
+        for (Node n : block.shapes) {
+            owner.put(n.id, block);
+        }
+        for (Block child : block.children) {
+            collectMemberIds(child, owner);
+        }
+    }
+
+    /**
+     * 该打包摆法下「逆流」的跨模块边条数：下游块被排到上游块左侧
+     * （或同列且在其上方）。flow 键是顶层模块名，模块内部打包时
+     * items 名字不在 flow 里，返回 0 —— 惩罚只作用于顶层。
+     */
+    private static int backwardEdges(
+            List<Block> items, Map<String, Map<String, Integer>> flow) {
+        if (flow.isEmpty()) {
+            return 0;
+        }
+        Map<String, Block> pos = new LinkedHashMap<>();
+        for (Block b : items) {
+            pos.put(b.name, b);
+        }
+        int back = 0;
+        for (Map.Entry<String, Map<String, Integer>> e : flow.entrySet()) {
+            Block from = pos.get(e.getKey());
+            if (from == null) {
+                continue;
+            }
+            for (String to : e.getValue().keySet()) {
+                Block tb = pos.get(to);
+                if (tb == null) {
+                    continue;
+                }
+                boolean backward = tb.ox < from.ox - 1
+                        || (Math.abs(tb.ox - from.ox) <= 1
+                            && tb.oy < from.oy - 1);
+                if (backward) {
+                    back++;
+                }
+            }
+        }
+        return back;
+    }
+
+    /** 通道最小间距（px）：共用走廊的线至少离这么远，不成股 */
+    private static final double CHANNEL_GAP = 14;
+
+    /** 评分权重：穿框 > 交叉 > 通道序号 */
+    private static final int W_HIT = 10000;
+    private static final int W_CROSS = 100;
+    private static final int W_SLOT = 10;
+
+    /** 一个路由候选：折线 + 评分 + 选中后要做的通道占用提交 */
+    private static final class Candidate {
+        final double[][] route;
+        final int score;
+        final Runnable commit;
+
+        Candidate(double[][] route, int score, Runnable commit) {
+            this.route = route;
+            this.score = score;
+            this.commit = commit;
+        }
+    }
+
+    /**
+     * 为一条跨模块边求路由（绝对坐标折线），失败返回 null。
+     *
+     * 评分制而非"首个零碰撞即用"（2026-10-15 regress_arch6 教训）：
+     * 四个模板 × 各自走廊全部展开成候选，按
+     * 穿框×10000 + 与已路由边交叉×100 + 通道序号×10
+     * 取最优 —— 交叉最小化是可读性的第一指标，首个可行解往往
+     * 和先前的线撞在同一条走廊里叠成一股。
+     */
+    private double[][] routeOne(
+            Node f, Node t, Fan fan, List<Node> nodes,
+            List<double[]> vCorridors, List<double[]> hCorridors,
+            Map<Integer, List<Double>> usedV,
+            Map<Integer, List<Double>> usedH,
+            List<double[][]> routed) {
+        double fcx = f.x + f.w / 2;
+        double fcy = f.y + f.h / 2;
+        double tcx = t.x + t.w / 2;
+        double tcy = t.y + t.h / 2;
+        List<Integer> vOrder = rankCorridors(vCorridors,
+                Math.min(fcx, tcx) - 40, Math.max(fcx, tcx) + 40);
+        List<Integer> hOrder = rankCorridors(hCorridors,
+                Math.min(fcy, tcy) - 40, Math.max(fcy, tcy) + 40);
+        List<Candidate> cands = new ArrayList<>();
+
+        double outSlideY = fanSlide(fan.outIdx(), fan.outCnt(), f.h);
+        double inSlideY = fanSlide(fan.inIdx(), fan.inCnt(), t.h);
+        double outSlideX = fanSlide(fan.outIdx(), fan.outCnt(), f.w);
+        double inSlideX = fanSlide(fan.inIdx(), fan.inCnt(), t.w);
+
+        // T1：H-V-H —— 源/目标侧边出进（锚点沿边分散）
+        for (int idx : vOrder.subList(0, Math.min(4, vOrder.size()))) {
+            double[] c = nextChannel(vCorridors.get(idx),
+                    usedV.computeIfAbsent(idx, k -> new ArrayList<>()),
+                    clamp((fcx + tcx) / 2, vCorridors.get(idx)));
+            double[] sa = sideAnchor(f, c[0], true, outSlideY);
+            double[] ta = sideAnchor(t, c[0], true, inSlideY);
+            double[][] route = {
+                sa, {c[0], sa[1]}, {c[0], ta[1]}, ta};
+            cands.add(cand(route, f, t, nodes, routed, c[1],
+                    () -> usedV.get(idx).add(c[0])));
+        }
+        // T2：V-H-V —— 源/目标上下边出进
+        for (int idx : hOrder.subList(0, Math.min(4, hOrder.size()))) {
+            double[] c = nextChannel(hCorridors.get(idx),
+                    usedH.computeIfAbsent(idx, k -> new ArrayList<>()),
+                    clamp((fcy + tcy) / 2, hCorridors.get(idx)));
+            double[] sa = sideAnchor(f, c[0], false, outSlideX);
+            double[] ta = sideAnchor(t, c[0], false, inSlideX);
+            double[][] route = {
+                sa, {sa[0], c[0]}, {ta[0], c[0]}, ta};
+            cands.add(cand(route, f, t, nodes, routed, c[1],
+                    () -> usedH.get(idx).add(c[0])));
+        }
+        // T3：H-V-H-V —— 侧出 + 竖走廊 + 水平走廊 + 从上/下边进目标
+        for (int vi : vOrder.subList(0, Math.min(3, vOrder.size()))) {
+            double[] c = nextChannel(vCorridors.get(vi),
+                    usedV.computeIfAbsent(vi, k -> new ArrayList<>()),
+                    clamp((fcx + tcx) / 2, vCorridors.get(vi)));
+            for (int hi : hOrder.subList(0, Math.min(3, hOrder.size()))) {
+                for (double bias : new double[] {0, 40, -40}) {
+                    double ideal = tcy + bias;
+                    double[] l = nextChannel(hCorridors.get(hi),
+                            usedH.computeIfAbsent(
+                                    hi, k -> new ArrayList<>()),
+                            clamp(ideal, hCorridors.get(hi)));
+                    double[] sa = sideAnchor(f, c[0], true, outSlideY);
+                    double[] ta = sideAnchor(t, l[0], false, inSlideX);
+                    double[][] route = {
+                        sa, {c[0], sa[1]}, {c[0], l[0]},
+                        {ta[0], l[0]}, ta};
+                    cands.add(cand(route, f, t, nodes, routed,
+                            c[1] + l[1],
+                            () -> {
+                                usedV.get(vi).add(c[0]);
+                                usedH.get(hi).add(l[0]);
+                            }));
+                }
+            }
+        }
+        // T4：V-H-V-H —— 上下出 + 水平走廊 + 竖走廊 + 从侧边进目标
+        for (int hi : hOrder.subList(0, Math.min(3, hOrder.size()))) {
+            double[] l = nextChannel(hCorridors.get(hi),
+                    usedH.computeIfAbsent(hi, k -> new ArrayList<>()),
+                    clamp((fcy + tcy) / 2, hCorridors.get(hi)));
+            for (int vi : vOrder.subList(0, Math.min(3, vOrder.size()))) {
+                for (double bias : new double[] {0, 40, -40}) {
+                    double ideal = tcx + bias;
+                    double[] c = nextChannel(vCorridors.get(vi),
+                            usedV.computeIfAbsent(
+                                    vi, k -> new ArrayList<>()),
+                            clamp(ideal, vCorridors.get(vi)));
+                    double[] sa = sideAnchor(f, l[0], false, outSlideX);
+                    double[] ta = sideAnchor(t, c[0], true, inSlideY);
+                    double[][] route = {
+                        sa, {sa[0], l[0]}, {c[0], l[0]},
+                        {c[0], ta[1]}, ta};
+                    cands.add(cand(route, f, t, nodes, routed,
+                            c[1] + l[1],
+                            () -> {
+                                usedH.get(hi).add(l[0]);
+                                usedV.get(vi).add(c[0]);
+                            }));
+                }
+            }
+        }
+        if (cands.isEmpty()) {
+            return null;
+        }
+        Candidate best = cands.get(0);
+        for (Candidate c : cands) {
+            if (c.score < best.score) {
+                best = c;
+            }
+        }
+        best.commit.run();
+        return dedupe(best.route);
+    }
+
+    /** 打分一个候选：穿框 + 与已路由边的交叉 + 通道拥挤度 */
+    private static Candidate cand(
+            double[][] route, Node f, Node t, List<Node> nodes,
+            List<double[][]> routed, double slot, Runnable commit) {
+        int score = countHits(route, f, t, nodes) * W_HIT
+                + countCrossings(route, routed) * W_CROSS
+                + (int) slot * W_SLOT;
+        return new Candidate(route, score, commit);
+    }
+
+    /**
+     * 扇出/扇入的锚点滑动量：同源（目标）第 idx 条、共 cnt 条时，
+     * 沿边居中对称铺开，间距封顶 16px、且必须留在边内。
+     */
+    private static double fanSlide(int idx, int cnt, double span) {
+        if (cnt <= 1) {
+            return 0;
+        }
+        double step = Math.min(16, (span - 20) / (cnt + 1));
+        step = Math.max(step, 4);
+        return (idx - (cnt - 1) / 2.0) * step;
+    }
+
+    /**
+     * 框边缘锚点：alongX=true 锚在朝 coordinate 一侧的左/右边
+     * （x 固定，y 按滑动量偏移并夹在边内）；false 为上/下边。
+     */
+    private static double[] sideAnchor(
+            Node n, double coordinate, boolean alongX, double slide) {
+        if (alongX) {
+            double x = coordinate >= n.x + n.w / 2
+                    ? n.x + n.w : n.x;
+            double y = Math.max(n.y + 8, Math.min(n.y + n.h - 8,
+                    n.y + n.h / 2 + slide));
+            return new double[] {x, y};
+        }
+        double y = coordinate >= n.y + n.h / 2
+                ? n.y + n.h : n.y;
+        double x = Math.max(n.x + 8, Math.min(n.x + n.w - 8,
+                n.x + n.w / 2 + slide));
+        return new double[] {x, y};
+    }
+
+    /** 候选折线与全部已路由折线的交叉 + 共线重叠总数（端点豁免） */
+    private static int countCrossings(
+            double[][] route, List<double[][]> routed) {
+        if (routed.isEmpty()) {
+            return 0;
+        }
+        int total = 0;
+        for (double[][] other : routed) {
+            for (int i = 0; i + 1 < route.length; i++) {
+                for (int j = 0; j + 1 < other.length; j++) {
+                    if (segCross(route[i], route[i + 1],
+                            other[j], other[j + 1])) {
+                        total++;
+                    }
+                }
+            }
+        }
+        return total;
+    }
+
+    /** 轴对齐线段相交（共线重叠也算）；交点贴任一端点 10px 内豁免 */
+    private static boolean segCross(
+            double[] p1, double[] p2, double[] p3, double[] p4) {
+        boolean v1 = Math.abs(p1[0] - p2[0]) < 0.5;
+        boolean v2 = Math.abs(p3[0] - p4[0]) < 0.5;
+        if (v1 && v2) {
+            return Math.abs(p1[0] - p3[0]) < 3
+                    && Math.max(Math.min(p1[1], p2[1]),
+                            Math.min(p3[1], p4[1]))
+                    <= Math.min(Math.max(p1[1], p2[1]),
+                            Math.max(p3[1], p4[1])) - 4;
+        }
+        if (!v1 && !v2) {
+            return Math.abs(p1[1] - p3[1]) < 3
+                    && Math.max(Math.min(p1[0], p2[0]),
+                            Math.min(p3[0], p4[0]))
+                    <= Math.min(Math.max(p1[0], p2[0]),
+                            Math.max(p3[0], p4[0])) - 4;
+        }
+        double ix;
+        double iy;
+        if (v1) {
+            ix = p1[0];
+            iy = p3[1];
+        } else {
+            ix = p3[0];
+            iy = p1[1];
+        }
+        boolean on1 = ix >= Math.min(p1[0], p2[0])
+                && ix <= Math.max(p1[0], p2[0])
+                && iy >= Math.min(p1[1], p2[1])
+                && iy <= Math.max(p1[1], p2[1]);
+        boolean on2 = ix >= Math.min(p3[0], p4[0])
+                && ix <= Math.max(p3[0], p4[0])
+                && iy >= Math.min(p3[1], p4[1])
+                && iy <= Math.max(p3[1], p4[1]);
+        if (!on1 || !on2) {
+            return false;
+        }
+        // 端点 10px 内的接触不算交叉（同框出线/入线的必然汇聚）
+        double[][] segs = {p1, p2, p3, p4};
+        for (int i = 0; i < 4; i += 2) {
+            double dx = Math.abs(segs[i][0] - segs[i + 1][0]);
+            double dy = Math.abs(segs[i][1] - segs[i + 1][1]);
+            double longSide = Math.max(dx, dy);
+            if (longSide < 24) {
+                continue; // 极短段不参与豁免判定
+            }
+            // 端点距交点：取线段两端中较近者
+            double d = Math.min(
+                    Math.hypot(ix - segs[i][0], iy - segs[i][1]),
+                    Math.hypot(ix - segs[i + 1][0],
+                            iy - segs[i + 1][1]));
+            // 豁免仅对"交点位于段端部"成立：投影在端头 10px 内
+            double proj = dx > dy ? ix : iy;
+            double lo = dx > dy
+                    ? Math.min(segs[i][0], segs[i + 1][0])
+                    : Math.min(segs[i][1], segs[i + 1][1]);
+            double hi = dx > dy
+                    ? Math.max(segs[i][0], segs[i + 1][0])
+                    : Math.max(segs[i][1], segs[i + 1][1]);
+            boolean nearEnd = proj - lo < 10 || hi - proj < 10;
+            if (nearEnd && d < 24) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 框的边缘锚点：alongX=true 取朝 coordinate 方向的左/右边中点 x，否则取上/下边中点 y */
+    private static double side(Node n, double coordinate, boolean alongX) {
+        if (alongX) {
+            return coordinate >= n.x + n.w / 2 ? n.x + n.w : n.x;
+        }
+        return coordinate >= n.y + n.h / 2 ? n.y + n.h : n.y;
+    }
+
+    private static double clamp(double v, double[] interval) {
+        return Math.max(interval[0],
+                Math.min(interval[1], v));
+    }
+
+    /**
+     * 节点 bbox 外扩 4px 后的一维自由区间（并集的补集）。
+     * 落在自由区间里的轴线永不与任何节点相交 —— 走廊的判定基础。
+     * 区间外扩到图形包络外 60px，允许绕外侧走线。
+     */
+    private static List<double[]> freeIntervals(
+            List<Node> nodes, boolean alongX) {
+        final double margin = 4;
+        final double pad = 60;
+        List<double[]> occupied = new ArrayList<>();
+        double lo = Double.MAX_VALUE;
+        double hi = -Double.MAX_VALUE;
+        for (Node n : nodes) {
+            double s = alongX ? n.x : n.y;
+            double e = alongX ? n.x + n.w : n.y + n.h;
+            occupied.add(new double[] {s - margin, e + margin});
+            lo = Math.min(lo, s);
+            hi = Math.max(hi, e);
+        }
+        occupied.sort((a, b) -> Double.compare(a[0], b[0]));
+        List<double[]> free = new ArrayList<>();
+        double cursor = lo - pad;
+        for (double[] o : occupied) {
+            if (o[0] > cursor) {
+                free.add(new double[] {cursor, o[0]});
+            }
+            cursor = Math.max(cursor, o[1]);
+        }
+        if (hi + pad > cursor) {
+            free.add(new double[] {cursor, hi + pad});
+        }
+        return free;
+    }
+
+    /** 走廊候选排序：与 [lo,hi] 重叠宽者优先，同宽取离区间中心近者 */
+    private static List<Integer> rankCorridors(
+            List<double[]> corridors, double lo, double hi) {
+        List<Integer> order = new ArrayList<>();
+        for (int i = 0; i < corridors.size(); i++) {
+            order.add(i);
+        }
+        double mid = (lo + hi) / 2;
+        order.sort((a, b) -> {
+            double oa = overlap(corridors.get(a), lo, hi);
+            double ob = overlap(corridors.get(b), lo, hi);
+            if (Math.abs(ob - oa) > 1e-9) {
+                return Double.compare(ob, oa);
+            }
+            double ca = (corridors.get(a)[0] + corridors.get(a)[1]) / 2;
+            double cb = (corridors.get(b)[0] + corridors.get(b)[1]) / 2;
+            return Double.compare(Math.abs(ca - mid),
+                    Math.abs(cb - mid));
+        });
+        return order;
+    }
+
+    private static double overlap(
+            double[] interval, double lo, double hi) {
+        return Math.max(0,
+                Math.min(interval[1], hi)
+                        - Math.max(interval[0], lo));
+    }
+
+    /**
+     * 走廊内取一个与已用通道错开的坐标：先取理想点，冲突则按 14px
+     * 步长向两侧探测；走廊太窄挤不下就退回理想点（宁叠不越界）。
+     */
+    private static double[] nextChannel(
+            double[] interval, List<Double> used, double ideal) {
+        double base = clamp(ideal, interval);
+        double[] offsets = {0, CHANNEL_GAP, -CHANNEL_GAP,
+            2 * CHANNEL_GAP, -2 * CHANNEL_GAP, 3 * CHANNEL_GAP,
+            -3 * CHANNEL_GAP, 4 * CHANNEL_GAP, -4 * CHANNEL_GAP};
+        for (int slot = 0; slot < offsets.length; slot++) {
+            double cand = base + offsets[slot];
+            if (cand < interval[0] || cand > interval[1]) {
+                continue;
+            }
+            boolean clash = false;
+            for (double u : used) {
+                if (Math.abs(u - cand) < CHANNEL_GAP - 1) {
+                    clash = true;
+                    break;
+                }
+            }
+            if (!clash) {
+                return new double[] {cand, slot};
+            }
+        }
+        return new double[] {base, offsets.length};
+    }
+
+    /**
+     * 折线（绝对坐标）撞到多少个无关节点（两端框豁免，外扩 5px 容差）。
+     * 轴对齐线段与矩形的相交就是一维区间的两两相交。容差 5 与
+     * assertRoutesAvoidNodes 的 margin=4 同口径（2026-10-15 小场景
+     * 实测：2px 容差放行了贴框 4px 的走廊，测试判穿、引擎放行）。
+     * 之前 5px 误杀「贴框顶 4px 掠过」的问题已由模块流向排序根治
+     * （不再产生必须贴缝绕行的对角线边），容差可以放心对齐。
+     */
+    private static int countHits(
+            double[][] route, Node from, Node to, List<Node> nodes) {
+        if (nodes == null) {
+            return 0;
+        }
+        final double clear = 5;
+        int hits = 0;
+        for (Node n : nodes) {
+            if (n == from || n == to) {
+                continue;
+            }
+            double x1 = n.x - clear;
+            double y1 = n.y - clear;
+            double x2 = n.x + n.w + clear;
+            double y2 = n.y + n.h + clear;
+            for (int i = 0; i + 1 < route.length; i++) {
+                double sx = Math.min(route[i][0], route[i + 1][0]);
+                double ex = Math.max(route[i][0], route[i + 1][0]);
+                double sy = Math.min(route[i][1], route[i + 1][1]);
+                double ey = Math.max(route[i][1], route[i + 1][1]);
+                if (ex >= x1 && sx <= x2 && ey >= y1 && sy <= y2) {
+                    hits++;
+                    break;
+                }
+            }
+        }
+        return hits;
+    }
+
+    /** 去重零长段；两点直线补中点成三点（存活 SceneSanitizer 的 ≥3 点口径） */
+    private static double[][] dedupe(double[][] route) {
+        List<double[]> pts = new ArrayList<>();
+        for (double[] p : route) {
+            if (!pts.isEmpty()
+                    && Math.abs(pts.get(pts.size() - 1)[0] - p[0]) < 0.5
+                    && Math.abs(pts.get(pts.size() - 1)[1] - p[1]) < 0.5) {
+                continue;
+            }
+            pts.add(p);
+        }
+        if (pts.size() == 2) {
+            double[] a = pts.get(0);
+            double[] b = pts.get(1);
+            pts.add(1, new double[] {(a[0] + b[0]) / 2,
+                (a[1] + b[1]) / 2});
+        }
+        return pts.toArray(new double[0][]);
+    }
+
+    /** 绝对坐标折线写回箭头（x/y = 首点，points = 相对偏移） */
+    private void writeRoute(ObjectNode arrow, double[][] abs) {
+        double ox = abs[0][0];
+        double oy = abs[0][1];
+        ArrayNode points = arrow.putArray("points");
+        for (double[] p : abs) {
+            ArrayNode item = points.addArray();
+            item.add(round1(p[0] - ox));
+            item.add(round1(p[1] - oy));
+        }
+        arrow.put("x", round1(ox));
+        arrow.put("y", round1(oy));
+    }
+
+    /** 一位小数：与 ElkLayoutEngine.round1 同口径，防浮点尾巴进契约 */
+    private static double round1(double value) {
+        return Math.round(value * 10) / 10.0;
+    }
+
+    /** 边标签字号（比节点文字小一档，mermaid 的视觉层级口径） */
+    private static final double LABEL_FONT = 16;
+
+    /** 标签离线段/框的净距 */
+    private static final double LABEL_GAP = 16;
+
+    /**
+     * 边标签治理：去重 + 落位成独立文字。
+     *
+     * 2026-10-15 regress_arch5 用户圈出的两坨噪音都出在标签上：
+     * ① 网关 4 条出线各带一个同名「路由转发」，而箭头标签渲染时自动
+     *    居中在整条箭头包围盒中心 —— 4 条平行线中心几乎同点，标签摞成
+     *    一摞；② 跨模块走廊里 6 条线 6 个标签全砸在走廊中段互相压线。
+     * 根因是「标签位置从来没人管」：绑定标签由渲染器自动居中，不受控。
+     *
+     * 治法（全确定性代码，不劳 LLM）：
+     * ① 去重 —— 同一源节点 + 同名文字的标签只保留首条（mermaid/draw.io
+     *    口径：重复标注是噪音不是信息）；
+     * ② 落位 —— 有 points 的箭头把标签编译成**独立文字元素**，放在出线
+     *    段旁（先取首段，短了取最长段），垂直偏移 16px，沿段滑动找空位，
+     *    与节点框/已放标签都不叠；实在放不下才保留绑定标签兜底。
+     * 适配层已验证：无 containerId 的 text 元素坐标原样生效。
+     */
+    private void placeEdgeLabels(JsonNode root, Partition partition) {
+        JsonNode elementsNode = root.get("elements");
+        if (!(elementsNode instanceof ArrayNode elements)) {
+            return;
+        }
+        // ① 同源同名去重
+        Set<String> seen = new LinkedHashSet<>();
+        List<ObjectNode> labeled = new ArrayList<>();
+        for (JsonNode element : elements) {
+            if (!"arrow".equals(text(element, "type"))
+                    || !(element instanceof ObjectNode arrow)) {
+                continue;
+            }
+            JsonNode label = arrow.get("label");
+            if (label == null || !label.isObject()
+                    || text(label, "text").isBlank()) {
+                continue;
+            }
+            String key = bindingId(arrow, "start") + "|"
+                    + text(label, "text").trim();
+            if (!seen.add(key)) {
+                arrow.remove("label");
+                continue;
+            }
+            labeled.add(arrow);
+        }
+        // ② 落位为独立文字
+        List<double[]> placed = new ArrayList<>();
+        for (ObjectNode arrow : labeled) {
+            JsonNode points = arrow.get("points");
+            if (points == null || !points.isArray()
+                    || points.size() < 2) {
+                continue;
+            }
+            String content = text(arrow.get("label"), "text").trim();
+            double[] size = labelSize(content);
+            double ox = arrow.get("x").asDouble();
+            double oy = arrow.get("y").asDouble();
+            double[] spot = findLabelSpot(
+                    points, ox, oy, size, partition.nodes, placed);
+            if (spot == null) {
+                continue;
+            }
+            ObjectNode label = objectMapper.createObjectNode();
+            label.put("id", arrow.path("id").asText("") + "_lbl");
+            label.put("type", "text");
+            label.put("x", round1(spot[0] - size[0] / 2));
+            label.put("y", round1(spot[1] - size[1] / 2));
+            // 不写 width/height：schema text 元素 additionalProperties=false，
+            // 适配层按字数（CJK 0.9×fontSize）自算尺寸
+            label.put("text", content);
+            label.put("fontSize", LABEL_FONT);
+            elements.add(label);
+            arrow.remove("label");
+            placed.add(new double[] {
+                spot[0] - size[0] / 2, spot[1] - size[1] / 2,
+                spot[0] + size[0] / 2, spot[1] + size[1] / 2});
+        }
+    }
+
+    /**
+     * 估算标签外框：CJK ≈ 0.9×fontSize/字、Latin ≈ 0.45×fontSize/字、
+     * 行高 1.25×fontSize（与 sceneAdapter 的宽度真值同源）。
+     */
+    private static double[] labelSize(String content) {
+        double w = 0;
+        for (int i = 0; i < content.length(); i++) {
+            char c = content.charAt(i);
+            w += (c >= 0x2E80) ? 0.9 : 0.45;
+        }
+        double width = Math.max(w * LABEL_FONT, 24);
+        return new double[] {width, LABEL_FONT * 1.25};
+    }
+
+    /**
+     * 找一个不压节点框、不压已放标签的落点：候选段（首段优先，短了
+     * 依次取后续段）中点两侧各偏 16px，再沿段方向 ±14~42px 滑动。
+     */
+    private double[] findLabelSpot(
+            JsonNode points, double ox, double oy, double[] size,
+            List<Node> nodes, List<double[]> placed) {
+        int count = points.size();
+        for (int i = 0; i < Math.min(count - 1, 4); i++) {
+            double x1 = ox + points.get(i).get(0).asDouble();
+            double y1 = oy + points.get(i).get(1).asDouble();
+            double x2 = ox + points.get(i + 1).get(0).asDouble();
+            double y2 = oy + points.get(i + 1).get(1).asDouble();
+            double len = Math.hypot(x2 - x1, y2 - y1);
+            if (i == 0 && len < 24 && count > 2) {
+                continue;
+            }
+            double mx = (x1 + x2) / 2;
+            double my = (y1 + y2) / 2;
+            double dx = len < 1e-6 ? 0 : (x2 - x1) / len;
+            double dy = len < 1e-6 ? 0 : (y2 - y1) / len;
+            double nx = -dy;
+            double ny = dx;
+            for (int side = 1; side >= -1; side -= 2) {
+                for (int step = 0; step <= 3; step++) {
+                    // 滑动序列：0、-14、+14、-28（沿段方向交错探测）
+                    double slide = step == 0 ? 0
+                            : (step % 2 == 1 ? -1 : 1)
+                                    * ((step + 1) / 2) * 14.0;
+                    double cx = mx + nx * LABEL_GAP * side + dx * slide;
+                    double cy = my + ny * LABEL_GAP * side + dy * slide;
+                    double[] box = {
+                        cx - size[0] / 2, cy - size[1] / 2,
+                        cx + size[0] / 2, cy + size[1] / 2};
+                    if (spotClean(box, nodes, placed)) {
+                        return new double[] {cx, cy};
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 落点与所有节点框（外扩 2px）和已放标签（外扩 4px）都不相交 */
+    private static boolean spotClean(
+            double[] box, List<Node> nodes, List<double[]> placed) {
+        for (Node n : nodes) {
+            if (box[2] >= n.x - 2 && box[0] <= n.x + n.w + 2
+                    && box[3] >= n.y - 2 && box[1] <= n.y + n.h + 2) {
+                return false;
+            }
+        }
+        for (double[] p : placed) {
+            if (box[2] >= p[0] - 4 && box[0] <= p[2] + 4
+                    && box[3] >= p[1] - 4 && box[1] <= p[3] + 4) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -666,13 +1420,15 @@ public class ScenePlanner {
      * 中点就落在这条通道里，这是 5.3 验证有效的那个机制。
      */
     private void layoutBlock(
-            Block block, LayoutEngine engine, Partition partition) {
+            Block block, LayoutEngine engine, Partition partition,
+            boolean horizontal) {
         for (Block child : block.children) {
-            layoutBlock(child, engine, partition);
+            layoutBlock(child, engine, partition, horizontal);
         }
         List<Block> items = new ArrayList<>();
         if (!block.shapes.isEmpty()) {
-            Block own = layoutOwnShapes(block.shapes, engine, partition);
+            Block own = layoutOwnShapes(
+                    block.shapes, engine, partition, horizontal);
             block.own = own;
             items.add(own);
         }
@@ -682,7 +1438,8 @@ public class ScenePlanner {
             block.contentW = 0;
             block.contentH = 0;
         } else {
-            double[] size = pack(items, LayoutSpec.MODULE_GAP);
+            double[] size = pack(items, LayoutSpec.MODULE_GAP,
+                    partition);
             block.contentW = size[0];
             block.contentH = size[1];
         }
@@ -700,11 +1457,27 @@ public class ScenePlanner {
     /**
      * 把一个模块内的图形交给单层引擎排，并把结果归一化到"左上角为 (0,0)"。
      *
- * 返回的占位块只带尺寸（`shapes` 为空）：真正的图形仍归
+     * <p>两处 2026-10-16 五图实测的修正：
+     *
+     * <p><b>① 边标签剥离子场景</b>：模块内箭头不带 label 进布局 ——
+     * 标签由 {@link #placeEdgeLabels} 在排版落定后独立落位（放在
+     * 线段旁，不压在线上），而布局引擎的层间距 / 兄弟间距会按最长
+     * 边标签撑大（认证图 "Authenticated Request (JWT)" 270px 把层
+     * 间距撑到 280px，整图 0.64 长宽比）。剥掉后模块内间距只受
+     * {@link LayoutSpec#LAYER_GAP} 地板值约束。箭头路由（points）
+     * 由引擎写进副本，排完必须回写到原件 —— 最终场景序列化的是
+     * 原件，副本上的几何丢了就是"箭头悬空"。
+     *
+     * <p><b>② 方向由整图试排定</b>：{@code horizontal} 来自
+     * {@link #arrangeModules} 的全局取舍，模块自己的长宽比说明不了
+     * 该横还是该竖（见 {@link LayoutEngine#layoutModule(String, Set, boolean)}）。
+     *
+     * <p>返回的占位块只带尺寸（`shapes` 为空）：真正的图形仍归
      * 外层块持有，避免同一次平移被算两遍。
      */
     private Block layoutOwnShapes(
-            List<Node> shapes, LayoutEngine engine, Partition partition) {
+            List<Node> shapes, LayoutEngine engine, Partition partition,
+            boolean horizontal) {
         Set<String> ids = new LinkedHashSet<>();
         for (Node node : shapes) {
             ids.add(node.id);
@@ -713,6 +1486,8 @@ public class ScenePlanner {
         for (Node node : shapes) {
             sub.add(node.json);
         }
+        // 模块内箭头原件（id → 元素）：路由回写的目标
+        Map<String, ObjectNode> arrowOriginals = new LinkedHashMap<>();
         for (JsonNode element : partition.rawElements) {
             if (!"arrow".equals(text(element, "type"))) {
                 continue;
@@ -721,12 +1496,21 @@ public class ScenePlanner {
             String to = bindingId(element, "end");
             if (from != null && to != null
                     && ids.contains(from) && ids.contains(to)) {
-                sub.add(element);
+                // 剥标签进副本：引擎的间距估算看不到标签，模块内
+                // 间距回到地板值；label 留在原件上给 placeEdgeLabels
+                ObjectNode copy = ((ObjectNode) element).deepCopy();
+                copy.remove("label");
+                sub.add(copy);
+                arrowOriginals.put(
+                        text(element, "id"), (ObjectNode) element);
             }
         }
         ObjectNode scene = objectMapper.createObjectNode();
         scene.set("elements", sub);
-        String laid = engine.layout(scene.toString(), Set.of());
+        // 模块内用 layoutModule：禁掉"按视口翻转主方向"的启发式，
+        // 否则竖链模块（长宽比 0.28）每张图都会被压成横排长条
+        String laid = engine.layoutModule(
+                scene.toString(), Set.of(), horizontal);
 
         Map<String, JsonNode> byId = new LinkedHashMap<>();
         try {
@@ -743,6 +1527,27 @@ public class ScenePlanner {
         } catch (Exception e) {
             LOG.warn("模块内布局结果解析失败（{}），该模块保持种子坐标",
                     e.getMessage());
+        }
+
+        // 路由回写：引擎把 points/x/y 写进了剥标签的副本，原件才是
+        // 最终序列化的对象 —— 不回写就等于模块内箭头全部丢几何
+        for (Map.Entry<String, ObjectNode> entry
+                : arrowOriginals.entrySet()) {
+            JsonNode laidArrow = byId.get(entry.getKey());
+            if (laidArrow == null) {
+                continue;
+            }
+            ObjectNode original = entry.getValue();
+            if (laidArrow.has("points")) {
+                original.set("points",
+                        laidArrow.get("points").deepCopy());
+            }
+            if (isNumber(laidArrow, "x")) {
+                original.put("x", number(laidArrow, "x"));
+            }
+            if (isNumber(laidArrow, "y")) {
+                original.put("y", number(laidArrow, "y"));
+            }
         }
 
         double minX = Double.MAX_VALUE;
@@ -780,6 +1585,7 @@ public class ScenePlanner {
         Block box = new Block(null);
         box.contentW = maxX;
         box.contentH = maxY;
+        box.ownArrows.addAll(arrowOriginals.values());
         return box;
     }
 
@@ -791,7 +1597,8 @@ public class ScenePlanner {
      *
      * @return 打包后的整体尺寸
      */
-    private double[] pack(List<Block> items, double gap) {
+    private double[] pack(
+            List<Block> items, double gap, Partition partition) {
         if (items.size() == 1) {
             items.get(0).ox = 0;
             items.get(0).oy = 0;
@@ -807,7 +1614,9 @@ public class ScenePlanner {
                 continue;
             }
             double penalty = Math.abs(Math.log(
-                    (size[0] / size[1]) / TARGET_ASPECT));
+                    (size[0] / size[1]) / TARGET_ASPECT))
+                    + BACKWARD_EDGE_COST
+                    * backwardEdges(items, partition.flow);
             if (penalty < bestPenalty) {
                 bestPenalty = penalty;
                 bestCols = cols;
@@ -857,9 +1666,28 @@ public class ScenePlanner {
     /** 把局部坐标累加成全局坐标（`dx/dy` = 本块内容区左上角） */
     private void place(Block block, double dx, double dy) {
         if (block.own != null) {
+            double ox = dx + block.own.ox;
+            double oy = dy + block.own.oy;
             for (Node node : block.shapes) {
-                node.x += dx + block.own.ox;
-                node.y += dy + block.own.oy;
+                node.x += ox;
+                node.y += oy;
+            }
+            // 🔴 模块内箭头的 x/y 是"子场景局部坐标"（由 layoutOwnShapes
+            // 从引擎写回），必须随模块一起平移。此前只平移了节点，
+            // 箭头留在局部坐标上 —— 箭头本体在渲染端按 start/end 绑定
+            // 重算几何，看不出问题；但 placeEdgeLabels 是拿箭头 x/y
+            // 当绝对原点算标签落点的，于是标签全部飘到图外
+            // （2026-10-16 RAG 实测：7 个步骤标签齐刷刷落在左侧空白栏，
+            // 距真实边 700px+）。points 是相对首点的偏移，无需改。
+            for (ObjectNode arrow : block.own.ownArrows) {
+                if (isNumber(arrow, "x")) {
+                    arrow.put("x",
+                            round1(arrow.get("x").asDouble() + ox));
+                }
+                if (isNumber(arrow, "y")) {
+                    arrow.put("y",
+                            round1(arrow.get("y").asDouble() + oy));
+                }
             }
         }
         for (Block child : block.children) {
@@ -881,8 +1709,17 @@ public class ScenePlanner {
      */
     private void writeShapes(List<Node> nodes) {
         for (Node node : nodes) {
-            node.json.put("x", LayoutSpec.snap(node.x));
-            node.json.put("y", LayoutSpec.snap(node.y));
+            // 🔴 吸附后的值必须**写回内存**，不能只写进 json。
+            // 下游（routeCrossModuleArrows 的走廊、placeEdgeLabels 的
+            // spotClean）都拿 node.x/node.y 当"已渲染的框"来判断
+            // 压不压得住 —— 内存里留着小几个 px 的未吸附值，判定就会
+            // 说"这里空着"，实际渲染出来却压进去几个 px
+            // （2026-10-16 auth 实测：'支付状态' 与 'Inactive' 两个标签
+            // 各压住一个节点的边 5px，根因就是这个差值）。
+            node.x = LayoutSpec.snap(node.x);
+            node.y = LayoutSpec.snap(node.y);
+            node.json.put("x", node.x);
+            node.json.put("y", node.y);
             node.json.put("width", node.w);
             node.json.put("height", node.h);
         }
@@ -1005,6 +1842,8 @@ public class ScenePlanner {
         private final List<Node> nodes;
         private final boolean active;
         private final int moduleCount;
+        /** 顶层模块间有向边计数（模块名 → 目标名 → 边数），打包评估逆流惩罚用 */
+        private Map<String, Map<String, Integer>> flow = Map.of();
 
         private Partition(
                 Block root, List<JsonNode> rawElements,
@@ -1023,20 +1862,20 @@ public class ScenePlanner {
     }
 
     /** 一个图形 */
-    private static final class Node {
-        private final ObjectNode json;
-        private final String id;
+    static final class Node {
+        final ObjectNode json;
+        final String id;
         /**
          * 尺寸：初值是种子尺寸，引擎排完会改写它 —— 引擎写回的是
          * "渲染端最终会画多大"，模块包围盒与 frame 必须按它算，否则框会
          * 按旧尺寸包住新图形（起引擎写回尺寸）。
          */
-        private double w;
-        private double h;
-        private double x;
-        private double y;
+        double w;
+        double h;
+        double x;
+        double y;
 
-        private Node(ObjectNode json, String id, double w, double h) {
+        Node(ObjectNode json, String id, double w, double h) {
             this.json = json;
             this.id = id;
             this.w = w;
@@ -1060,6 +1899,14 @@ public class ScenePlanner {
         private final Map<String, Block> byName = new LinkedHashMap<>();
         private ObjectNode frame;
         private Block own;
+
+        /**
+         * 本块"内部箭头"的原件（两端都在本块内的箭头）。
+         *
+         * <p>它们的 x/y 由子场景引擎写成**局部坐标**，必须随模块
+         * 一起平移 —— 见 {@link #place}。不记下来就没人平移它们。
+         */
+        private final List<ObjectNode> ownArrows = new ArrayList<>();
         private double ox;
         private double oy;
         private double padLeft;

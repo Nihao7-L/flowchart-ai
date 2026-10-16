@@ -15,10 +15,12 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutSpec;
 import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 
 /**
@@ -42,7 +44,7 @@ class ScenePlannerTest {
     // ==================== 零回归 ====================
 
     @Test
-    @DisplayName("图形数 ≤ 阈值：与单层引擎输出逐字节一致")
+    @DisplayName("无分组小图：与单层引擎输出逐字节一致")
     void smallSceneIsUntouched() {
         String json = sceneOf(
                 rect("a", "开始", null),
@@ -80,28 +82,15 @@ class ScenePlannerTest {
                 "没有分组信息时不该凭空分区");
     }
 
-    @Test
-    @DisplayName("只有一个模块：不分区（模块数 < 2）")
-    void singleModuleFallsBack() {
-        List<String> elements = new ArrayList<>();
-        for (int i = 0; i < 15; i++) {
-            elements.add(rect("n" + i, "节点" + i, quote("唯一模块")));
-        }
-        String json = sceneOf(elements.toArray(new String[0]));
-        assertEquals(engine.layout(json, Set.of()),
-                planner.arrange(json, engine, Set.of()),
-                "只有一个模块 = 没有分区可言");
-    }
-
     // ==================== 分区行为 ====================
 
     @Test
     @DisplayName("LLM 显式标注分组的小图（< 阈值）：分区也必须生效（模块互不重叠）")
     void explicitGroupActivatesPartitionBelowThreshold() throws Exception {
-        // 2026-10-15 regress_arch 回归：10 个图形 3 组显式标注被
-        // MODULE_THRESHOLD 拦住 → 全局排版 → 「支付服务」落进数据层
+        // 2026-10-15 regress_arch 回归：10 个图形 3 组显式标注曾被
+        // 节点数阈值（15）拦住 → 全局排版 → 「支付服务」落进数据层
         // bbox，画框罩住别人的成员。显式分组是强意图，不该受
-        // "图形多才分区"的启发式限制
+        // "图形多才分区"的启发式限制（该阈值现已删除）
         List<String> elements = new ArrayList<>();
         String[] groups = {"接入层", "服务层", "数据层"};
         String[] prefixes = {"a", "s", "d"};
@@ -130,6 +119,164 @@ class ScenePlannerTest {
     }
 
     @Test
+    @DisplayName("多模块：跨模块箭头补 3 点正交路由（分区路径无 ELK 边路由）")
+    void crossModuleArrowsGetRoutes() throws Exception {
+        // 2026-10-15 regress_arch2 实测 17/17 箭头悬空 181~277px：
+        // 模块内边随子图进过 ELK（points 已写回），跨模块边不属于
+        // 任何子图、从头到尾没人给几何 —— 前端中心连直线必然指空
+        List<String> elements = new ArrayList<>();
+        String[] groups = {"接入层", "服务层", "数据层"};
+        String[] prefixes = {"a", "s", "d"};
+        for (int g = 0; g < groups.length; g++) {
+            for (int i = 0; i < 2; i++) {
+                elements.add(rect(prefixes[g] + i,
+                        groups[g] + i, quote(groups[g])));
+            }
+        }
+        elements.add(arrow("x1", "a0", "s0"));
+        elements.add(arrow("x2", "s0", "d0"));
+        String laid = planner.arrange(
+                sceneOf(elements.toArray(new String[0])),
+                engine, Set.of());
+        JsonNode root = mapper.readTree(laid);
+        int routed = 0;
+        for (JsonNode el : root.get("elements")) {
+            if (!"arrow".equals(el.path("type").asText())) {
+                continue;
+            }
+            JsonNode points = el.get("points");
+            assertNotNull(points, "箭头 " + el.path("id").asText()
+                    + " 必须带 points（不容许留给前端重算）");
+            assertTrue(points.isArray() && points.size() >= 3,
+                    "路由至少 3 点（直线补中点口径），实际 "
+                            + points.size());
+            assertTrue(el.hasNonNull("x") && el.hasNonNull("y"),
+                    "x/y = 首点绝对坐标（引擎写回口径）");
+            routed++;
+        }
+        assertEquals(2, routed, "两条跨模块箭头都应被路由");
+        assertRoutesAvoidNodes(root,
+                "2026-10-15 regress_arch3 实测拐点通道 x=380 直接穿过"
+                        + "三个服务框、6 条线叠在 x=200 一股上");
+    }
+
+    /**
+     * 路由质量断言：每条箭头的每一段（轴对齐）都不得与无关节点的
+     * bbox（外扩 4px）相交 —— 防「拐点通道压在实体上」的穿框复发。
+     */
+    private void assertRoutesAvoidNodes(JsonNode root, String context)
+            throws Exception {
+        Map<String, double[]> boxes = new LinkedHashMap<>();
+        for (JsonNode el : root.get("elements")) {
+            if (!"rectangle".equals(el.path("type").asText())
+                    || !el.hasNonNull("x")) {
+                continue;
+            }
+            boxes.put(el.path("id").asText(), new double[] {
+                el.get("x").asDouble(), el.get("y").asDouble(),
+                el.get("x").asDouble() + el.get("width").asDouble(),
+                el.get("y").asDouble() + el.get("height").asDouble()});
+        }
+        final double margin = 4;
+        for (JsonNode el : root.get("elements")) {
+            if (!"arrow".equals(el.path("type").asText())
+                    || el.get("points") == null) {
+                continue;
+            }
+            String from = el.path("start").path("id").asText();
+            String to = el.path("end").path("id").asText();
+            double ox = el.get("x").asDouble();
+            double oy = el.get("y").asDouble();
+            JsonNode points = el.get("points");
+            // 终点必须贴在目标框边上（±2px）—— 防「进边锚点轴向传反」
+            // 这类离目标几十上百 px 的静默劣化（regress_arch4 实测）
+            double lx = ox + points.get(points.size() - 1).get(0).asDouble();
+            double ly = oy + points.get(points.size() - 1).get(1).asDouble();
+            double[] tb = boxes.get(to);
+            assertNotNull(tb, "目标节点 " + to + " 应存在");
+            boolean onBorder =
+                    (Math.abs(lx - tb[0]) <= 2 || Math.abs(lx - tb[2]) <= 2)
+                            && ly >= tb[1] - 2 && ly <= tb[3] + 2
+                            || (Math.abs(ly - tb[1]) <= 2
+                                    || Math.abs(ly - tb[3]) <= 2)
+                                    && lx >= tb[0] - 2 && lx <= tb[2] + 2;
+            assertTrue(onBorder, "箭头 " + el.path("id").asText()
+                    + " 终点 (" + lx + "," + ly + ") 未贴在目标 "
+                    + to + " 的框边上 " + context);
+            for (int i = 0; i + 1 < points.size(); i++) {
+                double sx = Math.min(
+                        ox + points.get(i).get(0).asDouble(),
+                        ox + points.get(i + 1).get(0).asDouble());
+                double ex = Math.max(
+                        ox + points.get(i).get(0).asDouble(),
+                        ox + points.get(i + 1).get(0).asDouble());
+                double sy = Math.min(
+                        oy + points.get(i).get(1).asDouble(),
+                        oy + points.get(i + 1).get(1).asDouble());
+                double ey = Math.max(
+                        oy + points.get(i).get(1).asDouble(),
+                        oy + points.get(i + 1).get(1).asDouble());
+                for (Map.Entry<String, double[]> box : boxes.entrySet()) {
+                    if (box.getKey().equals(from)
+                            || box.getKey().equals(to)) {
+                        continue;
+                    }
+                    double[] b = box.getValue();
+                    boolean hits = ex >= b[0] - margin
+                            && sx <= b[2] + margin
+                            && ey >= b[1] - margin
+                            && sy <= b[3] + margin;
+                    assertFalse(hits, context + " —— 箭头 "
+                            + el.path("id").asText() + " 第 " + i
+                            + " 段穿过节点 " + box.getKey());
+                }
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("边标签治理：同源同名去重，有路由的标签落位为独立文字")
+    void edgeLabelsDedupAndPlace() throws Exception {
+        // 2026-10-15 regress_arch5 用户圈出两坨标签噪音：网关 4 条出线
+        // 各带同名「路由转发」摞成一摞、走廊里 6 个标签互相压线 ——
+        // 绑定标签由渲染器自动居中在箭头包围盒中心，位置从来没人管
+        List<String> elements = new ArrayList<>();
+        String[] groups = {"接入层", "服务层"};
+        String[] prefixes = {"a", "s"};
+        for (int g = 0; g < groups.length; g++) {
+            for (int i = 0; i < 2; i++) {
+                elements.add(rect(prefixes[g] + i,
+                        groups[g] + i, quote(groups[g])));
+            }
+        }
+        elements.add(arrowLabeled("x1", "a0", "s0", "路由转发"));
+        elements.add(arrowLabeled("x2", "a0", "s1", "路由转发"));
+        elements.add(arrowLabeled("x3", "a1", "s0", "调用"));
+        String laid = planner.arrange(
+                sceneOf(elements.toArray(new String[0])),
+                engine, Set.of());
+        JsonNode root = mapper.readTree(laid);
+        int bound = 0;
+        int standalone = 0;
+        for (JsonNode el : root.get("elements")) {
+            if ("arrow".equals(el.path("type").asText())) {
+                if (el.has("label")) {
+                    bound++;
+                }
+            } else if ("text".equals(el.path("type").asText())
+                    && el.path("id").asText().endsWith("_lbl")) {
+                standalone++;
+                assertTrue(el.hasNonNull("x") && el.hasNonNull("y"),
+                        "独立标签必须有坐标");
+            }
+        }
+        // x1/x2 同源(a0)同名 → 去重留 1；x3 文字不同保留。两条都有
+        // 跨模块路由 points → 都应落位成独立文字，不再绑定居中
+        assertEquals(2, standalone, "去重后 2 个标签都应落位为独立文字");
+        assertEquals(0, bound, "能落位的标签不该留在箭头上（自动居中不可控）");
+    }
+
+    @Test
     @DisplayName("多模块：同模块成员聚成一块，模块之间互不重叠")
     void modulesArePackedApart() throws Exception {
         String laid = planner.arrange(modularScene(), engine, Set.of());
@@ -147,16 +294,160 @@ class ScenePlannerTest {
     }
 
     @Test
-    @DisplayName("多模块：整体长宽比落在 [0.5, 2.5]（竖排一根窄条的问题已解）")
+    @DisplayName("多模块：整体长宽比落在 [0.4, 3.0]（竖排一根窄条的问题已解）")
     void overallAspectIsReasonable() throws Exception {
         String laid = planner.arrange(modularScene(), engine, Set.of());
         double[] box = shapeBounds(laid);
         double aspect = (box[2] - box[0]) / (box[3] - box[1]);
         // 2026-10-15 口径放宽 [0.5,2]→[0.5,2.5]：显式分组直通分区后，
         // 3 模块横排打包实测 2.07 —— 分区块的横排是合理形态，这条
-        // 判据要防的是"文字看不清的病态窄条"（实测 0.14 / 7+）
-        assertTrue(aspect >= 0.5 && aspect <= 2.5,
-                "长宽比应落在 [0.5, 2.5]，实际 " + aspect);
+        // 判据要防的是"文字看不清的病态窄条"（实测 0.14 / 7+）。
+        // 2026-10-16 再放宽到 [0.4, 3.0]：整图方向试排上线后，3 个
+        // 链式模块可能被判横排堆叠（每模块内左而右），实测 2.4 一线
+        // —— 那是"三条流水线横幅"的合法形态，不是病态宽条。
+        assertTrue(aspect >= 0.4 && aspect <= 3.0,
+                "长宽比应落在 [0.4, 3.0]，实际 " + aspect);
+    }
+
+    @Test
+    @DisplayName("模块内边标签不撑层间距：剥离子场景，间距回到 LAYER_GAP 地板值")
+    void internalEdgeLabelsDoNotInflateModuleGaps() throws Exception {
+        // 2026-10-16 认证图实测：270px 的边标签把层间距撑到 280px，
+        // 整图 0.64 长宽比（参考图 1.71）。分区路径把标签从布局
+        // 子场景剥掉（placeEdgeLabels 落定后独立落位），模块内层
+        // 间距应只受 LayoutSpec.LAYER_GAP 约束。
+        List<String> elements = new ArrayList<>();
+        elements.add(rect("a", "起点", quote("流水线")));
+        elements.add(rect("b", "终点", quote("流水线")));
+        elements.add(arrowLabeled("e1", "a", "b", "很长的边标签文字啊啊"));
+        // 再给一个模块，确保本用例一定走分区路径（测的是"模块内
+        // 层间距不受长标签撑大"，不是单分组行为）。
+        elements.add(rect("c", "旁路1", quote("旁路模块")));
+        elements.add(rect("d", "旁路2", quote("旁路模块")));
+        elements.add(arrow("e2", "c", "d"));
+        elements.add(arrow("e3", "b", "c"));
+        String laid = planner.arrange(
+                sceneOf(elements.toArray(new String[0])),
+                engine, Set.of());
+        double ax = 0;
+        double ay = 0;
+        double aw = 0;
+        double ah = 0;
+        double bx = 0;
+        double by = 0;
+        for (JsonNode el : mapper.readTree(laid).get("elements")) {
+            if (!"rectangle".equals(el.path("type").asText())) {
+                continue;
+            }
+            if ("a".equals(el.path("id").asText())) {
+                ax = el.get("x").asDouble();
+                ay = el.get("y").asDouble();
+                aw = el.get("width").asDouble();
+                ah = el.get("height").asDouble();
+            } else if ("b".equals(el.path("id").asText())) {
+                bx = el.get("x").asDouble();
+                by = el.get("y").asDouble();
+            }
+        }
+        // 模块主方向由整图试排决定，可能竖排也可能横排 —— 取被分开
+        // 的那条轴上的净间距，都该等于地板值（长标签若参与撑距，
+        // 这条轴会被撑到 ~240，本用例就是它的回归锁）。
+        double floor = LayoutSpec.mainGapFor(List.of());
+        double gapV = by - ay - ah;
+        double gapH = bx - ax - aw;
+        boolean stacked = Math.abs(gapV - floor) < 1e-6;
+        boolean sideBySide = Math.abs(gapH - floor) < 1e-6;
+        assertTrue(stacked || sideBySide,
+                "模块内层间距应是地板值 " + floor + "（标签不参与撑距），"
+                        + "实际 gapV=" + gapV + " gapH=" + gapH);
+        // 注意：内部边标签可能留存在箭头上（而非独立文字），
+        // 标签落位的专项覆盖见 edgeLabelsDedupAndPlace，这里不重复断言。
+    }
+
+    @Test
+    @DisplayName("单分组也分区：LLM 显式声明一个组，就按它分区（不再被数量阈值拦住）")
+    void singleGroupActivatesPartition() throws Exception {
+        // 2026-10-16 口径修正：此前用 moduleCount ≥ 2 把单组挡在分区
+        // 之外，等于拿"有几组"替代"要不要分区"的语义判断。单组
+        // （如 AWS Cloud / 数据摄入流水线）同样是一个真实容器。
+        List<String> elements = new ArrayList<>();
+        elements.add(rect("c1", "Cognito", quote("AWS Cloud")));
+        elements.add(rect("c2", "API Gateway", quote("AWS Cloud")));
+        elements.add(rect("c3", "Lambda", quote("AWS Cloud")));
+        // 外部实体，不属于任何组
+        elements.add(rect("u1", "User", null));
+        elements.add(arrow("e1", "u1", "c1"));
+        elements.add(arrow("e2", "c1", "c2"));
+        elements.add(arrow("e3", "c2", "c3"));
+
+        String json = sceneOf(elements.toArray(new String[0]));
+        String laid = planner.arrange(json, engine, Set.of());
+
+        // 分区路径一旦介入，输出必与"无排版"的单层引擎不同（模块内
+        // 自排 + 模块与游离图形分开打包 vs 平铺层叠）—— 这是本用例
+        // 要锁的信号：单组不再被 moduleCount 阈值挡在分区之外。
+        assertNotEquals(engine.layout(json, Set.of()), laid,
+                "单分组必须激活分区路径（旧口径会被 moduleCount<2 拦掉）");
+
+        // 三组成员仍应聚成一个模块，且与外部节点不重叠
+        double[] cloud = idPrefixBounds(laid, "c");
+        double[] user = idPrefixBounds(laid, "u");
+        assertFalse(overlaps(cloud, user),
+                "AWS Cloud 模块与外部节点 User 不应重叠");
+    }
+
+    @Test
+    @DisplayName("模块内箭头随模块平移：原点必须贴着自己的两端节点")
+    void internalArrowsAreTranslatedWithModule() throws Exception {
+        // 2026-10-16 RAG 实测：模块内箭头只拿到"子场景局部坐标"、
+        // 没随模块一起平移 ⇒ placeEdgeLabels 拿陈旧原点算标签落点，
+        // 7 个步骤标签齐刷刷飘到图外左侧空白栏。箭头本体在渲染端
+        // 按 start/end 绑定重算几何所以看不出问题，只有标签暴露它。
+        List<String> elements = new ArrayList<>();
+        elements.add(rect("a1", "接入一", quote("接入层")));
+        elements.add(rect("a2", "接入二", quote("接入层")));
+        elements.add(rect("s1", "服务一", quote("服务层")));
+        elements.add(rect("s2", "服务二", quote("服务层")));
+        elements.add(arrowLabeled("i1", "a1", "a2", "模块内一"));
+        elements.add(arrowLabeled("i2", "s1", "s2", "模块内二"));
+        elements.add(arrow("x1", "a2", "s1"));
+
+        String laid = planner.arrange(
+                sceneOf(elements.toArray(new String[0])),
+                engine, Set.of());
+        Map<String, double[]> boxes = new LinkedHashMap<>();
+        for (JsonNode el : mapper.readTree(laid).get("elements")) {
+            if ("rectangle".equals(el.path("type").asText())) {
+                boxes.put(el.path("id").asText(), new double[] {
+                    el.get("x").asDouble(), el.get("y").asDouble(),
+                    el.get("x").asDouble() + el.get("width").asDouble(),
+                    el.get("y").asDouble() + el.get("height").asDouble()});
+            }
+        }
+        int checked = 0;
+        for (JsonNode el : mapper.readTree(laid).get("elements")) {
+            if (!"arrow".equals(el.path("type").asText())) {
+                continue;
+            }
+            String from = el.path("start").path("id").asText();
+            String to = el.path("end").path("id").asText();
+            double[] fb = boxes.get(from);
+            double[] tb = boxes.get(to);
+            assertNotNull(fb, "应有源节点 " + from);
+            assertNotNull(tb, "应有目标节点 " + to);
+            double ox = el.get("x").asDouble();
+            double oy = el.get("y").asDouble();
+            double lo = Math.min(fb[0], tb[0]) - 120;
+            double hi = Math.max(fb[2], tb[2]) + 120;
+            double top = Math.min(fb[1], tb[1]) - 120;
+            double bot = Math.max(fb[3], tb[3]) + 120;
+            assertTrue(ox >= lo && ox <= hi && oy >= top && oy <= bot,
+                    "箭头 " + el.path("id").asText() + " 原点 (" + ox
+                            + "," + oy + ") 远离自己的两端节点 —— "
+                            + "疑似没随模块平移");
+            checked++;
+        }
+        assertEquals(3, checked, "两条模块内边 + 一条跨模块边");
     }
 
     @Test
@@ -269,10 +560,13 @@ class ScenePlannerTest {
                 "匹配不上的框不该被塞成员");
     }
 
-    // ==================== ② 聚类兜底（v2-39 5.2） ====================
+    // ==================== 分区只认显式声明（2026-10-15 收紧） ====================
+    // 此前的「节点数 > 15 就按拓扑/标签前缀自动聚类」兜底已删：
+    // 分不分区是语义决策（模型读了需求，它不标组就是没有分区语义），
+    // 机械阈值与几何猜测都不该存在。
 
     @Test
-    @DisplayName("兜底·拓扑：无 group 但分成两块互不相连 → 按连通分量分区")
+    @DisplayName("大图无 group：即使 16 个节点也不自动聚类，退回单层布局")
     void infersModulesFromTopology() throws Exception {
         List<String> elements = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
@@ -287,21 +581,14 @@ class ScenePlannerTest {
                 elements.add(arrow("eb" + i, "b" + (i - 1), "b" + i));
             }
         }
-        String laid = planner.arrange(
-                sceneOf(elements.toArray(new String[0])),
-                engine, Set.of());
-
-        // 两块应各占一方（模块名是兜底生成的「模块N」，只能按 id 前缀验）
-        assertFalse(overlaps(idPrefixBounds(laid, "a"),
-                        idPrefixBounds(laid, "b")),
-                "两个连通分量应被排成互不重叠的两块");
-        assertFalse(laid.equals(engine.layout(
-                        sceneOf(elements.toArray(new String[0])), Set.of())),
-                "兜底分区应当真的生效（否则这条测试等于没测）");
+        String json = sceneOf(elements.toArray(new String[0]));
+        assertEquals(engine.layout(json, Set.of()),
+                planner.arrange(json, engine, Set.of()),
+                "两个互不相连的分量也不许后端猜测分区 —— 只认显式 group");
     }
 
     @Test
-    @DisplayName("兜底·标签：连通成一片但标签有公共前缀 → 按「订单-创建」聚成模块")
+    @DisplayName("标签有公共前缀也不聚类：按前缀猜模块已删")
     void infersModulesFromLabelPrefix() throws Exception {
         List<String> elements = new ArrayList<>();
         String[] prefixes = {"订单", "支付"};
@@ -312,23 +599,21 @@ class ScenePlannerTest {
                         prefixes[g] + "-" + i, null));
             }
         }
-        // 全图连通（一条链穿过两组）→ 连通分量只有一个，只能靠标签前缀
+        // 全图连通（一条链穿过两组）——过去靠标签前缀兜底聚成两块
         for (int i = 1; i < 14; i++) {
             String from = i <= 7
                     ? "a" + (i - 1) : "b" + (i - 8);
             String to = i < 7 ? "a" + i : "b" + (i - 7);
             elements.add(arrow("e" + i, from, to));
         }
-        String laid = planner.arrange(
-                sceneOf(elements.toArray(new String[0])),
-                engine, Set.of());
-        assertFalse(overlaps(idPrefixBounds(laid, "a"),
-                        idPrefixBounds(laid, "b")),
-                "「订单」与「支付」两组应各占一方");
+        String json = sceneOf(elements.toArray(new String[0]));
+        assertEquals(engine.layout(json, Set.of()),
+                planner.arrange(json, engine, Set.of()),
+                "「订单-」「支付-」前缀不该被后端拿来猜模块");
     }
 
     @Test
-    @DisplayName("兜底不成形：标签无分隔符 → 退回单层布局（逐字节一致）")
+    @DisplayName("无 group 退回单层布局（逐字节一致）")
     void unshapedClustersFallBack() {
         List<String> elements = new ArrayList<>();
         for (int i = 0; i < 14; i++) {
@@ -340,11 +625,11 @@ class ScenePlannerTest {
         String json = sceneOf(elements.toArray(new String[0]));
         assertEquals(engine.layout(json, Set.of()),
                 planner.arrange(json, engine, Set.of()),
-                "聚不出成形分区时不该硬排");
+                "没有显式分组时不该硬排");
     }
 
     @Test
-    @DisplayName("兜底有 frame 时不启用：无名模块认领不了框，硬排反而把框甩开")
+    @DisplayName("孤立 frame 认领不上任何模块、又无显式分组：不分区")
     void inferenceIsSkippedWhenFramesExist() {
         List<String> elements = new ArrayList<>();
         for (int i = 0; i < 7; i++) {
@@ -363,7 +648,7 @@ class ScenePlannerTest {
         String json = sceneOf(elements.toArray(new String[0]));
         assertEquals(engine.layout(json, Set.of()),
                 planner.arrange(json, engine, Set.of()),
-                "场景里有 frame 时不做几何兜底（否则框与内容必然错位）");
+                "没有显式分组、frame 又认领不上模块时不该分区");
     }
 
     // ==================== 异常宽容 ====================
@@ -424,7 +709,7 @@ class ScenePlannerTest {
 
     // ==================== 场景构造 ====================
 
-    /** 三个模块 × 5 个图形 + 模块内箭头（15 个图形 > 阈值 15） */
+    /** 三个模块 × 5 个图形 + 模块内箭头（显式分组直通分区） */
     private static String modularScene() {
         return sceneOf(modularElements().toArray(new String[0]));
     }
@@ -495,6 +780,14 @@ class ScenePlannerTest {
         return "{\"id\":\"" + id
                 + "\",\"type\":\"arrow\",\"start\":{\"id\":\"" + from
                 + "\"},\"end\":{\"id\":\"" + to + "\"}}";
+    }
+
+    private static String arrowLabeled(
+            String id, String from, String to, String label) {
+        return "{\"id\":\"" + id
+                + "\",\"type\":\"arrow\",\"start\":{\"id\":\"" + from
+                + "\"},\"end\":{\"id\":\"" + to
+                + "\"},\"label\":{\"text\":\"" + label + "\"}}";
     }
 
     private static String frame(String id, String name) {

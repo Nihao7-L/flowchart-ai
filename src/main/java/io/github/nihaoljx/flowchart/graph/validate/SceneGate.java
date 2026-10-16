@@ -1,6 +1,7 @@
 package io.github.nihaoljx.flowchart.graph.validate;
 
 import io.github.nihaoljx.flowchart.llm.ToolContext;
+import io.github.nihaoljx.flowchart.graph.transform.ArrowGeometry;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
 import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
 import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
@@ -31,8 +32,9 @@ import java.util.Set;
  *   + emptySceneIssue —— 兜底语义（解析失败给图、不伪装成功）
  *   留在循环侧，判定逻辑只有这里一份。
  *
- * 管线顺序固定：bind → dedup → sanitize → claimFramesOnly
- * （吸附在去重前、sanitize 在 validate 前、认领在最后）。
+ * 管线顺序固定：bind → dedup → sanitize → 箭头几何归一化 → claimFramesOnly
+ * （吸附在去重前、sanitize 在 validate 前、几何归一化在 sanitize 后、
+ * 认领在最后）。
  * 判定顺序固定：parseGate → 结构校验 + 几何体检 → 空场景拦截
  * → 改图保真（编辑模式首次提交）。
  */
@@ -148,7 +150,7 @@ public final class SceneGate {
     }
 
     /**
-     * 管线四环：bind → dedup → sanitize → claimFramesOnly。
+     * 管线五步：bind → dedup → sanitize → 箭头几何归一化 → claimFramesOnly。
      *
      * 输入不可解析时抛 RuntimeException，由调用方决定语义
      * （agent 工具转修正 issue；编排层转兜底场景）——
@@ -160,6 +162,11 @@ public final class SceneGate {
         String json = binder.bind(rawSceneJson);
         json = deduper.dedup(json, userElements);
         json = sanitizer.sanitize(json);
+        // 箭头几何归一化：自由绘制（submit_scene）路径的箭头坐标由 LLM 原生
+        // 给出、会画斜线，这里与 ELK 路径的 Polyline 正交化对齐；对已正交的
+        // submit_spec 幂等（无变化原样返回）。排在 sanitize 后（此时 points
+        // 已是相对坐标）、claimFramesOnly 前（认领只动 frame）。见 ArrowGeometry。
+        json = ArrowGeometry.normalize(json);
         return planner.claimFramesOnly(json);
     }
 

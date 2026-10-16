@@ -1407,6 +1407,128 @@ const bindContainerTexts = (els: ConvertedElement[]): ConvertedElement[] => {
 };
 
 /** 统一出口：打标记 + 尺寸兜底，保证任何路径产出的元素都能安全取景 */
+/**
+ * 折线是否全正交（每段横或竖）—— Excalidraw 肘形箭头的不变量
+ * （见 updateElbowArrowPoints 的 invariant：segments must be H/V）。
+ */
+const isOrthogonalRoute = (points: readonly number[][]): boolean => {
+  for (let i = 1; i < points.length; i++) {
+    const dx = Math.abs(points[i][0] - points[i - 1][0]);
+    const dy = Math.abs(points[i][1] - points[i - 1][1]);
+    if (dx > 1e-6 && dy > 1e-6) {
+      return false;
+    }
+  }
+  return true;
+};
+
+/**
+ * 一个点落在某元素包围盒上的比值 {@code [0..1, 0..1]}
+ * （Excalidraw {@code FixedPointBinding.fixedPoint} 的语义）。
+ * 越界钳到 [0,1]：端点因吸附可能略偏出包围盒，钳住后重路由仍落在边上。
+ */
+const fixedPointRatio = (
+  el: Record<string, unknown>,
+  pt: [number, number],
+): [number, number] => {
+  const w = Number(el.width) || 1;
+  const h = Number(el.height) || 1;
+  const rx = Math.min(1, Math.max(0, (pt[0] - (Number(el.x) || 0)) / w));
+  const ry = Math.min(1, Math.max(0, (pt[1] - (Number(el.y) || 0)) / h));
+  return [Number(rx.toFixed(4)), Number(ry.toFixed(4))];
+};
+
+/**
+ * 把"多点正交折线 + 两端都绑定到可绑定元素"的箭头升级成 Excalidraw
+ * **肘形箭头**（`elbowed:true` + `fixedSegments`）—— 选中时每段中点到
+ * "只能上下/左右拖"的把手，即官网手画肘形箭头的观感。
+ *
+ * 为什么后处理（而非骨架透传 elbowed/fixedSegments）：转换器产出的元素
+ * 已带正交 `points` 与 `startBinding/endBinding`；这里只补三样——
+ *   ① 绑定升级成 FixedPointBinding（加 `fixedPoint` 比值，取元素中心）；
+ *   ② 按**中段**（index 2..N-2，避开首末两段——那两段连着图形、是绑定端）
+ *      生成 `fixedSegments`，每段一个可拖把手；
+ *   ③ 打上 `elbowed:true`。
+ * 渲染仍走 `points`（正交路由不变），`fixedSegments` 仅增添互把手。
+ *
+ * 边界（保守，防回归）：
+ * - 只升 **≥3 点、且全正交**的折线：两点直线本无中段，升级会让 Excalidraw
+ *   走自动路由、弄丢我们排好的路径；斜线段升级会违反肘形不变量。
+ * - 只升**两端都绑到可绑定元素**（rectangle/ellipse/diamond/text）的箭头：
+ *   自由端箭头没有绑定可挂 fixedPoint，保持普通折线即可（其点本身可拖）。
+ * - 目标元素不存在/不可绑 → 跳过（与 A1b/A1c 的"摘毒绑定"同思路，不硬升）。
+ */
+const upgradeArrowsToElbow = (
+  els: ConvertedElement[],
+  byId: Map<string, Record<string, unknown>>,
+): ConvertedElement[] => {
+  for (const el of els) {
+    if (el.type !== 'arrow') {
+      continue;
+    }
+    const arrow = el as unknown as Record<string, unknown>;
+    const points = arrow.points as number[][] | undefined;
+    const startBinding = arrow.startBinding as
+      | { elementId?: string }
+      | null
+      | undefined;
+    const endBinding = arrow.endBinding as
+      | { elementId?: string }
+      | null
+      | undefined;
+    if (!Array.isArray(points) || points.length < 3) {
+      continue;
+    }
+    if (!startBinding?.elementId || !endBinding?.elementId) {
+      continue;
+    }
+    const startEl = byId.get(startBinding.elementId);
+    const endEl = byId.get(endBinding.elementId);
+    if (!startEl || !endEl) {
+      continue;
+    }
+    if (!isBindableTarget(startEl) || !isBindableTarget(endEl)) {
+      continue;
+    }
+    if (!isOrthogonalRoute(points)) {
+      continue;
+    }
+    // ① 绑定升级成 FixedPointBinding。fixedPoint 取**箭头实际端点在该图形
+    //   包围盒上的比值**（而非中心 [0.5,0.5]）—— 初始渲染走 points 不受影响，
+    //   但用户拖动节点时肘形会从 fixedPoint 重路由：中心比值会让端点跳到图形
+    //   中心（穿透文字），边缘比值才保持"接在边上"。
+    const startPt: [number, number] = [Number(arrow.x) || 0, Number(arrow.y) || 0];
+    const lastPt = points[points.length - 1];
+    const endPt: [number, number] = [
+      startPt[0] + (Number(lastPt?.[0]) || 0),
+      startPt[1] + (Number(lastPt?.[1]) || 0),
+    ];
+    arrow.startBinding = {
+      ...startBinding,
+      fixedPoint: fixedPointRatio(startEl, startPt),
+    };
+    arrow.endBinding = {
+      ...endBinding,
+      fixedPoint: fixedPointRatio(endEl, endPt),
+    };
+    // ② 中段生成 fixedSegments（index = 该段终点在 points 里的下标）
+    const segs: { index: number; start: number[]; end: number[] }[] = [];
+    for (let i = 2; i <= points.length - 2; i++) {
+      segs.push({ index: i, start: points[i - 1], end: points[i] });
+    }
+    arrow.fixedSegments = segs;
+    // ③ 肘形标记 + startIsSpecial/endIsSpecial 兜底（类型要求存在）
+    arrow.elbowed = true;
+    if (arrow.startIsSpecial === undefined) {
+      arrow.startIsSpecial = null;
+    }
+    if (arrow.endIsSpecial === undefined) {
+      arrow.endIsSpecial = null;
+    }
+  }
+  return els;
+};
+
 const finishConversion = (
   els: ConvertedElement[],
   dropped: string[],
@@ -1416,7 +1538,13 @@ const finishConversion = (
   elements: tagModel(
     ensureFiniteSize(
       completeBaseElements(
-        restoreFrameGeometry(detachCrossFrameArrows(bindContainerTexts(els)), byId),
+        restoreFrameGeometry(
+          upgradeArrowsToElbow(
+            detachCrossFrameArrows(bindContainerTexts(els)),
+            byId,
+          ),
+          byId,
+        ),
       ),
     ),
   ),

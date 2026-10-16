@@ -19,8 +19,17 @@ public final class LayoutSpec {
     /** 坐标吸附网格（Excalidraw 默认） */
     public static final double GRID = 20.0;
 
-    /** 节点统一高度 */
-    public static final double NODE_HEIGHT = 60.0;
+    /**
+     * 节点统一高度。
+     *
+     * 2026-10-16 参考图对齐（五张 next-ai-draw-io 参考图实测）：
+     * 60 → 48。参考图的节点是"扁盒"风格（盒高 ≈ 盒宽的 1/6），
+     * 层间距也收得极紧 —— 10 节点的 DECODER 竖列在参考图里只占
+     * 约 600px，我们 1580px，长宽比 0.65 对 1.11，差距全在
+     * "盒太高 + 间距太宽"。文字一行 25px + 两侧留白 10px = 35px
+     * 下限，48 仍留 13px 余量，渲染端不会撑盒。
+     */
+    public static final double NODE_HEIGHT = 48.0;
 
     /** 节点宽度下限与上限 */
     public static final double MIN_NODE_WIDTH = 160.0;
@@ -33,8 +42,22 @@ public final class LayoutSpec {
     public static final double CJK_CHAR_WIDTH = 20.0;
     public static final double LATIN_CHAR_WIDTH = 10.0;
 
-    /** 主方向层间距下限与同层兄弟间距下限（实际值由 mainGapFor / siblingGapFor 按标签放宽） */
-    public static final double LAYER_GAP = 100.0;
+    /**
+     * 主方向层间距下限与同层兄弟间距下限（实际值由 mainGapFor / siblingGapFor 按标签放宽）。
+     *
+     * 2026-10-16 参考图对齐：LAYER_GAP 100 → 60。参考图的层间距
+     * 与盒高同量级（盒高 48，间距约 1:1），100 的间距让每个竖列都比参考图高
+     * 一倍。边标签不参与压这个地板值 —— 标签由 ScenePlanner
+     * .placeEdgeLabels 落成独立文字（放在线段旁，不压在线上），
+     * 一行 25px + 偏移 16px = 41px，60 装得下；分区路径更是把
+     * 标签从布局子场景里剥掉（见 ScenePlanner.layoutOwnShapes），
+     * 模块内间距只受这个地板值约束。
+     *
+     * 60 是网格（20）的整数倍 —— 地板值必须网格对齐，否则
+     * mainGapFor 的 ceil 会把它静默抬成 80（2026-10-16 实测：
+     * 64 → ceil 到 80，比 intended 松 25%）。
+     */
+    public static final double LAYER_GAP = 60.0;
     public static final double SIBLING_GAP = 80.0;
 
     /** 分区排版：模块之间的通道宽度（比层间距更宽，跨模块边的标签落在这条通道里） */
@@ -69,8 +92,16 @@ public final class LayoutSpec {
     /** 边标签两侧留白 */
     public static final double EDGE_LABEL_PADDING = 16.0;
 
-    /** 长宽比可接受区间（超区间才考虑换主方向） */
-    public static final double MIN_ASPECT = 0.5;
+    /**
+     * 长宽比可接受区间（超区间才考虑换主方向）。
+     *
+     * 2026-10-16 参考图对齐：MIN_ASPECT 0.5 → 0.7。渲染视口是
+     * 横屏（约 16:9 = 1.78）且前端按内容缩放取景 —— 0.65 的竖图
+     * 在横屏上左右两条大留边，而五张参考图没有一张低于 0.91。
+     * 0.7 的含义：比正方形还高的图就该考虑横过来。上界 2.0
+     * 不动（横过长条同样伤视口）。
+     */
+    public static final double MIN_ASPECT = 0.7;
     public static final double MAX_ASPECT = 2.0;
 
     private LayoutSpec() {

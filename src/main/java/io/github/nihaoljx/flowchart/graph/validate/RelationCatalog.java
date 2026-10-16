@@ -35,9 +35,13 @@ public final class RelationCatalog {
 
     static {
         Map<String, RelationStyle> m = new LinkedHashMap<>();
-        m.put("flow", new RelationStyle("solid", null, "triangle"));
-        m.put("call", new RelationStyle("solid", null, "triangle"));
-        m.put("data", new RelationStyle("dotted", null, null));
+        // flow/call 终点用官网原生默认箭头头（细线 "arrow"），而不是实心三角
+        // "triangle" —— 生成的连线观感对齐 Excalidraw 手绘默认，避免"头太粗"。
+        m.put("flow", new RelationStyle("solid", null, "arrow"));
+        m.put("call", new RelationStyle("solid", null, "arrow"));
+        // data 用实线（mermaid 口径：数据读写是普通连线，虚线留给
+        // 依赖/异步消息；2026-10-15 实测 8 条 dotted 横穿画布是视觉噪音主源）
+        m.put("data", new RelationStyle("solid", null, null));
         m.put("async", new RelationStyle("dashed", null, "triangle_outline"));
         m.put("dependency", new RelationStyle("dashed", null, null));
         m.put("one-to-one",

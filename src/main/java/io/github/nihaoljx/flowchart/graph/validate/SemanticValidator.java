@@ -153,10 +153,16 @@ public final class SemanticValidator {
 
     /**
      * 形状覆盖率（0..1）：有连线挂靠、或是 frame 容器、或是文字标注的
-     * 形状占全部形状的比例。这是**无参考结构时**唯一可机的结构质量
-     * 硬指标 —— 一张「半数形状零连线」的图（比如把猫画成一堆孤立
-     * 椭圆）不可能 Claim 自己结构合格。读不懂的场景保守返回 1
-     * （读不懂不惩罚，坏 JSON 由 parseGate 报）。
+     * 形状占全部形状的比例。
+     *
+     * <p><b>它衡量的是「图内部自洽」，不是「符合需求」——绝不可当保真分用。</b>
+     * 2026-10-16 ref_cat 事故的错误就在这里：猫被画成 15 个椭圆由 9 条箭头
+     * 串起来，覆盖率接近 1，于是这份"零件关系图"拿到了高分，而它离
+     * 「一只猫」的距离是零分。凡是拿"内部自洽"当"符合要求"的度量都会
+     * 奖励"自说自话的完整"（自洽的废话也是自洽的）。因此本方法留在
+     * 这里只作**诊断信息**，{@code FidelityScorer} 不再引用它打分。
+     *
+     * <p>读不懂的场景保守返回 1（读不懂不惩罚，坏 JSON 由 parseGate 报）。
      */
     public double shapeCoverage(String sceneJson) {
         List<Map<String, Object>> elements = parseElements(sceneJson);
@@ -209,6 +215,31 @@ public final class SemanticValidator {
         return (double) hit / shapeIds.size();
     }
 
+    /** 能力边界说明的标记：输出里带它 = 系统如实说明"这个我画不了" */
+    public static final String LIMITATION_MARKER = "【AI 备注】";
+
+    /**
+     * 场景里是否带了「能力边界说明」（【AI 备注】）。
+     *
+     * <p>用途是把「如实拒绝」与「交一张假图冒充」区分开：两者对参考图
+     * 的保真都是零，但前者是可信行为（用户看到的是明确的"做不到"），
+     * 后者是产品事故（用户以为拿到了图）。度量报告据此给不同的结论。
+     *
+     * @param sceneJson 场景 JSON；解析失败返回 false
+     */
+    public static boolean declaresLimitation(String sceneJson) {
+        List<Map<String, Object>> elements = parseElements(sceneJson);
+        if (elements == null) {
+            return false;
+        }
+        for (Map<String, Object> e : elements) {
+            if (textOf(e).contains(LIMITATION_MARKER)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ---- 场景解析 ----
 
     /**
@@ -235,7 +266,8 @@ public final class SemanticValidator {
         return null;
     }
 
-    private List<Map<String, Object>> parseElements(String sceneJson) {
+    /** 解析场景 elements（兼容信封与裸数组）；失败返回 null。供度量器复用 */
+    public static List<Map<String, Object>> parseElements(String sceneJson) {
         if (sceneJson == null || sceneJson.isBlank()) {
             return null;
         }
