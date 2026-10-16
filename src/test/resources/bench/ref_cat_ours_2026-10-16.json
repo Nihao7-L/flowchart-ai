@@ -1,0 +1,438 @@
+{
+ "elements": [
+  {
+   "id": "node_body",
+   "type": "ellipse",
+   "x": 0.0,
+   "y": 900.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#ffec99",
+   "strokeColor": "#f08c00",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_head",
+   "type": "ellipse",
+   "x": 220.0,
+   "y": 920.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#ffec99",
+   "strokeColor": "#f08c00",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_ear_l",
+   "type": "diamond",
+   "x": 360.0,
+   "y": 0.0,
+   "width": 160.0,
+   "height": 80.0,
+   "backgroundColor": "#eebefa",
+   "strokeColor": "#ae3ec9",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_ear_r",
+   "type": "diamond",
+   "x": 540.0,
+   "y": 0.0,
+   "width": 160.0,
+   "height": 80.0,
+   "backgroundColor": "#eebefa",
+   "strokeColor": "#ae3ec9",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_eye_l",
+   "type": "ellipse",
+   "x": 0.0,
+   "y": 0.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#eebefa",
+   "strokeColor": "#ae3ec9",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_eye_r",
+   "type": "ellipse",
+   "x": 180.0,
+   "y": 0.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#eebefa",
+   "strokeColor": "#ae3ec9",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_nose",
+   "type": "diamond",
+   "x": 720.0,
+   "y": 0.0,
+   "width": 160.0,
+   "height": 80.0,
+   "backgroundColor": "#eebefa",
+   "strokeColor": "#ae3ec9",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_tailtip",
+   "type": "ellipse",
+   "x": 220.0,
+   "y": 780.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#eebefa",
+   "strokeColor": "#ae3ec9",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_wl1",
+   "type": "ellipse",
+   "x": 460.0,
+   "y": 800.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#ffec99",
+   "strokeColor": "#f08c00",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_wl2",
+   "type": "ellipse",
+   "x": 460.0,
+   "y": 940.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#ffec99",
+   "strokeColor": "#f08c00",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_wl3",
+   "type": "ellipse",
+   "x": 460.0,
+   "y": 100.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#ffec99",
+   "strokeColor": "#f08c00",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_wr1",
+   "type": "ellipse",
+   "x": 460.0,
+   "y": 240.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#ffec99",
+   "strokeColor": "#f08c00",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_wr2",
+   "type": "ellipse",
+   "x": 460.0,
+   "y": 520.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#ffec99",
+   "strokeColor": "#f08c00",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_wr3",
+   "type": "ellipse",
+   "x": 460.0,
+   "y": 660.0,
+   "width": 160.0,
+   "height": 60.0,
+   "backgroundColor": "#ffec99",
+   "strokeColor": "#f08c00",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "node_meow",
+   "type": "ellipse",
+   "x": 460.0,
+   "y": 380.0,
+   "width": 160.0,
+   "height": 60.0,
+   "label": {
+    "text": "Meow~ ♥"
+   },
+   "backgroundColor": "#eebefa",
+   "strokeColor": "#ae3ec9",
+   "fillStyle": "solid"
+  },
+  {
+   "id": "arrow_0",
+   "type": "arrow",
+   "start": {
+    "id": "node_body"
+   },
+   "end": {
+    "id": "node_head"
+   },
+   "relation": "one-to-one",
+   "startArrowhead": "crowfoot_one",
+   "endArrowhead": "crowfoot_one",
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     30.0,
+     0.0
+    ],
+    [
+     60.0,
+     0.0
+    ]
+   ],
+   "x": 160.0,
+   "y": 947.5
+  },
+  {
+   "id": "arrow_1",
+   "type": "arrow",
+   "start": {
+    "id": "node_body"
+   },
+   "end": {
+    "id": "node_tailtip"
+   },
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     10.0,
+     0.0
+    ],
+    [
+     10.0,
+     -120.0
+    ],
+    [
+     60.0,
+     -120.0
+    ]
+   ],
+   "x": 160.0,
+   "y": 927.5
+  },
+  {
+   "id": "arrow_2",
+   "type": "arrow",
+   "start": {
+    "id": "node_head"
+   },
+   "end": {
+    "id": "node_wl1"
+   },
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     60.0,
+     0.0
+    ],
+    [
+     60.0,
+     -132.5
+    ],
+    [
+     70.0,
+     -132.5
+    ]
+   ],
+   "x": 380.0,
+   "y": 962.5
+  },
+  {
+   "id": "arrow_3",
+   "type": "arrow",
+   "start": {
+    "id": "node_head"
+   },
+   "end": {
+    "id": "node_wl2"
+   },
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     35.0,
+     0.0
+    ],
+    [
+     70.0,
+     0.0
+    ]
+   ],
+   "x": 380.0,
+   "y": 970.0
+  },
+  {
+   "id": "arrow_4",
+   "type": "arrow",
+   "start": {
+    "id": "node_head"
+   },
+   "end": {
+    "id": "node_wl3"
+   },
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     10.0,
+     0.0
+    ],
+    [
+     10.0,
+     -795.0
+    ],
+    [
+     70.0,
+     -795.0
+    ]
+   ],
+   "x": 380.0,
+   "y": 925.0
+  },
+  {
+   "id": "arrow_5",
+   "type": "arrow",
+   "start": {
+    "id": "node_head"
+   },
+   "end": {
+    "id": "node_wr1"
+   },
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     20.0,
+     0.0
+    ],
+    [
+     20.0,
+     -662.5
+    ],
+    [
+     70.0,
+     -662.5
+    ]
+   ],
+   "x": 380.0,
+   "y": 932.5
+  },
+  {
+   "id": "arrow_6",
+   "type": "arrow",
+   "start": {
+    "id": "node_head"
+   },
+   "end": {
+    "id": "node_wr2"
+   },
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     40.0,
+     0.0
+    ],
+    [
+     40.0,
+     -397.5
+    ],
+    [
+     70.0,
+     -397.5
+    ]
+   ],
+   "x": 380.0,
+   "y": 947.5
+  },
+  {
+   "id": "arrow_7",
+   "type": "arrow",
+   "start": {
+    "id": "node_head"
+   },
+   "end": {
+    "id": "node_wr3"
+   },
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     50.0,
+     0.0
+    ],
+    [
+     50.0,
+     -265.0
+    ],
+    [
+     70.0,
+     -265.0
+    ]
+   ],
+   "x": 380.0,
+   "y": 955.0
+  },
+  {
+   "id": "arrow_8",
+   "type": "arrow",
+   "start": {
+    "id": "node_head"
+   },
+   "end": {
+    "id": "node_meow"
+   },
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     30.0,
+     0.0
+    ],
+    [
+     30.0,
+     -530.0
+    ],
+    [
+     70.0,
+     -530.0
+    ]
+   ],
+   "x": 380.0,
+   "y": 940.0
+  }
+ ],
+ "schemaVersion": "2.0"
+}
