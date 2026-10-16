@@ -31,10 +31,10 @@ class DiagramFeedbackCollectorTest {
     // ---- DiagramScorer ----
 
     @Test
-    @DisplayName("打分：全召回 + 零几何问题 = 满分")
+    @DisplayName("打分：全召回 + 零几何问题 = 满分（有参考）")
     void perfectScore() {
         SemanticReport perfect = new SemanticReport(java.util.List.of(), 2, 2, 1, 1);
-        double s = scorer.score(perfect, List.of());
+        double s = scorer.score(perfect, 1.0, List.of());
         assertEquals(1.0, s, 1e-9);
     }
 
@@ -43,18 +43,32 @@ class DiagramFeedbackCollectorTest {
     void weightedScore() {
         SemanticReport half = new SemanticReport(List.of(), 1, 2, 1, 2);
         double structure = 0.5;
-        double s = scorer.score(half, List.of());
+        double s = scorer.score(half, 1.0, List.of());
         assertEquals(0.6 * structure + 0.4 * 1.0, s, 1e-9);
-        double withIssue = scorer.score(half, List.of(
+        double withIssue = scorer.score(half, 1.0, List.of(
                 CritiqueIssue.of("a", CritiqueIssue.Category.OVERLAP, "m", "s", 2)));
         assertEquals(0.6 * structure + 0.4 * 0.85, withIssue, 1e-9);
     }
 
     @Test
-    @DisplayName("打分：无参考要求时不惩罚（recall 恒 1）")
-    void noReferenceNoPenalty() {
-        SemanticReport empty = SemanticReport.empty(null);
-        assertEquals(1.0, scorer.score(empty, List.of()), 1e-9);
+    @DisplayName("打分修正：无参考时用覆盖率作结构分，且总分封顶 0.6")
+    void noReferenceUsesCoverageAndCaps() {
+        // 覆盖率 1 + 零几何问题：封顶 0.6（语义不可验证不配满分）
+        assertEquals(DiagramScorer.NO_REF_CAP,
+                scorer.score(SemanticReport.empty(null), 1.0, List.of()), 1e-9);
+        // 猫式场景：半数形状零连线 → 覆盖率 0.5 → 裸分 0.7 被封顶压到 0.6
+        double catLike = scorer.score(SemanticReport.empty(null), 0.5, List.of());
+        assertEquals(DiagramScorer.NO_REF_CAP, catLike, 1e-9);
+    }
+
+    @Test
+    @DisplayName("打分修正：有参考但形状半数孤立 → 覆盖率下修结构分")
+    void referenceButDisconnectedShapes() {
+        SemanticReport perfectRecall = new SemanticReport(List.of(), 2, 2, 1, 1);
+        // 召回 1.0 但覆盖率 0.4 → 结构分取 min(1.0, 0.4) = 0.4
+        double s = scorer.score(perfectRecall, 0.4, List.of());
+        assertEquals(0.6 * 0.4 + 0.4 * 1.0, s, 1e-9);
+        assertTrue(s < 1.0);
     }
 
     // ---- DiagramFeedbackCollector ----

@@ -55,8 +55,8 @@ public final class SemanticValidator {
             if (!"arrow".equals(e.get("type"))) {
                 continue;
             }
-            String s = bindingId(e, "startBinding");
-            String t = bindingId(e, "endBinding");
+            String s = edgeEndpoint(e, "start");
+            String t = edgeEndpoint(e, "end");
             if (s == null || t == null) {
                 continue;
             }
@@ -107,8 +107,8 @@ public final class SemanticValidator {
             if (!"arrow".equals(e.get("type"))) {
                 continue;
             }
-            String s = bindingId(e, "startBinding");
-            String t = bindingId(e, "endBinding");
+            String s = edgeEndpoint(e, "start");
+            String t = edgeEndpoint(e, "end");
             if (s == null || t == null) {
                 continue;
             }
@@ -151,7 +151,89 @@ public final class SemanticValidator {
                 foundEdges, ref.requiredEdges().size());
     }
 
+    /**
+     * 形状覆盖率（0..1）：有连线挂靠、或是 frame 容器、或是文字标注的
+     * 形状占全部形状的比例。这是**无参考结构时**唯一可机的结构质量
+     * 硬指标 —— 一张「半数形状零连线」的图（比如把猫画成一堆孤立
+     * 椭圆）不可能 Claim 自己结构合格。读不懂的场景保守返回 1
+     * （读不懂不惩罚，坏 JSON 由 parseGate 报）。
+     */
+    public double shapeCoverage(String sceneJson) {
+        List<Map<String, Object>> elements = parseElements(sceneJson);
+        if (elements == null) {
+            return 1.0;
+        }
+        Set<String> shapeIds = new LinkedHashSet<>();
+        Set<String> covered = new HashSet<>();
+        for (Map<String, Object> e : elements) {
+            String type = str(e.get("type"));
+            String id = str(e.get("id"));
+            if (id.isEmpty()) {
+                continue;
+            }
+            if ("text".equals(type) || "frame".equals(type)) {
+                // 文字标注与容器不要求连线，视为已覆盖；
+                // frame 的 children 被 frame 统辖，也算覆盖
+                covered.add(id);
+                Object children = e.get("children");
+                if (children instanceof List<?> l) {
+                    for (Object c : l) {
+                        if (c instanceof String s) {
+                            covered.add(s);
+                        }
+                    }
+                }
+                continue;
+            }
+            if (!"arrow".equals(type)) {
+                shapeIds.add(id);
+            }
+        }
+        for (Map<String, Object> e : elements) {
+            if (!"arrow".equals(e.get("type"))) {
+                continue;
+            }
+            String s = edgeEndpoint(e, "start");
+            String t = edgeEndpoint(e, "end");
+            if (s != null) {
+                covered.add(s);
+            }
+            if (t != null) {
+                covered.add(t);
+            }
+        }
+        if (shapeIds.isEmpty()) {
+            return 1.0;
+        }
+        long hit = shapeIds.stream().filter(covered::contains).count();
+        return (double) hit / shapeIds.size();
+    }
+
     // ---- 场景解析 ----
+
+    /**
+     * 取箭头端点绑定的元素 id。兼容两种格式：契约层的
+     * {@code start:{id}} / {@code end:{id}} 与 Excalidraw 渲染层的
+     * {@code startBinding:{elementId}} / {@code endBinding:{elementId}}
+     * （两者口径不同是历史事实，量具必须同时认）。
+     */
+    static String edgeEndpoint(Map<String, Object> e, String side) {
+        Object o = e.get(side);
+        if (o instanceof Map<?, ?> m) {
+            Object id = m.get("id");
+            if (id instanceof String s && !s.isEmpty()) {
+                return s;
+            }
+        }
+        Object o2 = e.get(side + "Binding");
+        if (o2 instanceof Map<?, ?> m) {
+            Object el = m.get("elementId");
+            if (el instanceof String s && !s.isEmpty()) {
+                return s;
+            }
+        }
+        return null;
+    }
 
     private List<Map<String, Object>> parseElements(String sceneJson) {
         if (sceneJson == null || sceneJson.isBlank()) {
@@ -174,17 +256,6 @@ public final class SemanticValidator {
         } catch (Exception e) {
             return null;
         }
-    }
-
-    private static String bindingId(Map<String, Object> e, String key) {
-        Object o = e.get(key);
-        if (o instanceof Map<?, ?> m) {
-            Object el = m.get("elementId");
-            if (el instanceof String s) {
-                return s;
-            }
-        }
-        return null;
     }
 
     private static String textOf(Map<?, ?> e) {

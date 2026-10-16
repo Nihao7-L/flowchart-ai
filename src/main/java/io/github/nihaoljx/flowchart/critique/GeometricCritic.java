@@ -158,19 +158,30 @@ public final class GeometricCritic implements DiagramCritic {
         if (id.isEmpty()) {
             return null;
         }
-        String s = binding(e, "startBinding");
-        String en = binding(e, "endBinding");
+        String s = endpoint(e, "start");
+        String en = endpoint(e, "end");
         if (s == null || en == null) {
             return null;
         }
         return new Arrow(id, s, en);
     }
 
-    private static String binding(Map<String, Object> e, String key) {
-        Object o = e.get(key);
+    /**
+     * 箭头端点绑定（双格式）：契约层 {@code start:{id}} 与 Excalidraw
+     * 渲染层 {@code startBinding:{elementId}} 都认（口径不同的历史事实）。
+     */
+    private static String endpoint(Map<String, Object> e, String side) {
+        Object o = e.get(side);
         if (o instanceof Map<?, ?> m) {
+            Object id = m.get("id");
+            if (id instanceof String s && !s.isEmpty()) {
+                return s;
+            }
+        }
+        Object o2 = e.get(side + "Binding");
+        if (o2 instanceof Map<?, ?> m) {
             Object el = m.get("elementId");
-            if (el instanceof String s) {
+            if (el instanceof String s && !s.isEmpty()) {
                 return s;
             }
         }
