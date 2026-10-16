@@ -36,6 +36,23 @@ public final class DiagramScorer {
     public static final double NO_REF_CAP = 0.6;
 
     /**
+     * 结构分（0..1）：有参考 = 召回均值（覆盖率作下修项）；
+     * 无参考 = 形状覆盖率。公开给 {@link FidelityScorer} 复用同口径。
+     */
+    public double structureOf(SemanticReport semantic, double coverage) {
+        boolean hasRef = semantic != null
+                && (semantic.totalNodes() > 0 || semantic.totalEdges() > 0);
+        double structure = hasRef
+                ? (semantic.nodeRecall() + semantic.edgeRecall()) / 2.0
+                : clamp01(coverage);
+        // 有参考时覆盖率仍作为下修项：召回满格但形状孤立 ≠ 好结构
+        if (hasRef) {
+            structure = Math.min(structure, clamp01(coverage));
+        }
+        return clamp01(structure);
+    }
+
+    /**
      * @param semantic   语义比对报告（可为 empty）
      * @param coverage   形状覆盖率 0..1（无参考时作结构分；有参考时仍参与
      *                   结构分下修 —— 全召回但半数形状孤立同样是坏结构）
@@ -46,13 +63,7 @@ public final class DiagramScorer {
                         List<CritiqueIssue> geometric) {
         boolean hasRef = semantic != null
                 && (semantic.totalNodes() > 0 || semantic.totalEdges() > 0);
-        double structure = hasRef
-                ? (semantic.nodeRecall() + semantic.edgeRecall()) / 2.0
-                : clamp01(coverage);
-        // 有参考时覆盖率仍作为下修项：召回满格但形状孤立 ≠ 好结构
-        if (hasRef) {
-            structure = Math.min(structure, Math.max(clamp01(coverage), 0.0));
-        }
+        double structure = structureOf(semantic, coverage);
         double score = W_STRUCTURE * structure
                 + W_READABILITY * readability(geometric);
         if (!hasRef) {
