@@ -1,6 +1,5 @@
 package io.github.nihaoljx.flowchart.feedback;
 
-import io.github.nihaoljx.flowchart.critique.CritiqueIssue;
 import io.github.nihaoljx.flowchart.critique.GeometricCritic;
 import io.github.nihaoljx.flowchart.graph.validate.ReferenceSpec;
 import io.github.nihaoljx.flowchart.graph.validate.RequestIntent;

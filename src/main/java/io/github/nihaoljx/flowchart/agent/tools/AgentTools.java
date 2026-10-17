@@ -11,6 +11,7 @@ import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
 import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
 import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
+import io.github.nihaoljx.flowchart.prompt.DiagramPromptRegistry;
 import io.github.nihaoljx.flowchart.service.PromptService;
 
 import java.util.List;
@@ -50,18 +51,20 @@ public final class AgentTools {
      * @param drift         改图保真（现有 bean；编辑模式首次提交用）
      * @param promptService 提示词服务（契约片段派生）
      * @param families      布局家族注册表（多图型路由：generic/sequence）
+     * @param prompts       图型提示词注册表（spec 的 diagramType 白名单来源）
      */
     public static ToolRegistry defaultRegistry(
             SceneBinder binder, SceneDeduper deduper,
             SceneSanitizer sanitizer, ScenePlanner planner,
             GraphValidator validator, GeometryAudit audit,
             SceneDrift drift, PromptService promptService,
-            LayoutFamilyRegistry families) {
+            LayoutFamilyRegistry families,
+            DiagramPromptRegistry prompts) {
         SceneGate gate = new SceneGate(
                 binder, deduper, sanitizer, planner,
                 validator, audit, drift);
         List<AgentTool> tools = List.of(
-                new SubmitSpecTool(gate, families),
+                new SubmitSpecTool(gate, families, prompts),
                 new UpdateElementsTool(gate),
                 new ReadSceneTool(),
                 new ReadContractTool(promptService));

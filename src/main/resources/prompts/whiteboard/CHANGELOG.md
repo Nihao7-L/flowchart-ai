@@ -10,6 +10,39 @@
 > （漏记一整段，见下方 10.2.0 条的说明）。现按当日工作日志与 md 治理头如实补齐，
 > 日期取当时的实际改动日，非补记日。
 
+## 10.15.0 (2026-10-17)
+
+**内核瘦身到一半 + 图型模板扩到 25 种 + 图型与版面解耦**
+
+- **内核 md 6531B → 3223B（-50.7%）**，system 块 9888B → 6580B。做法：图型专属规则全部迁出（插画 / 伪 3D 那条最长的规则迁成 `diagrams/illustration.md`）；压缩重复表述 —— 输出格式原来两处重复讲「不夹散文」，submit_scene 冻结说了一遍半，过程段四条各带一段解释。
+- **图型模板 1 → 25 种**：sequence / flowchart / mindmap / org-chart / state-machine / er-diagram / class-diagram / use-case / activity-diagram / gantt / timeline / fishbone / decision-tree / swimlane / architecture / network-topology / data-pipeline / user-journey / matrix-quadrant / venn / concept-map / fault-tree / tree-structure / circular-flow / illustration。每种都写清「这是什么图 + 节点怎么建 + 连线什么语义 + 常见画错」。
+- **图型（diagramType）与版面（layout）解耦**（代码改动）：`DiagramTemplate` 新增 `layout` 字段（默认 generic），`DiagramPromptRegistry.layoutOf/isKnown`；`SubmitSpecTool` 的 diagramType 合法值改为「布局家族 ∪ 已注册图型模板」，排版按 `layout` 路由。**否则每加一种图型都要写一套排版器**，且模型照模板声明了 gantt 也会被判「未知图型」打回修正轮 —— 这是「加图型」此前最大的隐性成本。
+- 关键词路由按最长匹配，长词压短词（「组织架构图」压「架构图」、「跨职能流程」压「流程图」）。
+
+## 10.14.0 (2026-10-17)
+
+**目标：提示词按图型分层 + 模板热加载。加一种图 = 丢一个 md 文件，不再动内核。**
+
+背景：内核 md 顶到字节闸门（9987B / 上限 10000B，只剩 13B），加任何图型规则
+都得从通用规则里挤字节 —— 「加图型」和「改通用规则」互相绑架。借鉴 tldraw 的
+PromptPart 拼装、Claude Code Skills 的条件触发模板、Langfuse 的 label 部署、
+JPrompt / Spring AI Lab 的 WatchService 热加载，落成三层：内核（共用）+ 契约
+（schema 派生）+ 图型模板（按需注入）。
+
+- **内核瘦身**：`system-prompt.md` 删掉「时序图必须声明 diagramType:"sequence"」这条
+  专项规则，替换成一句通用指引「下面若给了『## 图型模板』段就按它声明 diagramType」；
+  时序图规则整体迁到 `diagrams/sequence.md`。
+- **新增 `prompts/whiteboard/diagrams/`**：一种图一个 md，frontmatter 写
+  `diagramType / version / title / keywords`。
+- **新增 `prompt` 包**：`DiagramPromptRegistry`（扫描 classpath 内置 + 可选外部目录
+  注册、确定性关键词路由、WatchService 热加载、单文件解析失败保旧）、
+  `DiagramTemplate`、`PromptText`（注释剥离口径与内核统一）。
+- **装配顺序**：内核 + 契约 + 图型模板。内核与契约是全请求共享的稳定前缀，
+  图型段是唯一变量 —— 这样 KV-cache 命中率最高（图型段插中间会切碎公共前缀）。
+- **路由是确定性的**：按 keywords 在用户原话里做包含匹配，命中多个取最长关键词。
+  刻意**不加** LLM 分类那一跳（要多付一次调用，SLA 是百秒级）。
+- **字节闸门拆两档**：内核块仍守 10000B；新增「内核 + 最大图型模板」守 12000B。
+
 ## 10.13.0 (2026-10-16)
 
 **目标：多图型布局家族骨架 + loop 防浪费 + 快模型接入收尾。时序图不再被塞进 generic ELK 乱排。**

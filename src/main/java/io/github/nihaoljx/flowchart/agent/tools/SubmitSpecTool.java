@@ -10,6 +10,7 @@ import io.github.nihaoljx.flowchart.graph.layout.SpecNode;
 import io.github.nihaoljx.flowchart.graph.validate.RelationCatalog;
 import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
 import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
+import io.github.nihaoljx.flowchart.prompt.DiagramPromptRegistry;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -116,11 +117,37 @@ public final class SubmitSpecTool implements AgentTool {
 
     private final SceneGate gate;
     private final LayoutFamilyRegistry families;
+    private final DiagramPromptRegistry prompts;
 
+    /** 旧签名（测试 / 手工装配）：图型表只取 classpath 内置模板。 */
     public SubmitSpecTool(SceneGate gate,
             LayoutFamilyRegistry families) {
+        this(gate, families, new DiagramPromptRegistry());
+    }
+
+    public SubmitSpecTool(SceneGate gate,
+            LayoutFamilyRegistry families,
+            DiagramPromptRegistry prompts) {
         this.gate = gate;
         this.families = families;
+        this.prompts = prompts;
+    }
+
+    /**
+     * spec 的 {@code diagramType} 合法值：布局家族 + 已注册图型模板，
+     * 外加 generic 兜底。
+     *
+     * <p>为什么不是只给布局家族：图型是"这是什么图"（25 种），版面是
+     * "用哪套排版"（generic / sequence 两套）。只认后者的话，模型照
+     * 图型模板声明了 gantt 却被判「未知图型」打回修正轮 —— 加图型的成本
+     * 就变成了"每加一种都要写一套排版器"。
+     */
+    private List<String> knownDiagramTypes() {
+        java.util.LinkedHashSet<String> all = new java.util.LinkedHashSet<>();
+        all.add("generic");
+        all.addAll(families.types());
+        all.addAll(prompts.types());
+        return List.copyOf(all);
     }
 
     @Override
@@ -180,11 +207,11 @@ public final class SubmitSpecTool implements AgentTool {
                 "description", "整图标题（可选）。给了就画在全图正上方"
                         + "一行大字 —— 不要再自己画一个标题节点"));
         specProps.put("diagramType", Map.of("type", "string",
-                "enum", families.types(),
-                "description", "图型（可选，默认 generic）。时序图"
-                        + "（参与者 + 按时间顺序的消息）填 sequence："
-                        + "参与者横排、每人一条生命线、edges 数组序"
-                        + "即消息时间序"));
+                "enum", knownDiagramTypes(),
+                "description", "图型（可选，默认 generic）。"
+                        + "system 里若给了「图型模板」段，就照那段里写的"
+                        + " diagramType 字面值填；没给就填 generic。"
+                        + "填了图型才会按那种图的版面排"));
         specProps.put("nodes", Map.of("type", "array", "items", node));
         specProps.put("edges", Map.of("type", "array", "items", edge));
         spec.put("properties", specProps);
@@ -232,13 +259,13 @@ public final class SubmitSpecTool implements AgentTool {
                         nodeSpecs.keySet(), edgeSpecs, issues);
             }
         }
-        // 图型声明：未注册 ⇒ 机读修复单（模型写错图型名时它改得了；
-        // 与注册表运行时的 generic 兜底是两层，不重复）
+        // 图型声明：既不是布局家族、也不是已注册图型 ⇒ 机读修复单
+        //（模型写错图型名时它改得了；与注册表运行时的 generic 兜底是两层）
         String diagramType = spec.path("diagramType").asText("generic");
-        if (!families.has(diagramType)) {
+        if (!families.has(diagramType) && !prompts.isKnown(diagramType)) {
             issues.add(issue("spec.diagramType",
                     "未知图型: " + diagramType,
-                    "允许值: " + families.types()
+                    "允许值: " + knownDiagramTypes()
                             + "（不填 = generic 通用图）"));
         }
         if (!issues.isEmpty()) {
@@ -249,14 +276,18 @@ public final class SubmitSpecTool implements AgentTool {
         // 按图型路由到布局家族（多图型架构，2026-10-16）：
         // generic = 分区排版 + 布局引擎 + 分组合框；
         // sequence = 参与者横排 + 生命线 + 消息按时间序逐行。
+        // 图型 → 版面：25 种图型共用两套版面，模板里的 layout 决定用哪套。
         // 家族抛异常 ⇒ 降级 generic，绝不让排版失败炸掉整轮。
+        String layout = families.has(diagramType)
+                ? diagramType
+                : prompts.layoutOf(diagramType);
         String arranged;
         try {
-            arranged = families.forType(diagramType)
+            arranged = families.forType(layout)
                     .arrange(scene, nodeSpecs, edgeSpecs);
         } catch (Exception e) {
             LOG.warn("布局家族 {} 排版失败（{}），降级 generic",
-                    diagramType, e.getMessage());
+                    layout, e.getMessage());
             arranged = families.forType("generic")
                     .arrange(scene, nodeSpecs, edgeSpecs);
         }
@@ -270,7 +301,7 @@ public final class SubmitSpecTool implements AgentTool {
         // 不该反过来变成一条要模型修的校验问题
         String finalJson = addTitle(out.json(), title);
         ctx.processedScene(finalJson);
-        String layoutNote = "sequence".equals(diagramType)
+        String layoutNote = "sequence".equals(layout)
                 ? "时序图已排版 " + nodeSpecs.size()
                         + " 个参与者、" + edgeSpecs.size() + " 条消息"
                 : "布局引擎已排版 " + nodeSpecs.size()

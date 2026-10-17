@@ -6,10 +6,6 @@ import io.github.nihaoljx.flowchart.critique.DiagramCritic;
 import io.github.nihaoljx.flowchart.critique.NoopVisionCritic;
 import io.github.nihaoljx.flowchart.critique.VisualFeedbackConfig;
 import io.github.nihaoljx.flowchart.critique.VisualFeedbackService;
-import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
-import io.github.nihaoljx.flowchart.graph.layout.GenericLayoutFamily;
-import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
-import io.github.nihaoljx.flowchart.graph.layout.SequenceLayout;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -34,6 +30,7 @@ import io.github.nihaoljx.flowchart.llm.AgentMessage;
 import io.github.nihaoljx.flowchart.llm.AgentResult;
 import io.github.nihaoljx.flowchart.llm.AgentTurn;
 import io.github.nihaoljx.flowchart.llm.ToolCall;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyFixtures;
 
 /**
  * D2 视觉自纠闭环在 AgentLoop 上的集成测试：校验通过后若批判器发现问题，
@@ -100,7 +97,9 @@ class AgentLoopVisualFeedbackTest {
         PromptService ps = new PromptService();
         return AgentTools.defaultRegistry(new SceneBinder(), new SceneDeduper(),
                 new SceneSanitizer(), new ScenePlanner(), new GraphValidator(),
-                new GeometryAudit(), new SceneDrift(), ps, new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
+                new GeometryAudit(), new SceneDrift(), ps,
+                LayoutFamilyFixtures.defaultRegistry(),
+                LayoutFamilyFixtures.defaultPromptRegistry());
     }
 
     @Test

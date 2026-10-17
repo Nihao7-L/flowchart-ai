@@ -2,10 +2,6 @@ package io.github.nihaoljx.flowchart.agent.tools;
 
 import io.github.nihaoljx.flowchart.llm.Observation;
 import io.github.nihaoljx.flowchart.llm.ToolContext;
-import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
-import io.github.nihaoljx.flowchart.graph.layout.GenericLayoutFamily;
-import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
-import io.github.nihaoljx.flowchart.graph.layout.SequenceLayout;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -25,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.nihaoljx.flowchart.graph.validate.SceneGate;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyFixtures;
 
 /**
  * submit_spec 单元测试（S2 语义-坐标分离）
@@ -46,7 +43,7 @@ class SubmitSpecToolTest {
                 new SceneDeduper(), new SceneSanitizer(),
                 new ScenePlanner(), new GraphValidator(),
                 new GeometryAudit());
-        tool = new SubmitSpecTool(gate, new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
+        tool = new SubmitSpecTool(gate, LayoutFamilyFixtures.defaultRegistry());
         ctx = new ToolContext("画一张流程图", null);
     }
 
@@ -389,7 +386,7 @@ class SubmitSpecToolTest {
                 new SceneDeduper(), new SceneSanitizer(),
                 new ScenePlanner(), new GraphValidator(),
                 geometryOnly);
-        SubmitSpecTool gated = new SubmitSpecTool(gate, new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
+        SubmitSpecTool gated = new SubmitSpecTool(gate, LayoutFamilyFixtures.defaultRegistry());
         Observation obs = gated.execute(MAPPER.readTree("""
                 {"spec":{"nodes":[
                   {"id":"n1","label":"网关","group":"接入层"},
@@ -426,7 +423,7 @@ class SubmitSpecToolTest {
                 new SceneDeduper(), new SceneSanitizer(),
                 new ScenePlanner(), new GraphValidator(),
                 geometryOnly);
-        SubmitSpecTool gated = new SubmitSpecTool(gate, new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
+        SubmitSpecTool gated = new SubmitSpecTool(gate, LayoutFamilyFixtures.defaultRegistry());
         // e1 引用不存在的节点 → 结构 issue（模型能修）
         Observation obs = gated.execute(MAPPER.readTree("""
                 {"spec":{"nodes":[
