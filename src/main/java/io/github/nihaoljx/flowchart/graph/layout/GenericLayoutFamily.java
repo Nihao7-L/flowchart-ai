@@ -198,12 +198,24 @@ public final class GenericLayoutFamily implements LayoutFamily {
         };
     }
 
+    /**
+     * 两个包围盒的并集。**不可变**：返回新数组，绝不改写入参。
+     *
+     * <p>为什么不能就地改（曾经踩的坑）：一个多层级路径的元素
+     * （如 {@code ["a","x"]}）在循环里把同一个 {@code box} 数组引用同时
+     * 存到了「最内层键 {@code a/x}」和「父键 {@code x}」两个映射项上。
+     * 若 {@code union} 就地改写第一个参数，后来其它元素往 {@code x} 上
+     * merge 时会顺手把 {@code a/x} 的盒子也撑成全图 —— 于是最内层框
+     * 吞掉整张画布（深嵌套必现、浅嵌套偶现）。返回新数组后，merge 只替换
+     * 目标键的值、绝不污染与之共享引用的其它键。
+     */
     private static double[] union(double[] a, double[] b) {
-        a[0] = Math.min(a[0], b[0]);
-        a[1] = Math.min(a[1], b[1]);
-        a[2] = Math.max(a[2], b[2]);
-        a[3] = Math.max(a[3], b[3]);
-        return a;
+        return new double[] {
+                Math.min(a[0], b[0]),
+                Math.min(a[1], b[1]),
+                Math.max(a[2], b[2]),
+                Math.max(a[3], b[3]),
+        };
     }
 
     private static String truncate(String name) {
