@@ -9,6 +9,7 @@ import io.github.nihaoljx.flowchart.service.PromptService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import io.github.nihaoljx.flowchart.llm.AgentTurn;
 import io.github.nihaoljx.flowchart.llm.Observation;
 import io.github.nihaoljx.flowchart.llm.ToolContext;
@@ -175,6 +176,23 @@ public final class AgentLoop {
                            String previousJson,
                            long deadlineMs,
                            AgentLoopListener listener) throws Exception {
+        return run(systemBlock, userRequest, userElements,
+                previousJson, deadlineMs, listener, null);
+    }
+
+    /**
+     * 全参入口：previousJson 非空 = 编辑模式，
+     * 场景闸门对首次提交跑改图保真检查（提醒一次，不是门禁）。
+     * {@code cancelled} 非空且在某轮开头为 true = 客户端已断开
+     * （SSE 关闭 / 超时 / 出错），在发动下一次 LLM 调用前主动停止
+     * （返 {@link AgentResult.Status#CANCELLED}，不再烧 token）。
+     */
+    public AgentResult run(String systemBlock, String userRequest,
+                           List<Map<String, Object>> userElements,
+                           String previousJson,
+                           long deadlineMs,
+                           AgentLoopListener listener,
+                           BooleanSupplier cancelled) throws Exception {
         AgentMessages messages = AgentMessages.seed(systemBlock, userRequest);
         ToolContext ctx = new ToolContext(
                 userRequest, userElements, previousJson);
@@ -186,6 +204,12 @@ public final class AgentLoop {
         while (steps < MAX_STEPS) {
             if (System.currentTimeMillis() >= deadlineMs) {
                 return partial(ctx, steps, "总预算耗尽");
+            }
+            // 客户端断开（SSE 通道关闭/超时/出错）：在发动下一次
+            // LLM 调用前主动停止，不再烧 token（见 1.2 修法）。
+            if (cancelled != null && cancelled.getAsBoolean()) {
+                return new AgentResult(AgentResult.Status.CANCELLED,
+                        ctx.processedScene(), steps, "通道已关闭，取消生成");
             }
             steps++;
             safeStep(listener, steps);

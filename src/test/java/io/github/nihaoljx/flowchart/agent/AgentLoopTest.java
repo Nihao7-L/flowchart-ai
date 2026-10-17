@@ -1,10 +1,6 @@
 package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.AgentTools;
-import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
-import io.github.nihaoljx.flowchart.graph.layout.GenericLayoutFamily;
-import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
-import io.github.nihaoljx.flowchart.graph.layout.SequenceLayout;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -26,11 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.util.function.BooleanSupplier;
 import io.github.nihaoljx.flowchart.llm.AgentLlmClient;
 import io.github.nihaoljx.flowchart.llm.AgentMessage;
 import io.github.nihaoljx.flowchart.llm.AgentResult;
 import io.github.nihaoljx.flowchart.llm.AgentTurn;
 import io.github.nihaoljx.flowchart.llm.ToolCall;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyFixtures;
 
 /**
  * agent 主循环单元测试（v2-55，桩客户端驱动）
@@ -101,7 +99,8 @@ class AgentLoopTest {
                 new SceneBinder(), new SceneDeduper(), new SceneSanitizer(),
                 new ScenePlanner(), new GraphValidator(),
                 new GeometryAudit(), new SceneDrift(), promptService,
-                new LayoutFamilyRegistry(java.util.List.of(new GenericLayoutFamily(new GenericLayoutFamily.ScenePlannerHolder(new ScenePlanner(), new ElkLayoutEngine())), new SequenceLayout())));
+                LayoutFamilyFixtures.defaultRegistry(),
+                LayoutFamilyFixtures.defaultPromptRegistry());
     }
 
     @Test
@@ -149,6 +148,22 @@ class AgentLoopTest {
         assertEquals(AgentResult.Status.COMPLETED, result.status());
         assertEquals(2, result.steps());
         assertTrue(client.joinedUserText(1).contains("你没有调用任何工具"));
+    }
+
+    @Test
+    @DisplayName("客户端断开（取消标志置 true）→ CANCELLED，且不发动任何 LLM 调用")
+    void cancelledStopsLoopBeforeAnyCall() throws Exception {
+        StubClient client = new StubClient(submit(GOOD_SPEC));
+        AgentLoop loop = new AgentLoop(client, registry, promptService);
+
+        BooleanSupplier cancelled = () -> true;
+        AgentResult result = loop.run("SYS", "画流程图",
+                null, null, Long.MAX_VALUE, null, cancelled);
+
+        assertEquals(AgentResult.Status.CANCELLED, result.status());
+        assertEquals(0, result.steps());
+        assertTrue(client.requests.isEmpty(),
+                "取消后不应调用 LLM（不发下一次 respond）");
     }
 
     @Test

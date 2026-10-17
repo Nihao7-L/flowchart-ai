@@ -2,10 +2,7 @@ package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.agent.tools.AgentTools;
 import io.github.nihaoljx.flowchart.llm.LlmProperties;
-import io.github.nihaoljx.flowchart.graph.layout.GenericLayoutFamily;
-import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
-import io.github.nihaoljx.flowchart.graph.layout.SequenceLayout;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -13,6 +10,7 @@ import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
 import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
 import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
+import io.github.nihaoljx.flowchart.prompt.DiagramPromptRegistry;
 import io.github.nihaoljx.flowchart.service.PromptService;
 import io.github.nihaoljx.flowchart.critique.GeometricCritic;
 import io.github.nihaoljx.flowchart.critique.NoopVisionCritic;
@@ -28,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import io.github.nihaoljx.flowchart.llm.AgentLlmClient;
 import io.github.nihaoljx.flowchart.llm.FailoverAgentClient;
 import io.github.nihaoljx.flowchart.llm.OpenAiToolClient;
@@ -74,7 +73,8 @@ public class AgentLoopService {
             GeometryAudit audit,
             SceneDrift drift,
             PromptService promptService,
-            LayoutEngine layoutEngine,
+            DiagramPromptRegistry prompts,
+            LayoutFamilyRegistry families,
             LlmProperties llmProperties,
             @Value("${chartflow.agent-loop.model:}")
             String preferredModel) {
@@ -89,17 +89,13 @@ public class AgentLoopService {
         }
         this.candidateName = candidate.getName();
         // 多图型布局家族（2026-10-16）：generic（ELK 通用图）+ sequence
-        // （时序图确定性排版）。加新图型 = 加一个家族类 + 这里注册一行。
-        LayoutFamilyRegistry families = new LayoutFamilyRegistry(
-                List.of(new GenericLayoutFamily(
-                                new GenericLayoutFamily
-                                        .ScenePlannerHolder(
-                                        planner, layoutEngine)),
-                        new SequenceLayout()));
+        // （时序图确定性排版）。家族、注册表改为 @Component，由容器
+        // 收集（LayoutFamilyRegistry 自动注入 List<LayoutFamily>）——
+        // 加新图型 = 加一个家族类即可，这里零改动（开闭原则，reports 3.2）。
         ToolRegistry registry = AgentTools.defaultRegistry(
                 binder, deduper, sanitizer, planner,
                 validator, audit, drift, promptService,
-                families);
+                families, prompts);
         // 最小故障转移（实测补）：全部候选按 tier 包进
         // FailoverAgentClient —— 实测 glm 画大图 502，单候选
         // 一步失败 = 整次兜底，可用性差
@@ -148,8 +144,20 @@ public class AgentLoopService {
                            String previousJson,
                            long deadlineMs,
                            AgentLoopListener listener) throws Exception {
+        return run(systemBlock, userText, userElements,
+                previousJson, deadlineMs, listener, null);
+    }
+
+    /** 同 {@link #run(String, String, List, String, long, AgentLoopListener)}，
+     *  额外携带取消标志（客户端断开时置 true，主循环据此早退，不烧 token）。 */
+    public AgentResult run(String systemBlock, String userText,
+                           List<Map<String, Object>> userElements,
+                           String previousJson,
+                           long deadlineMs,
+                           AgentLoopListener listener,
+                           BooleanSupplier cancelled) throws Exception {
         return loop.run(systemBlock, userText, userElements,
-                previousJson, deadlineMs, listener);
+                previousJson, deadlineMs, listener, cancelled);
     }
 
     /** 候选逻辑名（SSE 启动事件与日志溯源用） */

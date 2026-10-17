@@ -21,10 +21,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 生成编排层（单一 agent 路径）
@@ -97,18 +97,36 @@ public class GenerationService {
      *                  无状态生成（不读上下文、不落库）
      * @param userText 用户输入
      * @param emitter  SSE 发射器
+     * @param cancel   取消标志：客户端断开 / SSE 超时 / 出错时置 true，
+     *                 生成主循环据此早退（不烧 token）
      */
+    /** 无取消语义的便捷入口（旧签名保持兼容：测试与调用方可省略取消标志） */
     public void generate(
             String sessionId,
             String userText,
             SseEmitter emitter) {
+        generate(sessionId, userText, emitter,
+                new AtomicBoolean(false));
+    }
+
+    public void generate(
+            String sessionId,
+            String userText,
+            SseEmitter emitter,
+            AtomicBoolean cancel) {
         long deadline = System.currentTimeMillis()
                 + GenerationBudget.totalBudgetMs();
         try {
             generateViaAgent(
                     sessionId, userText,
-                    emitter, deadline);
+                    emitter, deadline, cancel);
         } catch (RuntimeException e) {
+            if (cancel.get()) {
+                // 通道已关闭：异常多半来自被掐断的连接，不必再兜底下发
+                LOG.info("取消后生成线程异常终止，直接收尾: sessionId={}",
+                        sessionId);
+                return;
+            }
             // 生成本身跑在独立线程里：异常一旦不接住就直接打穿线程，
             // 前端什么反馈都收不到（曾因 emitter 已被容器关闭而裸崩）
             LOG.error("生成线程异常终止", e);
@@ -129,7 +147,8 @@ public class GenerationService {
             String sessionId,
             String userText,
             SseEmitter emitter,
-            long deadline) {
+            long deadline,
+            AtomicBoolean cancel) {
         // 会话里已有模型 = 用户在"改自己那张图"；没有 = 新建。
         // 这个判断决定 prompt 里要不要塞入当前场景：
         // 不塞的后果是"删掉某个节点"被 LLM 理解成"画一张新图"，
@@ -185,7 +204,9 @@ public class GenerationService {
         String systemBlock;
         String userBlock;
         try {
-            systemBlock = promptService.buildSystemBlock();
+            // 带上用户原话：命中图型关键词时把该图型的专项模板拼进 system 块
+            // （时序图等）；没命中就只发内核，行为与加图型模板之前一致。
+            systemBlock = promptService.buildSystemBlock(userText);
             userBlock = promptService.buildUserBlock(
                     userText, effectiveSceneJson);
             // m5 落地：消费跨轮 issue 历史（MemoryStore 只写不读是
@@ -247,7 +268,7 @@ public class GenerationService {
         try {
             result = agent.run(systemBlock, userBlock,
                     userElements, previousJson,
-                    deadline, listener);
+                    deadline, listener, cancel::get);
         } catch (Exception e) {
             // LLM 是外部依赖：它超时/报错是在我们正常工作的过程中
             // 发生的，不是后端故障。此时给用户看一张「能画出来的图」
@@ -271,6 +292,12 @@ public class GenerationService {
                 result.status(), result.steps(),
                 result.reason(),
                 (System.currentTimeMillis() - runStart) / 1000);
+        if (result.status() == AgentResult.Status.CANCELLED) {
+            // 客户端已断开：不再兜底下发（兜底也可能再烧 token / 调 LLM）
+            LOG.info("生成已取消（SSE 通道关闭），直接收尾: sessionId={}",
+                    sessionId);
+            return;
+        }
         if (result.status() == AgentResult.Status.COMPLETED
                 && result.sceneJson() != null) {
             String json = seedBuilder.stampSchemaVersion(

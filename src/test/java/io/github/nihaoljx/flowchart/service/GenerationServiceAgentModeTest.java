@@ -67,7 +67,7 @@ class GenerationServiceAgentModeTest {
     @DisplayName("agent COMPLETED → 场景盖章落库 + result 终态")
     void agentCompletedDeliversScene() throws Exception {
         when(agentService.run(any(), any(), anyList(),
-                any(), anyLong(), any())).thenReturn(
+                any(), anyLong(), any(), any())).thenReturn(
                 new AgentResult(AgentResult.Status.COMPLETED,
                         VALID_SCENE, 1, "校验通过"));
 
@@ -90,7 +90,7 @@ class GenerationServiceAgentModeTest {
     @DisplayName("agent PARTIAL 带可解析进度 → 进度图下发（不丢进度）")
     void agentPartialDeliversProgress() throws Exception {
         when(agentService.run(any(), any(), anyList(),
-                any(), anyLong(), any())).thenReturn(
+                any(), anyLong(), any(), any())).thenReturn(
                 new AgentResult(AgentResult.Status.PARTIAL,
                         VALID_SCENE, 8,
                         "步数上限 8 轮未通过校验"));
@@ -109,7 +109,7 @@ class GenerationServiceAgentModeTest {
     @DisplayName("agent PARTIAL 无进度无原图 → 占位框兜底（不给空画布）")
     void agentPartialFallsBackToPlaceholder() throws Exception {
         when(agentService.run(any(), any(), anyList(),
-                any(), anyLong(), any())).thenReturn(
+                any(), anyLong(), any(), any())).thenReturn(
                 new AgentResult(AgentResult.Status.PARTIAL,
                         null, 3, "总预算耗尽"));
 

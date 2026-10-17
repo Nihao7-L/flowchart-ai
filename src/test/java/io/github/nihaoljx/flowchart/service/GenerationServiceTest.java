@@ -116,7 +116,7 @@ class GenerationServiceTest {
         when(sessionStore.getCurrentModel("s1"))
                 .thenReturn(modelOf(TWO_NODES));
         when(agent.run(any(), any(), anyList(), any(),
-                anyLong(), any())).thenReturn(completed());
+                anyLong(), any(), any())).thenReturn(completed());
 
         SseEmitter emitter = mock(SseEmitter.class);
         service.generate("s1", "把 n1 改个名", emitter);
@@ -126,7 +126,7 @@ class GenerationServiceTest {
         ArgumentCaptor<String> userBlock =
                 ArgumentCaptor.forClass(String.class);
         verify(agent).run(any(), userBlock.capture(),
-                anyList(), previous.capture(), anyLong(), any());
+                anyList(), previous.capture(), anyLong(), any(), any());
         assertTrue(previous.getValue().contains("n1"),
                 "编辑基线必须是会话当前模型");
         assertTrue(userBlock.getValue().contains("n1"),
@@ -135,7 +135,7 @@ class GenerationServiceTest {
         ArgumentCaptor<List<Map<String, Object>>> userEls =
                 ArgumentCaptor.forClass(List.class);
         verify(agent).run(any(), any(), userEls.capture(),
-                any(), anyLong(), any());
+                any(), anyLong(), any(), any());
         assertTrue(userEls.getValue().isEmpty());
     }
 
@@ -146,7 +146,7 @@ class GenerationServiceTest {
         when(sessionStore.getCurrentModel("s1"))
                 .thenReturn(modelOf(HAND_DRAWN_ONLY));
         when(agent.run(any(), any(), anyList(), any(),
-                anyLong(), any())).thenReturn(completed());
+                anyLong(), any(), any())).thenReturn(completed());
 
         SseEmitter emitter = mock(SseEmitter.class);
         service.generate("s1", "在框旁边加个说明", emitter);
@@ -156,7 +156,7 @@ class GenerationServiceTest {
         ArgumentCaptor<String> userBlock =
                 ArgumentCaptor.forClass(String.class);
         verify(agent).run(any(), userBlock.capture(),
-                userEls.capture(), any(), anyLong(), any());
+                userEls.capture(), any(), anyLong(), any(), any());
         assertTrue(userEls.getValue().isEmpty(),
                 "take-over 后手绘旁路必须清空（已被吸收）");
         assertTrue(userBlock.getValue().contains("u1"),
@@ -177,7 +177,7 @@ class GenerationServiceTest {
         when(sessionStore.getCurrentModel("s1"))
                 .thenReturn(modelOf(AI_PLUS_HAND_DRAWN));
         when(agent.run(any(), any(), anyList(), any(),
-                anyLong(), any())).thenReturn(completed());
+                anyLong(), any(), any())).thenReturn(completed());
 
         SseEmitter emitter = mock(SseEmitter.class);
         service.generate("s1", "把两个框连起来", emitter);
@@ -186,7 +186,7 @@ class GenerationServiceTest {
         ArgumentCaptor<List<Map<String, Object>>> userEls =
                 ArgumentCaptor.forClass(List.class);
         verify(agent).run(any(), any(), userEls.capture(),
-                any(), anyLong(), any());
+                any(), anyLong(), any(), any());
         assertEquals(1, userEls.getValue().size(),
                 "手绘旁路要交给去重器用");
     }
@@ -198,7 +198,7 @@ class GenerationServiceTest {
         when(sessionStore.getCurrentModel("s1"))
                 .thenReturn(modelOf(TWO_NODES));
         when(agent.run(any(), any(), anyList(), any(),
-                anyLong(), any()))
+                anyLong(), any(), any()))
                 .thenThrow(new RuntimeException("502  upstream"));
 
         SseEmitter emitter = mock(SseEmitter.class);
@@ -222,7 +222,7 @@ class GenerationServiceTest {
     @DisplayName("emitter 已被容器关闭：不打断 generate 主流程")
     void emitterAlreadyCompletedDoesNotCrash() throws Exception {
         when(agent.run(any(), any(), anyList(), any(),
-                anyLong(), any())).thenReturn(completed());
+                anyLong(), any(), any())).thenReturn(completed());
         SseEmitter emitter = mock(SseEmitter.class);
         doThrow(new IllegalStateException("already completed"))
                 .when(emitter).complete();
@@ -240,7 +240,7 @@ class GenerationServiceTest {
     void recordsFailedSubmissionIssuesIntoMemory()
             throws Exception {
         when(agent.run(any(), any(), anyList(), any(),
-                anyLong(), any())).thenAnswer(invocation -> {
+                anyLong(), any(), any())).thenAnswer(invocation -> {
             // 模拟 AgentLoop 的行为：提交未过 → 回喂观察 → 继续
             AgentLoopListener listener =
                     invocation.getArgument(5);
@@ -266,7 +266,7 @@ class GenerationServiceTest {
     @DisplayName("无状态生成：不读会话、不落库，基线为 null")
     void statelessGenerateSkipsSessionContext() throws Exception {
         when(agent.run(any(), any(), anyList(), any(),
-                anyLong(), any())).thenReturn(completed());
+                anyLong(), any(), any())).thenReturn(completed());
 
         SseEmitter emitter = mock(SseEmitter.class);
         service.generate(null, "画个框", emitter);
@@ -274,7 +274,7 @@ class GenerationServiceTest {
         ArgumentCaptor<String> previous =
                 ArgumentCaptor.forClass(String.class);
         verify(agent).run(any(), any(), anyList(),
-                previous.capture(), anyLong(), any());
+                previous.capture(), anyLong(), any(), any());
         assertNull(previous.getValue());
         verify(sessionStore, never())
                 .setCurrentModel(any(), any());

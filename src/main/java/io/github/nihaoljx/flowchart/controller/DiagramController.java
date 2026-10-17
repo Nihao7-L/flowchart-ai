@@ -8,6 +8,7 @@ import io.github.nihaoljx.flowchart.service.GenerationService;
 import io.github.nihaoljx.flowchart.session.SessionStore;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -17,6 +18,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method
         .annotation.SseEmitter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 图表接口
@@ -31,6 +36,10 @@ import org.springframework.web.servlet.mvc.method
                 + "生成 + 画布现状同步")
 @RestController
 public class DiagramController {
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(
+                    DiagramController.class);
 
     /**
      * SSE 通道存活上限（毫秒）
@@ -52,11 +61,16 @@ public class DiagramController {
     private final GenerationService generationService;
     private final SessionStore sessionStore;
 
+    /** 生成任务执行线程池（受管、可复用，见 AsyncConfig） */
+    private final TaskExecutor generationExecutor;
+
     public DiagramController(
             GenerationService generationService,
-            SessionStore sessionStore) {
+            SessionStore sessionStore,
+            TaskExecutor generationExecutor) {
         this.generationService = generationService;
         this.sessionStore = sessionStore;
+        this.generationExecutor = generationExecutor;
     }
 
     @Operation(summary = "健康检查")
@@ -88,12 +102,34 @@ public class DiagramController {
                 new SseEmitter(SSE_TIMEOUT_MS);
 
         // sessionId 必须透传：生成服务靠它取"当前图模型"做编辑上下文，
-        // 并在生成成功后把新模型写回
-        new Thread(() ->
+        // 并在生成成功后把新模型写回。
+        // P0 #2：`new Thread().start()` 是无界裸线程（不可复用、不得
+        // 回收、客户端一多线程数即失控）；改为受管线程池执行。
+        // P0 取消（1.2 修法）：三个回调（完成/超时/出错）都置取消标志；
+        // 生成循环在每一次 LLM 调用**之前**读它，客户端一旦断开就在
+        // 下一轮前主动早退（CANCELLED），不再烧 token 跑到预算上限。
+        AtomicBoolean cancel = new AtomicBoolean(false);
+        generationExecutor.execute(() ->
                 generationService.generate(
                         request.sessionId(),
-                        request.message(), emitter))
-                .start();
+                        request.message(), emitter,
+                        cancel));
+        emitter.onCompletion(() -> {
+            cancel.set(true);
+            LOG.info("SSE 通道完成: sessionId={}",
+                    request.sessionId());
+        });
+        emitter.onTimeout(() -> {
+            cancel.set(true);
+            LOG.warn("SSE 通道超时: sessionId={}",
+                    request.sessionId());
+        });
+        emitter.onError(error -> {
+            cancel.set(true);
+            LOG.warn("SSE 通道错误: sessionId={} error={}",
+                    request.sessionId(),
+                    error.getMessage());
+        });
 
         return emitter;
     }

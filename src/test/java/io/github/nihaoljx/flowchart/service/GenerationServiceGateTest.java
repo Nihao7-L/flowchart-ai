@@ -57,7 +57,7 @@ class GenerationServiceGateTest {
                 emitter);
 
         // 1) 闸门前置拦截：根本没碰模型（省掉一次 25~30s 调用）
-        verify(agent, never()).run(any(), any(), anyList(), any(), anyLong(), any());
+        verify(agent, never()).run(any(), any(), anyList(), any(), anyLong(), any(), any());
 
         // 2) 下发的是诚实说明占位，不是事故现场那种零件关系图
         List<ChatEvent> all = events(emitter);

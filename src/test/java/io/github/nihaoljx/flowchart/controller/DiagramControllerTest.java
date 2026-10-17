@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -60,6 +61,11 @@ class DiagramControllerTest {
     private GenerationService genService;
     private SessionStore sessionStore;
 
+    // P0 #2：控制器改用受管线程池执行生成。单测注入同步执行器，
+    // 让 generate 在当前线程立即跑完，timeout 断言依然成立。
+    private final TaskExecutor syncExecutor =
+            Runnable::run;
+
     @BeforeEach
     void setUp() {
         genService = mock(GenerationService.class);
@@ -68,7 +74,8 @@ class DiagramControllerTest {
                 .standaloneSetup(
                         new DiagramController(
                                 genService,
-                                sessionStore))
+                                sessionStore,
+                                syncExecutor))
                 .build();
     }
 
@@ -100,7 +107,7 @@ class DiagramControllerTest {
         verify(genService, timeout(2000))
                 .generate(eq("s-1"),
                         eq("画一个登录流程"),
-                        any());
+                        any(), any());
     }
 
     /**
