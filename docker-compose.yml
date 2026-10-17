@@ -23,8 +23,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    # 只绑回环：仅本机与 compose 内部网络可达，不暴露到局域网/外网（低风险改进，2026-10-17）
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     restart: unless-stopped
 
   flowai:

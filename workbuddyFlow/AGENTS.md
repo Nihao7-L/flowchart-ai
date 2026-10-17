@@ -1,7 +1,7 @@
 # AGENTS.md — ChartFlow 项目地图
 
 > 只做索引，不做百科全书：先读这里，再按下面的表去读对应文档。
-> 最后更新：2026-10-13（三源调研对账：快照刷新至 v10.9.0 / 门禁 276；E2E 跑批器重建后的工具链路径修正；下一步建议见 `plans/masterPlan/roadmap.md` S4 行与 m4/m13/m14 计划的「调研输入」节）。
+> 最后更新：2026-10-13（三源调研对账：快照刷新至 v10.9.0 / 门禁 388（2026-10-17 实测 @Test）；E2E 跑批器重建后的工具链路径修正；下一步建议见 `plans/masterPlan/roadmap.md` S4 行与 m4/m13/m14 计划的「调研输入」节）。
 
 ## 项目一句话
 
@@ -12,7 +12,7 @@ ChartFlow：Spring Boot + 大模型（LLM）的 **AI 白板（Whiteboard）**，
 | 项 | 值 |
 |---|---|
 | 分支 / 远端 | `reframing` → `github.com/Nihao7-L/flowchart-ai`（public） |
-| 门禁（2026-10-13 记录） | 后端 **276 测试 / 0 失败**（`mvn -o test`，最近一轮）· **checkstyle 0 违规** · 前端 `tsc --noEmit` 退出码 0 · 冒烟 `scene-smoke.mjs` 通过（改契约必跑） |
+| 门禁（2026-10-13 记录） | 后端 **388 测试 / 0 失败**（2026-10-17 实测 @Test 计数；`mvn -o test`，最近一轮）· **checkstyle 0 违规** · 前端 `tsc --noEmit` 退出码 0 · 冒烟 `scene-smoke.mjs` 通过（改契约必跑） |
 | 提示词唯一来源 | **`src/main/resources/prompts/whiteboard/system-prompt.md`（v10.9.0 / md 6306 B，system 块装配后 8887 B）**（运行时 `PromptService.buildSystemBlock()` 直读 + 注入契约）。⚠️ **改完必跑 `scene-smoke.mjs`**（契约字段↔前端白名单双向守卫） |
 | 提示词版本号 | ✅ **不再硬编码**：`PromptService.promptVersion()` 从 md 治理头现读。`GenerationService.PROMPT_VERSION` 那个常量已退役——它在 09-28~10-10 期间 md 连改十余版而它一直停在 v8.0.1，**不报错不告警只是安静地记错**，会喂假基线给 M14 回归。**CHANGELOG 同期漏记 v9/v10 整段，已补齐**；`PromptServiceContractTest` 3 条守卫锁死（改 md 忘了改账本 → 测试红） |
 | 刁难电池（2026-09-24 实测） | 20 组 → 后端校验器 **13 PASS / 7 FAIL**；7 FAIL 全是模型照做的违规、**7/7 被拦**；修复「强迫违规返回空场景」后复测 3/3 转合法非空 |

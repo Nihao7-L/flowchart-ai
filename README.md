@@ -200,7 +200,7 @@ API Key 通过环境变量传入（docker-compose 已配置读取宿主机 `LLM_
 ## 测试
 
 ```bash
-mvn test                                                                   # 后端单测（184 个）
+mvn test                                                                   # 后端单测（2026-10-17 实测 388 个 @Test）
 cd frontend && npx tsc -b && npx eslint . --ext ts,tsx && npx vite build    # 前端三绿
 node frontend/tools/scene-smoke.mjs                                        # IR → 画布适配层冒烟（17 用例）
 bash .playwright/run-e2e.sh                                                # 浏览器 E2E 回归（6 个，需 5173 dev server）
@@ -231,7 +231,7 @@ bash .playwright/run-e2e.sh                                                # 浏
 | `ElkLayoutEngineTest` | 7 | ELK 竖排引擎（v2-38）：只守契约不守具体坐标、冻结既有元素、坐标回写 |
 | `DiagramControllerTest` | 7 | `/api/health` + `/api/chat` + `PUT /api/model/canvas` 契约 + 旧端点下线防回归 |
 | `BackendPipelineNativeGeometryTest` | 1 | 原生坐标改造后，后端流水线端到端的几何结果 |
-| **合计** | **184** | |
+| **合计** | **388** | 2026-10-17 实测 @Test 计数；上表分类行数为历史口径，以 `mvn test` 实测为准 |
 
 提交前跑完整门禁（与云端 CI 同一套三步）：`workbuddyFlow\run-verify.ps1`。
 
