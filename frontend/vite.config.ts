@@ -8,6 +8,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
+        // 后端端口与 src/main/resources/application.yml 的 server.port 保持默认一致；
+        // 若本地跳过 application.yml 改了端口，开发联调时需要同步这里
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
