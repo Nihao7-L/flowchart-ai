@@ -3,6 +3,7 @@ package io.github.nihaoljx.flowchart.agent.tools;
 import io.github.nihaoljx.flowchart.llm.AgentTool;
 import io.github.nihaoljx.flowchart.llm.Observation;
 import io.github.nihaoljx.flowchart.llm.ToolContext;
+import io.github.nihaoljx.flowchart.graph.layout.GroupPath;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyRegistry;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutSpec;
 import io.github.nihaoljx.flowchart.graph.layout.SpecEdge;
@@ -178,12 +179,25 @@ public final class SubmitSpecTool implements AgentTool {
                 "enum", SHAPE_TYPES));
         nodeProps.put("color", Map.of("type", "string",
                 "enum", COLOR_NAMES, "description", COLOR_PROMPT));
-        nodeProps.put("group", Map.of("type", "string",
+        nodeProps.put("group", Map.of(
+                "oneOf", List.of(
+                        Map.of("type", "string", "minLength", 1),
+                        Map.of("type", "array",
+                                "items", Map.of("type", "string",
+                                        "minLength", 1))),
                 "description", "模块/分区名。用户说「分两层 / 分模块 /"
                         + "分区域 / 上下两部分 / 一条流水线」时**必须**"
                         + "给对应节点写上这个名字 —— 不写就不会画分区框、"
                         + "不会配色，用户点的分区就整块丢了。同一 group 的"
-                        + "节点会自动分区、配色并框进同名画框"));
+                        + "节点会自动分区、配色并框进同名画框。"
+                        + "**模块里还有子模块时写成数组，从内到外**："
+                        + "组合态「处理中」的子状态写"
+                        + " [\\\"处理中\\\",\\\"订单\\\"]，"
+                        + "而「处理中」这个节点本身也写同一条完整路径 ——"
+                        + "容器框才会把组合态和它的子状态套进同一个框；"
+                        + "只在子状态上写扁平字符串 \"处理中\"（组合态自己写"
+                        + " \"订单\"）会把内外层拆成两个并排模块，"
+                        + "中间连出贯穿整张画布的长线"));
         node.put("properties", nodeProps);
         node.put("required", List.of("id", "label"));
         Map<String, Object> edge = new LinkedHashMap<>();
@@ -390,7 +404,7 @@ public final class SubmitSpecTool implements AgentTool {
         }
         nodeSpecs.put(id, new SpecNode(
                 id, label, type,
-                node.path("group").asText(null), color));
+                GroupPath.parse(node), color));
     }
 
     private void collectEdge(JsonNode edge, int index,
@@ -450,8 +464,8 @@ public final class SubmitSpecTool implements AgentTool {
         Map<String, String> fillByGroup = new LinkedHashMap<>();
         Map<String, String> strokeByGroup = new LinkedHashMap<>();
         for (SpecNode node : nodeSpecs.values()) {
-            String group = normalizedGroup(node.group());
-            if (group != null && !fillByGroup.containsKey(group)) {
+            String group = GroupPath.key(node.group());
+            if (!group.isEmpty() && !fillByGroup.containsKey(group)) {
                 String[] palette = COLORS.get(GROUP_CYCLE.get(
                         fillByGroup.size() % GROUP_CYCLE.size()));
                 fillByGroup.put(group, palette[0]);
@@ -469,9 +483,9 @@ public final class SubmitSpecTool implements AgentTool {
             shape.put("width", size[0]);
             shape.put("height", size[1]);
             shape.putObject("label").put("text", node.label());
-            String group = normalizedGroup(node.group());
-            if (group != null) {
-                shape.put("group", group);
+            String group = GroupPath.key(node.group());
+            if (!group.isEmpty()) {
+                GroupPath.write(shape, node.group());
                 shape.put("backgroundColor", fillByGroup.get(group));
                 shape.put("strokeColor", strokeByGroup.get(group));
                 shape.put("fillStyle", "solid");
@@ -512,15 +526,6 @@ public final class SubmitSpecTool implements AgentTool {
             throw new IllegalStateException(
                     "spec 场景序列化失败: " + e.getMessage(), e);
         }
-    }
-
-    /** 空白分组名归一为 null（无分组） */
-    private static String normalizedGroup(String group) {
-        if (group == null || group.isBlank()) {
-            return null;
-        }
-        String trimmed = group.trim();
-        return trimmed.isEmpty() ? null : trimmed;
     }
 
     /**

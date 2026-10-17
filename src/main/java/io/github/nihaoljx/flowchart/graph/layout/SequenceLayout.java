@@ -136,10 +136,7 @@ public final class SequenceLayout implements LayoutFamily {
             box.put("width", snap(w));
             box.put("height", snap(h));
             box.putObject("label").put("text", p.label());
-            String group = p.group();
-            if (group != null && !group.isBlank()) {
-                box.put("group", group);
-            }
+            GroupPath.write(box, p.group());
             if (p.color() != null && !p.color().isBlank()) {
                 box.put("color", p.color());
             }

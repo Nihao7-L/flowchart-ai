@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -70,12 +71,19 @@ public final class GenericLayoutFamily implements LayoutFamily {
     }
 
     /**
-     * 按分组合成画框（frame）：bbox 包住同组成员、name = 组名、
-     * children = 成员 id。放在元素数组最前（z 序最底，框压在成员下面）。
+     * 按模块路径合成画框（frame）：bbox 包住同组成员、name = 模块名、
+     * children = 成员 id（有子框时是子框 id）。放在元素数组最前
+     * （z 序最底，框压在成员下面），**外层框在子框之前**。
      *
      * <p>为什么在这里合成而不是让模型给：模型填 frame 几何从来填不准
      * （旧路径实测），而 bbox 由布局后的真实坐标算出，天然贴身。
      * 单分组也画框：只要 LLM 显式声明了 group，就尊重它的语义意图。
+     *
+     * <p>**层级来自 group 路径**（契约 `oneOf[string,string[]]`）：
+     * `["处理中","订单"]` 同时归属「处理中」和「订单」两个容器，
+     * 于是合成出「订单框里套着处理中框」的嵌套结构 —— 组合态就长这样。
+     * 容器身份用**后缀键**（`处理中/订单`）而不是名字：`a/c` 与 `b/c`
+     * 是两个不同的 c，用名字做键会把它们并成一个框。
      */
     private String addGroupFrames(
             String laidOut, Map<String, SpecNode> nodes) {
@@ -85,66 +93,62 @@ public final class GenericLayoutFamily implements LayoutFamily {
             if (elementsNode == null || !elementsNode.isArray()) {
                 return laidOut;
             }
-            Map<String, List<String>> members = new LinkedHashMap<>();
             Set<String> usedIds = new HashSet<>();
+            Map<String, List<String>> members = new LinkedHashMap<>();
+            Map<String, double[]> boxes = new LinkedHashMap<>();
+            Map<String, String> names = new LinkedHashMap<>();
+            Map<String, String> parents = new LinkedHashMap<>();
+            Map<String, Integer> outerness = new LinkedHashMap<>();
             for (JsonNode el : elementsNode) {
                 String id = el.path("id").asText(null);
                 if (id != null) {
                     usedIds.add(id);
                 }
-                String group = normalizedGroup(
-                        el.path("group").asText(null));
-                if (group != null && id != null) {
-                    members.computeIfAbsent(
-                            group, k -> new ArrayList<>()).add(id);
+                List<String> path = GroupPath.parse(el);
+                if (path.isEmpty()) {
+                    continue;
+                }
+                double[] box = geometry(el);
+                for (int i = 0; i < path.size(); i++) {
+                    String key = GroupPath.containerKey(path, i);
+                    members.computeIfAbsent(key, k -> new ArrayList<>());
+                    names.putIfAbsent(key, path.get(i));
+                    parents.putIfAbsent(key, i + 1 < path.size()
+                            ? GroupPath.containerKey(path, i + 1) : "");
+                    outerness.putIfAbsent(key, path.size() - 1 - i);
+                    if (i == 0 && id != null) {
+                        members.get(key).add(id);
+                    }
+                    if (box != null) {
+                        boxes.merge(key, box, GenericLayoutFamily::union);
+                    }
                 }
             }
             if (members.isEmpty()) {
                 return laidOut;
             }
-            Map<String, double[]> boxes = new LinkedHashMap<>();
-            for (JsonNode el : elementsNode) {
-                String group = normalizedGroup(
-                        el.path("group").asText(null));
-                if (group == null
-                        || !members.containsKey(group)
-                        || !el.hasNonNull("x")
-                        || !el.hasNonNull("y")
-                        || !el.hasNonNull("width")
-                        || !el.hasNonNull("height")) {
-                    continue;
-                }
-                double x = el.path("x").asDouble();
-                double y = el.path("y").asDouble();
-                double w = el.path("width").asDouble();
-                double h = el.path("height").asDouble();
-                double[] box = boxes.get(group);
-                if (box == null) {
-                    boxes.put(group, new double[] {x, y, x + w, y + h});
-                } else {
-                    box[0] = Math.min(box[0], x);
-                    box[1] = Math.min(box[1], y);
-                    box[2] = Math.max(box[2], x + w);
-                    box[3] = Math.max(box[3], y + h);
-                }
-            }
-            ArrayNode frames = MAPPER.createArrayNode();
-            int index = 0;
-            for (Map.Entry<String, List<String>> entry
-                    : members.entrySet()) {
-                double[] box = boxes.get(entry.getKey());
-                if (box == null) {
-                    continue;
-                }
-                String frameId = "frame_" + index;
+            List<String> order = new ArrayList<>(members.keySet());
+            order.sort(Comparator.comparingInt(
+                    key -> outerness.getOrDefault(key, 0)));
+            Map<String, String> frameIds = new LinkedHashMap<>();
+            for (String key : order) {
+                String frameId = "frame_" + frameIds.size();
                 while (usedIds.contains(frameId)) {
                     frameId = frameId + "_x";
                 }
                 usedIds.add(frameId);
+                frameIds.put(key, frameId);
+            }
+            ArrayNode frames = MAPPER.createArrayNode();
+            for (String key : order) {
+                double[] box = boxes.get(key);
+                if (box == null) {
+                    continue;
+                }
                 ObjectNode frame = frames.addObject();
-                frame.put("id", frameId);
+                frame.put("id", frameIds.get(key));
                 frame.put("type", "frame");
-                frame.put("name", truncate(entry.getKey()));
+                frame.put("name", truncate(names.get(key)));
                 frame.put("x", snap(box[0] - FRAME_PADDING));
                 frame.put("y", snap(box[1] - FRAME_PADDING));
                 frame.put("width",
@@ -154,8 +158,14 @@ public final class GenericLayoutFamily implements LayoutFamily {
                         snap(box[3] + FRAME_PADDING)
                                 - snap(box[1] - FRAME_PADDING));
                 ArrayNode children = frame.putArray("children");
-                entry.getValue().forEach(children::add);
-                index++;
+                for (String member : members.get(key)) {
+                    children.add(member);
+                }
+                for (Map.Entry<String, String> entry : parents.entrySet()) {
+                    if (key.equals(entry.getValue())) {
+                        children.add(frameIds.get(entry.getKey()));
+                    }
+                }
             }
             ArrayNode merged = MAPPER.createArrayNode();
             merged.addAll(frames);
@@ -168,13 +178,32 @@ public final class GenericLayoutFamily implements LayoutFamily {
         }
     }
 
-    /** 空白分组名归一为 null（无分组） */
-    private static String normalizedGroup(String group) {
-        if (group == null || group.isBlank()) {
+    /**
+     * 元素的几何包围盒，缺几何时返回 null。
+     *
+     * <p>箭头的 x/y 是**起点**而不是包围盒，拿它算框会把框拉到箭头
+     * 起点上，所以要求 width/height 齐全（图形才有）。
+     */
+    private static double[] geometry(JsonNode el) {
+        if (!el.hasNonNull("x") || !el.hasNonNull("y")
+                || !el.hasNonNull("width") || !el.hasNonNull("height")) {
             return null;
         }
-        String trimmed = group.trim();
-        return trimmed.isEmpty() ? null : trimmed;
+        double x = el.path("x").asDouble();
+        double y = el.path("y").asDouble();
+        return new double[] {
+            x, y,
+            x + el.path("width").asDouble(),
+            y + el.path("height").asDouble(),
+        };
+    }
+
+    private static double[] union(double[] a, double[] b) {
+        a[0] = Math.min(a[0], b[0]);
+        a[1] = Math.min(a[1], b[1]);
+        a[2] = Math.max(a[2], b[2]);
+        a[3] = Math.max(a[3], b[3]);
+        return a;
     }
 
     private static String truncate(String name) {

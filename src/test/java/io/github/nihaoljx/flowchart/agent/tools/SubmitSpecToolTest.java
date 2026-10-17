@@ -15,6 +15,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -524,5 +529,108 @@ class SubmitSpecToolTest {
         assertFalse(obs.ok());
         assertEquals("spec.nodes[0].color",
                 obs.issues().get(0).field());
+    }
+
+    @Test
+    @DisplayName("层级 group（组合态）→ 元素保留路径 + 框套框")
+    void nestedGroupBecomesFrameInFrame() throws Exception {
+        // 回归：group 曾用 asText() 读，Jackson 把数组静默读成空串，
+        // 于是「处理中」和它的子状态被拆成两个并排模块、中间连出
+        // 上千像素长线（订单状态机实测 2780px）。路径必须活到元素上。
+        Observation obs = submit("""
+                {"nodes":[
+                  {"id":"order","label":"订单","group":["订单"]},
+                  {"id":"processing","label":"处理中",
+                   "group":["处理中","订单"]},
+                  {"id":"paying","label":"支付中",
+                   "group":["支付中","处理中","订单"]},
+                  {"id":"paid","label":"已支付",
+                   "group":["支付中","处理中","订单"]},
+                  {"id":"cancelled","label":"已取消",
+                   "group":["处理中","订单"]}],
+                 "edges":[{"from":"order","to":"processing"},
+                          {"from":"processing","to":"cancelled"}]}
+                """);
+
+        assertTrue(obs.ok(), "应为通过，实际: " + obs.summary());
+        JsonNode elements = MAPPER.readTree(ctx.validScene())
+                .get("elements");
+        JsonNode processing = null;
+        Map<String, JsonNode> frames = new LinkedHashMap<>();
+        for (JsonNode el : elements) {
+            if ("processing".equals(el.path("id").asText())) {
+                processing = el;
+            }
+            if ("frame".equals(el.path("type").asText())) {
+                frames.put(el.path("name").asText(), el);
+            }
+        }
+        assertNotNull(processing, "应有处理中节点");
+        assertTrue(processing.path("group").isArray(),
+                "路径必须原样活到场景里，实际: "
+                        + processing.path("group"));
+        assertEquals(2, processing.path("group").size());
+        assertEquals("处理中",
+                processing.path("group").get(0).asText(),
+                "从内到外：第 0 项是最内层");
+        assertEquals("订单",
+                processing.path("group").get(1).asText());
+
+        assertEquals(3, frames.size(),
+                "应有 订单 / 处理中 / 支付中 三层框，实际: "
+                        + frames.keySet());
+        JsonNode outer = frames.get("订单");
+        JsonNode middle = frames.get("处理中");
+        JsonNode inner = frames.get("支付中");
+        assertNotNull(outer);
+        assertNotNull(middle);
+        assertNotNull(inner);
+        assertTrue(childrenOf(outer).contains(
+                        middle.path("id").asText()),
+                "订单框应把处理中框当成员（框套框）");
+        assertTrue(childrenOf(middle).contains(
+                        inner.path("id").asText()),
+                "处理中框应把支付中框当成员");
+        // 外框必须真的包住内框
+        assertTrue(outer.path("x").asDouble() <= middle.path("x").asDouble()
+                        && outer.path("y").asDouble()
+                        <= middle.path("y").asDouble(),
+                "外框左上角应不晚于内框");
+        assertTrue(outer.path("x").asDouble()
+                        + outer.path("width").asDouble()
+                        >= middle.path("x").asDouble()
+                        + middle.path("width").asDouble(),
+                "外框应包住内框右边界");
+    }
+
+    @Test
+    @DisplayName("扁平 group 仍写字符串（契约两形态，旧口径不变）")
+    void flatGroupStaysString() throws Exception {
+        Observation obs = submit("""
+                {"nodes":[
+                  {"id":"a1","label":"网关","group":"接入层"},
+                  {"id":"a2","label":"CDN","group":"接入层"}],
+                 "edges":[{"from":"a1","to":"a2"}]}
+                """);
+
+        assertTrue(obs.ok(), "应为通过，实际: " + obs.summary());
+        int seen = 0;
+        for (JsonNode el : MAPPER.readTree(ctx.validScene())
+                .get("elements")) {
+            String id = el.path("id").asText();
+            if ("a1".equals(id) || "a2".equals(id)) {
+                assertTrue(el.path("group").isTextual(),
+                        "单层分组不该被改写成数组: " + el.path("group"));
+                assertEquals("接入层", el.path("group").asText());
+                seen++;
+            }
+        }
+        assertEquals(2, seen, "两个成员节点都应带扁平 group");
+    }
+
+    private static List<String> childrenOf(JsonNode frame) {
+        List<String> ids = new ArrayList<>();
+        frame.path("children").forEach(child -> ids.add(child.asText()));
+        return ids;
     }
 }

@@ -3,6 +3,7 @@ package io.github.nihaoljx.flowchart.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.nihaoljx.flowchart.graph.layout.GroupPath;
 import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
 import io.github.nihaoljx.flowchart.prompt.DiagramPromptRegistry;
 import io.github.nihaoljx.flowchart.prompt.DiagramTemplate;
@@ -138,7 +139,8 @@ public class PromptService {
     static final java.util.Map<String, String> FIELD_HINTS =
             java.util.Map.of(
                     "angle", "弧度不是角度",
-                    "backgroundColor", "要填充就得给，不写等于没填");
+                    "backgroundColor", "要填充就得给，不写等于没填",
+                    "group", "嵌套时写成从内到外的数组，如 [\"处理中\",\"订单\"]");
 
     /**
      * 图型提示词模板注册表：按图型注入专项规则（时序图 / 未来更多图型）。
@@ -679,7 +681,7 @@ public class PromptService {
         if (!label.isEmpty()) {
             b.append(" \"").append(label).append('"');
         }
-        String group = text(el, "group");
+        String group = GroupPath.display(el);
         if (!group.isEmpty()) {
             b.append(" group=").append(group);
         }
