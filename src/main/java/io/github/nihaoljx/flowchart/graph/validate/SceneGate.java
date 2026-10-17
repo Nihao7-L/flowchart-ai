@@ -125,7 +125,14 @@ public final class SceneGate {
         List<ValidationIssue> issues = new ArrayList<>(validateAll(json));
         // 空场景拦截：判的是**结果**不是 issue 数量 —— 校验器自己
         // 也可能漏报空数组，这里独立判一次
-        ValidationIssue empty = emptySceneIssue(json);
+        //
+        // report 1.3 的第一步（本类内单次解析）：parseGate 已经确认这份
+        // json 能被 STRICT_JSON 读通，这里若再 readTree 一次就是纯重复。
+        // 先把树取出来一次，供空场景判定与改图判定复用；三个校验器
+        // （validator / semantic / audit）仍各自按 String 解析 —— 要把
+        // 它们改成收 JsonNode 属于跨类改签名，留作后续独立小步。
+        JsonNode sceneRoot = tryReadTree(json);
+        ValidationIssue empty = emptySceneIssue(sceneRoot);
         if (empty != null && issues.isEmpty()) {
             issues.add(empty);
         }
@@ -147,6 +154,24 @@ public final class SceneGate {
             }
         }
         return new Outcome(json, List.copyOf(issues), true);
+    }
+
+    /**
+     * 静默读树：读不通返回 null（不抛、不报 issue）。
+     *
+     * <p>只在「前面已经过 parseGate 确认读得通」的位置使用，
+     * 用来把同一份 json 的多次解析收敛成一次。解析失败时返回 null，
+     * 调用方按"读不懂就不判定"处理，语义与原先"catch 后返回 null"一致。
+     */
+    private static JsonNode tryReadTree(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return STRICT_JSON.readTree(json);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -208,16 +233,42 @@ public final class SceneGate {
             boolean empty = elements == null
                     || !elements.isArray()
                     || elements.isEmpty();
-            return empty
-                    ? new ValidationIssue(
-                            "elements",
-                            "场景为空：一个可见元素都没有"
-                                    + "（不要返回 {\"elements\":[]}）",
-                            "至少输出一个可见元素")
-                    : null;
+            return empty ? emptySceneIssue() : null;
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 空场景拦截（已解析版本）：report 1.3 的第一步。
+     *
+     * <p>调用方若已持有 {@code STRICT_JSON.readTree(json)} 的树（例如
+     * {@link #process} 里 parseGate 刚校验过的那一份），直接用这个入口，
+     * 省掉一次 14KB 级别的重复解析。语义与字符串版本完全一致：
+     * 树为 null 或 elements 不是非空数组 ⇒ 判空；树读不懂（null）
+     * 在字符串版本里本就返回 null，这里的 null 同样表示"不判定"，
+     * 但 process 已在 parseGate 处拦掉读不通的情况，因此不会漏判。
+     *
+     * @param sceneRoot 已解析的场景根节点
+     * @return 判空时返回 issue；非空返回 null
+     */
+    private static ValidationIssue emptySceneIssue(JsonNode sceneRoot) {
+        JsonNode elements = sceneRoot == null
+                ? null
+                : sceneRoot.get("elements");
+        boolean empty = elements == null
+                || !elements.isArray()
+                || elements.isEmpty();
+        return empty ? emptySceneIssue() : null;
+    }
+
+    /** 空场景 issue 的唯一构造点（避免两处文案漂移） */
+    private static ValidationIssue emptySceneIssue() {
+        return new ValidationIssue(
+                "elements",
+                "场景为空：一个可见元素都没有"
+                        + "（不要返回 {\"elements\":[]}）",
+                "至少输出一个可见元素");
     }
 
     /**
