@@ -18,6 +18,13 @@
 - **图型模板 1 → 25 种**：sequence / flowchart / mindmap / org-chart / state-machine / er-diagram / class-diagram / use-case / activity-diagram / gantt / timeline / fishbone / decision-tree / swimlane / architecture / network-topology / data-pipeline / user-journey / matrix-quadrant / venn / concept-map / fault-tree / tree-structure / circular-flow / illustration。每种都写清「这是什么图 + 节点怎么建 + 连线什么语义 + 常见画错」。
 - **图型（diagramType）与版面（layout）解耦**（代码改动）：`DiagramTemplate` 新增 `layout` 字段（默认 generic），`DiagramPromptRegistry.layoutOf/isKnown`；`SubmitSpecTool` 的 diagramType 合法值改为「布局家族 ∪ 已注册图型模板」，排版按 `layout` 路由。**否则每加一种图型都要写一套排版器**，且模型照模板声明了 gantt 也会被判「未知图型」打回修正轮 —— 这是「加图型」此前最大的隐性成本。
 - 关键词路由按最长匹配，长词压短词（「组织架构图」压「架构图」、「跨职能流程」压「流程图」）。
+- **组合态（嵌套 group）打通**（同日追加，内核 md 未改，故不升版本）：契约
+  `definitions.group` 一直是 `oneOf[string, string[]]`，但工具参数 schema 只宣告
+  字符串、spec 入口又用 `asText()` 读（数组被静默读成空串），层级在进布局前就丢了
+  —— 订单状态机实测因此把「处理中」和它的子状态排成两个并排模块，中间连出 2780px
+  长线。现 `SubmitSpecTool` 的 group 改为 oneOf、用 `GroupPath` 统一读/写/归一，
+  `GenericLayoutFamily` 按路径合成**框套框**，`diagrams/state-machine.md` 升 1.1.0
+  补「组合态 / 并行正交区 / 配色语义」三节（1498B → 约 3.8KB）。
 
 ## 10.14.0 (2026-10-17)
 
