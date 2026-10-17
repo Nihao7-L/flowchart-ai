@@ -277,6 +277,41 @@ class ScenePlannerTest {
     }
 
     @Test
+    @DisplayName("单层路径（无 group）：带标签的箭头也落位为独立文字")
+    void singleLayerLabelsArePlaced() throws Exception {
+        // 2026-10-17 实测请假流程图：7 节点无 group，菱形双出边「是」「否」
+        // 都由渲染器自动居中在箭头包围盒中心，两条边都起于菱形底边同一点
+        // ⇒ 标签贴线重叠不可读。修复：单层路径也做标签治理。
+        List<String> elements = new ArrayList<>();
+        elements.add(rect("start", "开始", null));
+        elements.add(rect("check", "是否超期", null));
+        elements.add(rect("yes", "是分支", null));
+        elements.add(rect("no", "否分支", null));
+        elements.add(arrowLabeled("e1", "check", "yes", "是"));
+        elements.add(arrowLabeled("e2", "check", "no", "否"));
+        String laid = planner.arrange(
+                sceneOf(elements.toArray(new String[0])),
+                engine, Set.of());
+        JsonNode root = mapper.readTree(laid);
+        int standalone = 0;
+        int bound = 0;
+        for (JsonNode el : root.get("elements")) {
+            if ("arrow".equals(el.path("type").asText())) {
+                if (el.has("label")) {
+                    bound++;
+                }
+            } else if ("text".equals(el.path("type").asText())
+                    && el.path("id").asText().endsWith("_lbl")) {
+                standalone++;
+                assertTrue(el.hasNonNull("x") && el.hasNonNull("y"),
+                        "独立标签必须有坐标");
+            }
+        }
+        assertEquals(2, standalone, "两条标签都应落位为独立文字");
+        assertEquals(0, bound, "能落位的标签不该留在箭头上");
+    }
+
+    @Test
     @DisplayName("多模块：同模块成员聚成一块，模块之间互不重叠")
     void modulesArePackedApart() throws Exception {
         String laid = planner.arrange(modularScene(), engine, Set.of());

@@ -115,7 +115,19 @@ class SubmitSpecToolTest {
                 "直线路由应补中点成 3 点");
         assertTrue(arrow.has("x") && arrow.has("y"),
                 "写回时应一并落 x/y（首点绝对坐标）");
-        assertEquals("流转", arrow.path("label").path("text").asText());
+        // 2026-10-17：单层路径也做标签治理 —— 标签落位为独立 text 元素，
+        // 箭头不再携带 label（绑定标签由渲染器自动居中不可控）
+        assertFalse(arrow.has("label"),
+                "标签应已落位为独立文字，不再绑定在箭头上");
+        JsonNode labelText = null;
+        for (JsonNode el : elements) {
+            if ("text".equals(el.path("type").asText())
+                    && el.path("id").asText().endsWith("_lbl")) {
+                labelText = el;
+            }
+        }
+        assertNotNull(labelText, "应有独立标签文字元素");
+        assertEquals("流转", labelText.path("text").asText());
     }
 
     @Test

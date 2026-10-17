@@ -156,12 +156,51 @@ public class ScenePlanner {
                 String laid = engine.layout(effectiveJson, fixedIds);
                 // 零回归路径：只要画布里没有"LLM 越权填的 children"，
                 // 就把引擎的输出原样返回 —— 一个字节都不碰
+                if (!editMode) {
+                    laid = governLabelsSingleLayer(laid);
+                }
                 return dirtyChildren ? stripChildren(laid) : laid;
             }
             return arrangeModules(root, partition, engine);
         } catch (Exception e) {
             LOG.warn("排版跳过（{}），退回单层布局", e.getMessage());
             return safeLayout(engine, json, fixedIds);
+        }
+    }
+
+    /**
+     * 单层路径的边标签治理：在 engine.layout() 输出上做去重 + 落位。
+     *
+     * <p>为什么需要：2026-10-17 实测请假流程图（7 节点无 group），
+     * 菱形双出边「是」「否」都由渲染器自动居中在箭头包围盒中心，
+     * 两条边都起于菱形底边同一点 ⇒ 标签贴线重叠不可读。
+     *
+     * <p>分区路径（arrangeModules）在 routeCrossModuleArrows 之后
+     * 调 placeEdgeLabels 落位，但单层路径（无 group / editMode=false）
+     * 从来没人管标签 —— 绑定标签由前端渲染器居中，位置不受控。
+     *
+     * <p>这里重新解析引擎输出（节点坐标已定稿），建分区（无 group
+     * 元素全部落在 root 块），再复用 placeEdgeLabels 做同样的事。
+     * 引擎输出已是有效 JSON（points/x/y 齐全），placeEdgeLabels
+     * 读这些字段计算标签位置并写入独立 text 元素。
+     */
+    private String governLabelsSingleLayer(String laid) {
+        try {
+            JsonNode root = objectMapper.readTree(laid);
+            JsonNode elementsNode = root.get("elements");
+            if (elementsNode == null || !elementsNode.isArray()) {
+                return laid;
+            }
+            List<JsonNode> elements = new ArrayList<>();
+            elementsNode.forEach(elements::add);
+            // 重新分区：无 group 元素全在 root，partition.active()=false
+            // 但 placeEdgeLabels 只读 partition.nodes 和 partition.root
+            Partition laidPartition = partition(elements);
+            placeEdgeLabels(root, laidPartition);
+            return objectMapper.writeValueAsString(root);
+        } catch (Exception e) {
+            LOG.warn("单层标签治理跳过（{}），保留引擎输出", e.getMessage());
+            return laid;
         }
     }
 
