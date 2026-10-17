@@ -73,6 +73,105 @@ class ElkLayoutEngineTest {
     }
 
     @Test
+    @DisplayName("新建模式：链状流程图从上往下推进，不压成横排")
+    void chainFlowsTopDown() throws Exception {
+        // 流程图模板写死"主流程从上往下单向推进，不要画成左右来回"。
+        // 这里守的是那条要求：五节点竖链必须一层一层往下走。
+        //
+        // 曾经的真回归：整图路径开了 viewportAware，而"双向都出区间就取
+        // 更宽"那条启发式对链状图恒成立 —— 横排的高度恒等于最大单节点高
+        // （约 60~120），竖排的高度恒等于节点数×层高（约 500+），于是
+        // right[3] < down[3] 永远为真，任何 5 节点以上的流程图都会被转置
+        // 成一条 9:1 的细长横条。layoutModule 早已因此关掉该启发式，
+        // 整图路径却漏了。
+        List<double[]> boxes = boxes(
+                layout.layout(CHAIN, Set.of()));
+        double firstY = boxes.get(0)[1];
+        double lastY = boxes.get(boxes.size() - 1)[1];
+        double spreadY = Math.abs(lastY - firstY);
+        double minHeight = boxes.stream()
+                .mapToDouble(b -> b[3]).min().orElse(0);
+        assertTrue(spreadY > minHeight * 2,
+                "五个节点只拉开了 " + spreadY + "px 的纵向距离，"
+                        + "说明被排版成横排了（应从上往下）");
+    }
+
+    @Test
+    @DisplayName("新建模式：长竖链也不会被压成横条")
+    void longChainStaysVertical() throws Exception {
+        StringBuilder json = new StringBuilder("{\"elements\":[");
+        for (int i = 0; i < 7; i++) {
+            if (i > 0) {
+                json.append(',');
+            }
+            json.append("{\"id\":\"n").append(i)
+                    .append("\",\"type\":\"rectangle\",\"x\":0,\"y\":0,"
+                            + "\"width\":160,\"height\":48}");
+        }
+        for (int i = 0; i < 6; i++) {
+            json.append(",{\"id\":\"e").append(i)
+                    .append("\",\"type\":\"arrow\",\"start\":{\"id\":\"n")
+                    .append(i).append("\"},\"end\":{\"id\":\"n")
+                    .append(i + 1).append("\"}}");
+        }
+        json.append("]}");
+
+        List<double[]> boxes = boxes(
+                layout.layout(json.toString(), Set.of()));
+        double dy = Math.abs(boxes.get(boxes.size() - 1)[1]
+                - boxes.get(0)[1]);
+        double dx = Math.abs(boxes.get(boxes.size() - 1)[0]
+                - boxes.get(0)[0]);
+        assertTrue(dy > dx,
+                "七节点链排成了横条（dx=" + dx + " > dy=" + dy
+                        + "），流程图应自上而下");
+    }
+
+    @Test
+    @DisplayName("新建模式：宽扁的层级图仍允许横排")
+    void wideLayerGraphMayGoHorizontal() throws Exception {
+        // 收紧方向启发式时不能把"该横排的图"也竖起来：三层、每层五个
+        // 并列兄弟，竖排会得到 5 列 × 3 行的方块，横排才有 3 行 5 列的
+        // 自然读法（且与 16:9 视口同向）。
+        StringBuilder json = new StringBuilder("{\"elements\":[");
+        for (int layer = 0; layer < 3; layer++) {
+            for (int col = 0; col < 5; col++) {
+                if (layer > 0 || col > 0) {
+                    json.append(',');
+                }
+                json.append("{\"id\":\"n").append(layer).append('_')
+                        .append(col)
+                        .append("\",\"type\":\"rectangle\",\"x\":0,"
+                                + "\"y\":0,\"width\":160,\"height\":48}");
+            }
+        }
+        for (int col = 0; col < 5; col++) {
+            for (int layer = 0; layer < 2; layer++) {
+                json.append(",{\"id\":\"e").append(layer).append('_')
+                        .append(col)
+                        .append("\",\"type\":\"arrow\",\"start\":{\"id\":\"n")
+                        .append(layer).append('_').append(col)
+                        .append("\"},\"end\":{\"id\":\"n")
+                        .append(layer + 1).append('_').append(col)
+                        .append("\"}}");
+            }
+        }
+        json.append("]}");
+
+        List<double[]> boxes = boxes(
+                layout.layout(json.toString(), Set.of()));
+        assertEquals(15, boxes.size());
+        // 契约只要求"排得开且成层"，方向交给 LayoutSpec 判据；
+        // 这里断言不被压成一条线即可（两条轴都摊开）
+        double minX = boxes.stream().mapToDouble(b -> b[0]).min().orElse(0);
+        double maxX = boxes.stream().mapToDouble(b -> b[0] + b[2]).max().orElse(0);
+        double minY = boxes.stream().mapToDouble(b -> b[1]).min().orElse(0);
+        double maxY = boxes.stream().mapToDouble(b -> b[1] + b[3]).max().orElse(0);
+        assertTrue(maxX - minX > 400 && maxY - minY > 100,
+                "层级图塌成了一条线：" + (maxX - minX) + "x" + (maxY - minY));
+    }
+
+    @Test
     @DisplayName("编辑模式：冻结坐标一个像素都不动")
     void editModeKeepsFrozenCoordinates() throws Exception {
         String result = layout.layout(CHAIN,

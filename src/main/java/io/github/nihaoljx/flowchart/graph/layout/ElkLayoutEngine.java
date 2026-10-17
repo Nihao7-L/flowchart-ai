@@ -200,6 +200,14 @@ public class ElkLayoutEngine implements LayoutEngine {
                     Direction.RIGHT);
             boolean topDown = true;
             double[] chosen = down;
+            LOG.info("方向试排：down={}x{} penalty={} outOfRange={} | "
+                            + "right={}x{} penalty={} outOfRange={}",
+                    Math.round(down[2]), Math.round(down[3]),
+                    LayoutSpec.aspectPenalty(down[2], down[3]),
+                    LayoutSpec.aspectOutOfRange(down[2], down[3]),
+                    Math.round(right[2]), Math.round(right[3]),
+                    LayoutSpec.aspectPenalty(right[2], right[3]),
+                    LayoutSpec.aspectOutOfRange(right[2], right[3]));
             if (LayoutSpec.aspectOutOfRange(down[2], down[3])
                     && LayoutSpec.aspectPenalty(right[2], right[3])
                     < LayoutSpec.aspectPenalty(down[2], down[3])) {
@@ -210,11 +218,26 @@ public class ElkLayoutEngine implements LayoutEngine {
                     && LayoutSpec.aspectOutOfRange(
                             right[2], right[3])) {
                 // 双向都出区间（链状/树形图）：换向只是转置包围盒，
-                // 长宽比判据永远救不了。实测 12 图验收 10_topology /
-                // 11_mindmap 排成竖条（0.14 长宽比）—— 渲染视口是
-                // 横屏，高度决定缩放下限，竖条最伤；取更宽的一侧
-                // （右包围盒更矮 = 更宽），至少与屏幕同向
-                if (right[3] < down[3]) {
+                // 往往救不了长宽比 —— 这一步只该在"转置确实更接近
+                // 理想区间"时才做。
+                //
+                // 2026-10-17 修正：原判据只有 `right[3] < down[3]`，
+                // 即"横排更矮就横过来"。对链状流程图它**恒成立**：
+                // 横排高度恒等于最大单节点高（约 60~120），竖排高度恒
+                // 等于节点数×层高（5 个节点就已 500+），于是任何 5 节点
+                // 以上的流程图都会被转置成 9:1 的细长横条，直接违背
+                // 流程图模板"主流程从上往下单向推进"的要求（实测请假
+                // 审批图：5 节点排成 1120x120，纵向距离 0px；7 节点链
+                // dx=1320/dy=0）。模块路径正因同一原因关掉了这条启发式
+                // （见 layoutModule 的 javadoc），整图路径漏了。
+                //
+                // 现在要求横排的偏离度严格小于竖排，才允许转置：真正的
+                // 层级图（3 层×5 列）横排能从 5:3 的方块救回接近 16:9；
+                // 而链状图横竖两个方向都是极端值、谁都不在区间内，代价
+                // 相近或竖排更优，于是保持竖排。
+                if (right[3] < down[3]
+                        && LayoutSpec.aspectPenalty(right[2], right[3])
+                        < LayoutSpec.aspectPenalty(down[2], down[3])) {
                     topDown = false;
                     chosen = right;
                     // RIGHT 那一跑的坐标已是最新，无需重跑
@@ -224,14 +247,25 @@ public class ElkLayoutEngine implements LayoutEngine {
                     }
                     writeBack(movable);
                     LOG.info("ELK 布局完成：{} 个图形（冻结 {}），"
-                                    + "主方向 {}（双向出区间取宽），"
+                                    + "主方向 {}（双向出区间，横排偏离度更小），"
                                     + "包围盒 {}x{}",
                             movable.size(), frozen.size(), "自左而右",
                             Math.round(chosen[2]),
                             Math.round(chosen[3]));
                     return objectMapper.writeValueAsString(p.root);
                 }
-                // DOWN 已更宽，坐标就是最新，直接落
+                // DOWN 更优（或横排并不更优）：**必须重跑 DOWN 拿回坐标**。
+                //
+                // 2026-10-17 修正的第二个缺陷：这里原本注释"DOWN 已更宽，
+                // 坐标就是最新，直接落"，但那是错的 —— 上一次 runElk
+                // 跑的是 RIGHT，Shape 的 px/py 已被横排坐标覆盖，包围盒
+                // down[] 只是当时算出来的数字，不代表内存里还是竖排坐标。
+                // 症状：日志写"主方向 自上而下、包围盒 160x540"，实际写进
+                // JSON 的却是 right 的横排坐标（实测 first=(0,0)
+                // second=(220,0)，应为 (0,120)）。这正是"改对了判据却看不出
+                // 效果"的原因。
+                runElk(movable, movableEdges, width, gap, siblingGap,
+                        Direction.DOWN);
                 snapAll(movable);
                 writeBack(movable);
                 LOG.info("ELK 布局完成：{} 个图形（冻结 {}），"
