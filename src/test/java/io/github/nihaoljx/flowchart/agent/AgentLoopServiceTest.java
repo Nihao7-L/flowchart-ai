@@ -1,7 +1,6 @@
 package io.github.nihaoljx.flowchart.agent;
 
 import io.github.nihaoljx.flowchart.llm.LlmProperties;
-import io.github.nihaoljx.flowchart.graph.layout.ElkLayoutEngine;
 import io.github.nihaoljx.flowchart.graph.validate.GeometryAudit;
 import io.github.nihaoljx.flowchart.graph.validate.GraphValidator;
 import io.github.nihaoljx.flowchart.graph.transform.SceneBinder;
@@ -9,6 +8,7 @@ import io.github.nihaoljx.flowchart.graph.transform.SceneDeduper;
 import io.github.nihaoljx.flowchart.graph.transform.SceneDrift;
 import io.github.nihaoljx.flowchart.graph.transform.ScenePlanner;
 import io.github.nihaoljx.flowchart.graph.transform.SceneSanitizer;
+import io.github.nihaoljx.flowchart.graph.layout.LayoutFamilyFixtures;
 import io.github.nihaoljx.flowchart.service.PromptService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -48,7 +48,8 @@ class AgentLoopServiceTest {
                         new SceneSanitizer(), new ScenePlanner(),
                         new GraphValidator(), new GeometryAudit(),
                         new SceneDrift(), new PromptService(),
-                        new ElkLayoutEngine(),
+                        LayoutFamilyFixtures.defaultPromptRegistry(),
+                        LayoutFamilyFixtures.defaultRegistry(),
                         new LlmProperties(), ""));
     }
 

@@ -12,6 +12,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
 /**
  * generic 家族：通用「节点 + 连线」图（流程/架构/组织/思维导图等）
  *
@@ -21,6 +24,7 @@ import java.util.Set;
  * 只是把它从「工具私有逻辑」变成「一个家族」，给 sequence 等
  * 新图型让出路由位（2026-10-16 多图型骨架）。
  */
+@Component
 public final class GenericLayoutFamily implements LayoutFamily {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -41,6 +45,14 @@ public final class GenericLayoutFamily implements LayoutFamily {
 
     public GenericLayoutFamily(ScenePlannerHolder holder) {
         this.plannerHolder = holder;
+    }
+
+    /** Spring 装配入口：由容器注入 planner + 引擎，内部成对持有 */
+    @Autowired
+    public GenericLayoutFamily(
+            io.github.nihaoljx.flowchart.graph.transform.ScenePlanner planner,
+            LayoutEngine engine) {
+        this.plannerHolder = new ScenePlannerHolder(planner, engine);
     }
 
     @Override

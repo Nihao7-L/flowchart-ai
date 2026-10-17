@@ -3,9 +3,11 @@ package io.github.nihaoljx.flowchart.graph.transform;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -140,8 +142,18 @@ public class SceneSanitizer {
     private static final java.util.regex.Pattern NUMERIC_TEXT =
             java.util.regex.Pattern.compile("-?\\d+(\\.\\d+)?");
 
-    private final ObjectMapper objectMapper =
-            new ObjectMapper();
+    private final ObjectMapper objectMapper;
+
+    /** 手工装配/单测沿用：自建一个（不共享 Spring 的 @Bean） */
+    public SceneSanitizer() {
+        this.objectMapper = new ObjectMapper();
+    }
+
+    /** Spring 装配：注入全局共享的 {@code @Bean ObjectMapper}（report 1.4 收敛） */
+    @Autowired
+    public SceneSanitizer(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
 
     /**
      * 零损失修复场景里"差一点"的字段。
@@ -442,7 +454,7 @@ public class SceneSanitizer {
             return false;
         }
 
-        ArrayNode rebuilt = new ObjectMapper().createArrayNode();
+        ArrayNode rebuilt = JsonNodeFactory.instance.arrayNode();
         for (JsonNode point : points) {
             ArrayNode pair = rebuilt.addArray();
             appendNumber(pair, point.get(0).asDouble() - ox);
@@ -492,7 +504,7 @@ public class SceneSanitizer {
     private static ArrayNode toArrayNode(
             List<JsonNode> elements) {
         ArrayNode array =
-                new ObjectMapper().createArrayNode();
+                JsonNodeFactory.instance.arrayNode();
         for (JsonNode element : elements) {
             array.add(element);
         }

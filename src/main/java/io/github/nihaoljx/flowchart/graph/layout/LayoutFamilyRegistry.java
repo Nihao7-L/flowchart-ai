@@ -4,6 +4,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.stereotype.Component;
+
 /**
  * 布局家族注册表：diagramType → LayoutFamily 的分发与降级
  *
@@ -17,6 +19,7 @@ import java.util.Map;
  * 同源。真正的非法值拦截在 SubmitSpecTool 的 spec 校验层（那里
  * 给模型机读修复单），注册表这层只保证运行时绝不炸。
  */
+@Component
 public final class LayoutFamilyRegistry {
 
     private final Map<String, LayoutFamily> families;

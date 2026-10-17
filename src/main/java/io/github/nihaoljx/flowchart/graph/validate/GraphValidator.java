@@ -2,6 +2,7 @@ package io.github.nihaoljx.flowchart.graph.validate;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -84,8 +85,21 @@ public class GraphValidator {
     /** id 合法字符集（与 schema 的 pattern 对齐） */
     private static final String ID_PATTERN = "^[A-Za-z0-9_-]+$";
 
-    private final ObjectMapper objectMapper =
-            new ObjectMapper();
+    private final ObjectMapper objectMapper;
+
+    /** 手工装配/单测沿用：自建一个（不共享 Spring 的 @Bean） */
+    public GraphValidator() {
+        this.objectMapper = new ObjectMapper();
+    }
+
+    /**
+     * Spring 装配：注入全局共享的 {@code @Bean ObjectMapper}
+     * （report 1.4 收敛，与 GeometryAudit 复用同一实例）。
+     */
+    @Autowired
+    public GraphValidator(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
 
     /**
      * 校验 JSON 字符串是否符合 scene 契约

@@ -2,6 +2,7 @@ package io.github.nihaoljx.flowchart.graph.validate;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -102,7 +103,21 @@ public class GeometryAudit {
     /** Liang-Barsky 用的四个边界方向数 */
     private static final int EDGES = 4;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
+
+    /** 手工装配/单测沿用：自建一个（不共享 Spring 的 @Bean） */
+    public GeometryAudit() {
+        this.objectMapper = new ObjectMapper();
+    }
+
+    /**
+     * Spring 装配：注入全局共享的 {@code @Bean ObjectMapper}
+     * （report 1.4 收敛，与 GraphValidator 复用同一实例）。
+     */
+    @Autowired
+    public GeometryAudit(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
 
     /**
      * 体检一份场景 JSON。

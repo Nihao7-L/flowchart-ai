@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.springframework.stereotype.Component;
+
 /**
  * sequence 家族：UML 时序图的确定性排版（v1 核心三件）
  *
@@ -30,6 +32,7 @@ import java.util.Set;
  * 时序图的「横排 + 时间轴」是确定性规则，且**顺序信息只在 edges
  * 数组序里** —— 交给通用布局必然丢失。
  */
+@Component
 public final class SequenceLayout implements LayoutFamily {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
