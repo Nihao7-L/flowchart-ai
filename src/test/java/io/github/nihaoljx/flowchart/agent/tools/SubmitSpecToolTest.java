@@ -369,8 +369,8 @@ class SubmitSpecToolTest {
         // 几何问题只交布局层，模型只修它真正能修的。
         GeometryAudit geometryOnly = new GeometryAudit() {
             @Override
-            public java.util.List<io.github.nihaoljx.flowchart.graph.validate.ValidationIssue> audit(
-                    String json) {
+            public java.util.List<io.github.nihaoljx.flowchart.graph.validate.ValidationIssue> auditTree(
+                    com.fasterxml.jackson.databind.JsonNode root) {
                 return java.util.List.of(
                         new io.github.nihaoljx.flowchart.graph.validate.ValidationIssue(
                                 "geometry.crossing",
@@ -410,8 +410,8 @@ class SubmitSpecToolTest {
     void mixedIssuesStillFailButOnlyActionable() throws Exception {
         GeometryAudit geometryOnly = new GeometryAudit() {
             @Override
-            public java.util.List<io.github.nihaoljx.flowchart.graph.validate.ValidationIssue> audit(
-                    String json) {
+            public java.util.List<io.github.nihaoljx.flowchart.graph.validate.ValidationIssue> auditTree(
+                    com.fasterxml.jackson.databind.JsonNode root) {
                 return java.util.List.of(
                         new io.github.nihaoljx.flowchart.graph.validate.ValidationIssue(
                                 "geometry.crossing",

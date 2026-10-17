@@ -126,8 +126,33 @@ public class GeometryAudit {
      * @return 0 或 1 条 ValidationIssue；永不抛异常
      */
     public List<ValidationIssue> audit(String json) {
+        JsonNode root;
         try {
-            JsonNode root = objectMapper.readTree(json);
+            root = objectMapper.readTree(json);
+        } catch (Exception e) {
+            // 读不通就没有几何可言：吞掉，与"体检永不成为故障点"同一条纪律
+            LOG.debug("几何体检跳过（解析失败 {}）", e.toString());
+            return List.of();
+        }
+        return auditTree(root);
+    }
+
+    /**
+     * 体检一份已解析的场景树（report 1.3：调用方已持有树时省掉重复解析）。
+     *
+     * <p>命名为 {@code auditTree} 而非重载 {@code audit}：后者会让
+     * {@code audit(null)} 这类字面量调用在 String / JsonNode 之间产生
+     * 编译期歧义。
+     *
+     * <p>这是**可覆写的扩展点**：原先测试用匿名子类覆写
+     * {@code audit(String)} 来伪造几何 issue；解析收敛到树入口后，
+     * 覆写点随之移到本方法。
+     *
+     * @param root 已解析的场景根节点
+     * @return 0 或 1 条 ValidationIssue；永不抛异常
+     */
+    public List<ValidationIssue> auditTree(JsonNode root) {
+        try {
             JsonNode elements = root.get("elements");
             if (elements == null || !elements.isArray()) {
                 return List.of();

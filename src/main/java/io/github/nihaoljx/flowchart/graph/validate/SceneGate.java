@@ -122,16 +122,21 @@ public final class SceneGate {
         if (malformed != null) {
             return new Outcome(json, List.of(malformed), false);
         }
-        List<ValidationIssue> issues = new ArrayList<>(validateAll(json));
+        List<ValidationIssue> issues = new ArrayList<>();
+        // report 1.3 第二步（跨类单次解析）：parseGate 已经用 STRICT_JSON
+        // 把这份 json 读通过一次，这里取一次树，交给结构校验、几何体检
+        // 与空场景判定三家复用 —— 原先这一路要重复 readTree 四次。
+        // 语义校验（semantic）仍收字符串，见 validateAll 的注释。
+        JsonNode sceneRoot = tryReadTree(json);
+        if (sceneRoot != null) {
+            issues.addAll(validateAll(json, sceneRoot));
+        } else {
+            // 理论上到不了：parseGate 已确认读得通。真到了就退回字符串
+            // 入口，宁可多解析几次也不能漏掉校验。
+            issues.addAll(validateAll(json));
+        }
         // 空场景拦截：判的是**结果**不是 issue 数量 —— 校验器自己
         // 也可能漏报空数组，这里独立判一次
-        //
-        // report 1.3 的第一步（本类内单次解析）：parseGate 已经确认这份
-        // json 能被 STRICT_JSON 读通，这里若再 readTree 一次就是纯重复。
-        // 先把树取出来一次，供空场景判定与改图判定复用；三个校验器
-        // （validator / semantic / audit）仍各自按 String 解析 —— 要把
-        // 它们改成收 JsonNode 属于跨类改签名，留作后续独立小步。
-        JsonNode sceneRoot = tryReadTree(json);
         ValidationIssue empty = emptySceneIssue(sceneRoot);
         if (empty != null && issues.isEmpty()) {
             issues.add(empty);
@@ -208,6 +213,25 @@ public final class SceneGate {
         // 几何体检：结构合法不等于画得能看。体检器只报告、
         // 绝不改坐标（怎么挪由 LLM 在修正轮里自己决定）。
         issues.addAll(audit.audit(json));
+        return issues;
+    }
+
+    /**
+     * 校验版本（report 1.3 的第二步）：调用方已持有解析树时，
+     * 结构与几何两道都走树入口，省掉两次重复解析。
+     *
+     * <p>语义校验仍收字符串 —— 它判的是连线语义、内部要读原始文本，
+     * 且不是热路径，留在字符串入口即可。
+     *
+     * @param json 同一份 json（语义校验用）
+     * @param root 它的解析树（结构校验与几何体检用）
+     */
+    private List<ValidationIssue> validateAll(
+            String json, JsonNode root) {
+        List<ValidationIssue> issues = new ArrayList<>(
+                validator.validateTree(root));
+        issues.addAll(semantic.validate(json));
+        issues.addAll(audit.auditTree(root));
         return issues;
     }
 

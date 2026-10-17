@@ -108,16 +108,36 @@ public class GraphValidator {
      * @return issue 列表（空 = 校验通过）
      */
     public List<ValidationIssue> validate(String json) {
-        List<ValidationIssue> issues = new ArrayList<>();
+        JsonNode root;
         try {
-            JsonNode root = objectMapper.readTree(json);
-            validateRoot(root, issues);
+            root = objectMapper.readTree(json);
         } catch (Exception e) {
-            issues.add(new ValidationIssue(
+            // 解析失败也是"校验结论"：字符串入口的职责，树入口不管
+            return List.of(new ValidationIssue(
                     "$",
                     "JSON 解析失败: " + e.getMessage(),
                     "请确保输出的是合法 JSON 对象"));
         }
+        return validateTree(root);
+    }
+
+    /**
+     * 校验已解析的场景根节点（report 1.3：调用方已持有树时省掉重复解析）。
+     *
+     * <p>命名为 {@code validateTree} 而非重载 {@code validate}：后者会让
+     * {@code validate(null)} 这类字面量调用在 String / JsonNode 之间产生
+     * 歧义（编译期 "对 validate 的引用不明确"）。
+     *
+     * <p>这是**可覆写的扩展点**：旧实现把解析写在 {@code validate(String)}
+     * 里，测试用匿名子类覆写它来伪造 issue；改成树入口后，覆写点随之
+     * 移到本方法，字符串入口只负责解析与兜底。
+     *
+     * @param root 已解析的场景根节点
+     * @return issue 列表（空 = 校验通过）
+     */
+    public List<ValidationIssue> validateTree(JsonNode root) {
+        List<ValidationIssue> issues = new ArrayList<>();
+        validateRoot(root, issues);
         return issues;
     }
 
