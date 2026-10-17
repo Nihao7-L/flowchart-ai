@@ -341,6 +341,77 @@ final class SceneGeometryKit {
     }
 
     /**
+     * 线段与轴对齐矩形是否真有交叠（Liang-Barsky 裁剪）：擦边、贴角
+     * 不算，必须有一段正长度落在矩形内。
+     *
+     * @param s   线段 {@code {x1, y1, x2, y2}}（绝对坐标）
+     * @param box 矩形 {@code {x1, y1, x2, y2}}
+     * @return 交叠返回 true
+     */
+    static boolean segHitsBox(double[] s, double[] box) {
+        double dx = s[2] - s[0];
+        double dy = s[3] - s[1];
+        double x1 = s[0];
+        double y1 = s[1];
+        double[] p = {-dx, dx, -dy, dy};
+        double[] q = {x1 - box[0], box[2] - x1, y1 - box[1], box[3] - y1};
+        double t0 = 0;
+        double t1 = 1;
+        for (int i = 0; i < 4; i++) {
+            if (Math.abs(p[i]) < 1e-12) {
+                if (q[i] < 0) {
+                    return false;
+                }
+                continue;
+            }
+            double r = q[i] / p[i];
+            if (p[i] < 0) {
+                if (r > t1) {
+                    return false;
+                }
+                if (r > t0) {
+                    t0 = r;
+                }
+            } else {
+                if (r < t0) {
+                    return false;
+                }
+                if (r < t1) {
+                    t1 = r;
+                }
+            }
+        }
+        return t0 < t1;
+    }
+
+    /**
+     * 矩形被多少条线段穿过，{@code owner} 名下的线段豁免。
+     *
+     * <p>边标签落位用：文字元素没有底色，被别的线穿过就不可读，而标签
+     * 压自己那条边是可接受的（ELK {@code edgeLabels.inline} 同口径）。
+     *
+     * @param box    标签外框 {@code {x1, y1, x2, y2}}
+     * @param segs   线段集合，每个 {@code {x1, y1, x2, y2}}
+     * @param owners 与 {@code segs} 等长的归属标识（箭头的 id）
+     * @param owner  当前标签所属箭头 id，命中即跳过
+     * @return 穿过的线段条数
+     */
+    static int countSegHits(
+            double[] box, List<double[]> segs, List<String> owners,
+            String owner) {
+        int hits = 0;
+        for (int i = 0; i < segs.size(); i++) {
+            if (owner != null && owner.equals(owners.get(i))) {
+                continue;
+            }
+            if (segHitsBox(segs.get(i), box)) {
+                hits++;
+            }
+        }
+        return hits;
+    }
+
+    /**
      * 一维自由区间：给定占用的闭区间，求其并集的补集。
      *
      * <p>落在自由区间里的轴线永不与任何占用相交 —— 走廊的判定基础。

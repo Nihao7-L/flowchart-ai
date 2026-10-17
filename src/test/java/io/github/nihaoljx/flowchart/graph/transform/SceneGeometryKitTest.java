@@ -279,4 +279,68 @@ class SceneGeometryKitTest {
         // 字号是参数：8 号字高 10
         assertThat(SceneGeometryKit.labelSize("abcd", 8)[1]).isEqualTo(10.0);
     }
+
+    @Test
+    @DisplayName("segHitsBox：真穿过才算，擦边/贴角/只碰到边界都不算")
+    void segHitsBoxIgnoresTouching() {
+        double[] box = {0, 0, 100, 40};
+
+        // 横穿中段
+        assertThat(SceneGeometryKit.segHitsBox(
+                new double[] {-50, 20, 150, 20}, box)).isTrue();
+        // 一端在框内
+        assertThat(SceneGeometryKit.segHitsBox(
+                new double[] {50, 20, 200, 20}, box)).isTrue();
+        // 完全在框内
+        assertThat(SceneGeometryKit.segHitsBox(
+                new double[] {10, 10, 90, 30}, box)).isTrue();
+        // 竖着穿
+        assertThat(SceneGeometryKit.segHitsBox(
+                new double[] {50, -30, 50, 70}, box)).isTrue();
+        // 与框上边共线重叠：长度为正 ⇒ 算相交（避让场景取保守口径：
+        // 沿边线走的一条线仍会压到估出来的文字框第一行）
+        assertThat(SceneGeometryKit.segHitsBox(
+                new double[] {-50, 0, 150, 0}, box)).isTrue();
+        // 垂直方向的线只穿过框边某一点：零长度，不算
+        assertThat(SceneGeometryKit.segHitsBox(
+                new double[] {50, -30, 50, 0}, box)).isFalse();
+        // 只碰到右上角
+        assertThat(SceneGeometryKit.segHitsBox(
+                new double[] {100, 40, 200, 80}, box)).isFalse();
+        // 完全在框外
+        assertThat(SceneGeometryKit.segHitsBox(
+                new double[] {-50, 60, 150, 60}, box)).isFalse();
+        // 与框同宽的共线重叠段（有正长度在框内）
+        assertThat(SceneGeometryKit.segHitsBox(
+                new double[] {20, 20, 80, 20}, box)).isTrue();
+    }
+
+    @Test
+    @DisplayName("countSegHits：豁免自己那条边，只数别人的线段")
+    void countSegHitsSkipsOwnSegments() {
+        double[] box = {100, 100, 140, 120};
+        List<double[]> segs = new ArrayList<>();
+        List<String> owners = new ArrayList<>();
+        // 自己那条边从标签框里穿过（贴着标签放是允许的）
+        segs.add(new double[] {90, 110, 150, 110});
+        owners.add("arrow_a");
+        // 别人的线横穿标签框
+        segs.add(new double[] {120, 90, 120, 130});
+        owners.add("arrow_b");
+        // 别人的线在框外
+        segs.add(new double[] {0, 0, 90, 90});
+        owners.add("arrow_b");
+
+        assertThat(SceneGeometryKit.countSegHits(
+                box, segs, owners, "arrow_a")).isEqualTo(1);
+        // 换谁是自己：另一条穿框的线变成「自己的」
+        assertThat(SceneGeometryKit.countSegHits(
+                box, segs, owners, "arrow_b")).isEqualTo(1);
+        // 都不豁免
+        assertThat(SceneGeometryKit.countSegHits(
+                box, segs, owners, null)).isEqualTo(2);
+        // 空集合
+        assertThat(SceneGeometryKit.countSegHits(
+                box, new ArrayList<>(), new ArrayList<>(), "x")).isZero();
+    }
 }

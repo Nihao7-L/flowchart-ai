@@ -837,6 +837,175 @@ public class ScenePlanner {
         return back;
     }
 
+    /**
+     * 「就近摆」权重：跨模块边的加权平均物理距离记多少分。
+     *
+     * <p>与长宽比项（|log(长宽比/1.5)|，量级 0.1~1）同量级，且
+     * {@link #BACKWARD_EDGE_COST}（2.0）仍然更贵 —— 顺序搜索只有在
+     * 「省下的距离」大于「多一条逆流边」时才敢于破坏流向。
+     */
+    private static final double PROXIMITY_COST = 1.0;
+
+    /** 顺序搜索的改进阈值（浮点抖动不算改进）与轮数上限（保确定性耗时） */
+    private static final double ORDER_EPS = 1e-6;
+
+    private static final int ORDER_SEARCH_ROUNDS = 12;
+
+    private static final int ORDER_SEARCH_BUDGET = 4000;
+
+    /**
+     * 就近摆局部搜索的总开关（默认开）。回归测试把它关掉，用同一份输入跑
+     * 两遍做 A/B，确认强依赖模块在开启时被摆到一起（见
+     * {@link ProximityOrderTest}）。
+     */
+    static boolean proximityEnabled = true;
+
+    /**
+     * 块中心到块中心（含画框内边距）的曼哈顿距离，单位与 {@link Block#outerW()}
+     * 一致。就近摆的「距离」必须量到盒子，不是量到序号 ——
+     * 一个 900px 宽的模块和一个 240px 宽的模块相邻，代价差着 4 倍。
+     */
+    private static double boxDistance(Block a, Block b) {
+        return Math.abs(a.ox + a.outerW() / 2 - (b.ox + b.outerW() / 2))
+                + Math.abs(a.oy + a.outerH() / 2 - (b.oy + b.outerH() / 2));
+    }
+
+    /**
+     * 当前摆法下跨模块边的「加权平均距离」，以平均模块半径为单位。
+     *
+     * <p>归一化的理由：不归一会让十几条边各自贡献几百 px，把长宽比项
+     * 与逆流罚项彻底淹没，搜索就会为了缩短一条线把整图拉成一根长条。
+     * 归一后好摆法 ≈1~2、坏摆法 ≈3~5，三者可比。
+     */
+    private static double proximityCost(
+            List<Block> items, Map<String, Map<String, Integer>> flow) {
+        if (flow.isEmpty()) {
+            return 0;
+        }
+        double scale = 0;
+        for (Block b : items) {
+            scale += (b.outerW() + b.outerH()) / 2;
+        }
+        scale = Math.max(1, scale / items.size());
+        Map<String, Block> byName = new LinkedHashMap<>();
+        for (Block b : items) {
+            byName.put(b.name, b);
+        }
+        double sum = 0;
+        double weights = 0;
+        for (Map.Entry<String, Map<String, Integer>> e : flow.entrySet()) {
+            Block from = byName.get(e.getKey());
+            if (from == null) {
+                continue;
+            }
+            for (Map.Entry<String, Integer> t : e.getValue().entrySet()) {
+                Block to = byName.get(t.getKey());
+                if (to == null) {
+                    continue;
+                }
+                int w = t.getValue();
+                sum += w * boxDistance(from, to);
+                weights += w;
+            }
+        }
+        return weights > 0 ? sum / weights / scale : 0;
+    }
+
+    /**
+     * 某一列数下的打包总分：长宽比 + 逆流罚 + 就近摆。
+     *
+     * <p>必须把 cols 一起评：模块进的是网格（{@link #applyGrid} 行优先），
+     * 序号相邻 ≠ 物理相邻 —— 一行的末位与下一行的首位序号相邻、物理上
+     * 却隔着整行。只看 1 维序号的代价函数会把这种摆法当成好摆法。
+     */
+    private double packScore(
+            List<Block> items, int cols, double gap,
+            Map<String, Map<String, Integer>> flow) {
+        double[] size = applyGrid(items, cols, gap);
+        if (size[0] <= 0 || size[1] <= 0) {
+            return Double.MAX_VALUE;
+        }
+        return Math.abs(Math.log((size[0] / size[1]) / TARGET_ASPECT))
+                + BACKWARD_EDGE_COST * backwardEdges(items, flow)
+                + PROXIMITY_COST * proximityCost(items, flow);
+    }
+
+    /** 试遍列数后的最好成绩（局部搜索的评估函数） */
+    private double bestPackScore(
+            List<Block> items, double gap,
+            Map<String, Map<String, Integer>> flow) {
+        double best = Double.MAX_VALUE;
+        for (int cols = 1; cols <= items.size(); cols++) {
+            best = Math.min(best, packScore(items, cols, gap, flow));
+        }
+        return best;
+    }
+
+    /**
+     * 顶层模块的「就近摆」局部搜索：交换两块 / 抽出一块插到别处，
+     * 只在总分下降时接受，反复到不动点。
+     *
+     * <p>用户口径（2026-10-17）：「这个已取消为什么不放到右边，这样线
+     * 不就可以直接画一根过去，不用弯弯绕绕」。拓扑序只保证上下游顺序
+     * （{@link #orderModulesByFlow}），不保证邻接 —— 强依赖的两个模块
+     * 被排到带子的两端，边只能横贯整张画布。这里补的就是邻接性：
+     * 目标函数就是「跨模块边的加权平均物理距离」，与格式塔的邻近原则
+     * 同义（WorkBuddy 准则：频繁连线的两个框物理距离最近）。
+     *
+     * <p>确定性：候选按固定顺序枚举、只在严格下降时接受、有轮数与
+     * 评估次数上限 ⇒ 同一份输入必得同一份顺序（{@link SceneDrift} 与
+     * E2E 断言都依赖这一点）。
+     */
+    private void orderModulesByProximity(
+            List<Block> items, double gap, Partition partition,
+            Map<String, Map<String, Integer>> flow) {
+        if (items.size() < 3 || flow.isEmpty()) {
+            return;
+        }
+        List<Block> current = new ArrayList<>(items);
+        double cost = bestPackScore(current, gap, flow);
+        int evaluated = 0;
+        boolean improved = true;
+        for (int round = 0; round < ORDER_SEARCH_ROUNDS
+                && improved && evaluated < ORDER_SEARCH_BUDGET; round++) {
+            improved = false;
+            for (int i = 0; i < current.size() && !improved; i++) {
+                for (int j = i + 1; j < current.size(); j++) {
+                    List<Block> trial = new ArrayList<>(current);
+                    Collections.swap(trial, i, j);
+                    double c = bestPackScore(trial, gap, flow);
+                    evaluated++;
+                    if (c < cost - ORDER_EPS) {
+                        current = trial;
+                        cost = c;
+                        improved = true;
+                        break;
+                    }
+                }
+            }
+            for (int i = 0; i < current.size() && !improved; i++) {
+                for (int j = 0; j < current.size(); j++) {
+                    if (i == j) {
+                        continue;
+                    }
+                    List<Block> trial = new ArrayList<>(current);
+                    Block moved = trial.remove(i);
+                    trial.add(j, moved);
+                    double c = bestPackScore(trial, gap, flow);
+                    evaluated++;
+                    if (c < cost - ORDER_EPS) {
+                        current = trial;
+                        cost = c;
+                        improved = true;
+                        break;
+                    }
+                }
+            }
+        }
+        items.clear();
+        items.addAll(current);
+    }
+
     /** 通道最小间距（px）：共用走廊的线至少离这么远，不成股 */
     private static final double CHANNEL_GAP = 14;
 
@@ -1131,7 +1300,8 @@ public class ScenePlanner {
      *    口径：重复标注是噪音不是信息）；
      * ② 落位 —— 有 points 的箭头把标签编译成**独立文字元素**，放在出线
      *    段旁（先取首段，短了取最长段），垂直偏移 16px，沿段滑动找空位，
-     *    与节点框/已放标签都不叠；实在放不下才保留绑定标签兜底。
+     *    与节点框/已放标签都不叠、且被其它线穿过最少；实在放不下才保留
+     *    绑定标签兜底。
      * 适配层已验证：无 containerId 的 text 元素坐标原样生效。
      */
     private void placeEdgeLabels(JsonNode root, Partition partition) {
@@ -1162,18 +1332,23 @@ public class ScenePlanner {
         }
         // ② 落位为独立文字
         List<double[]> placed = new ArrayList<>();
+        List<double[]> segs = new ArrayList<>();
+        List<String> segOwners = new ArrayList<>();
+        collectArrowSegments(elements, segs, segOwners);
         for (ObjectNode arrow : labeled) {
             JsonNode points = arrow.get("points");
             if (points == null || !points.isArray()
                     || points.size() < 2) {
                 continue;
             }
+            String owner = arrow.path("id").asText("");
             String content = text(arrow.get("label"), "text").trim();
             double[] size = labelSize(content);
             double ox = arrow.get("x").asDouble();
             double oy = arrow.get("y").asDouble();
             double[] spot = findLabelSpot(
-                    points, ox, oy, size, partition.nodes, placed);
+                    points, ox, oy, size, partition.nodes, placed,
+                    owner, segs, segOwners);
             if (spot == null) {
                 continue;
             }
@@ -1203,13 +1378,28 @@ public class ScenePlanner {
     }
 
     /**
-     * 找一个不压节点框、不压已放标签的落点：候选段（首段优先，短了
-     * 依次取后续段）中点两侧各偏 16px，再沿段方向 ±14~42px 滑动。
+     * 找一个不压节点框、不压已放标签的落点，并在这些落点里挑**被别人的
+     * 线穿过最少**的那个（2026-10-17 用户口径「线条和文字全部叠在一起」）。
+     *
+     * <p>候选段（首段优先，短了依次取后续段）中点两侧各偏 16px，再沿段
+     * 方向 ±14~42px 滑动。硬冲突仍是节点框与已放标签（台下不了）；线穿字
+     * 只作罚分，因为线是布完局才有的、标签不能因此不落位。文字元素没有
+     * 底色，线穿字就是不可读，与 draw.io 的 {@code mxEdgeLabelLayout}
+     * 只避顶点、不管边（实测就是我们的病）不同向。
+     *
+     * <p>自己那条边不算：标签本来就贴着它的中段放，与 ELK
+     * {@code edgeLabels.inline} 允许压自己的边同口径。
+     *
+     * <p>包私有（非 private）是为了让 transform 包内的落位单测直接驱动
+     * 这个纯函数：坐标由入参决定，不必靠整图排版碰运气。
      */
-    private double[] findLabelSpot(
+    double[] findLabelSpot(
             JsonNode points, double ox, double oy, double[] size,
-            List<Node> nodes, List<double[]> placed) {
+            List<Node> nodes, List<double[]> placed,
+            String owner, List<double[]> segs, List<String> segOwners) {
         int count = points.size();
+        double[] best = null;
+        int bestCross = Integer.MAX_VALUE;
         for (int i = 0; i < Math.min(count - 1, 4); i++) {
             double x1 = ox + points.get(i).get(0).asDouble();
             double y1 = oy + points.get(i).get(1).asDouble();
@@ -1236,13 +1426,56 @@ public class ScenePlanner {
                     double[] box = {
                         cx - size[0] / 2, cy - size[1] / 2,
                         cx + size[0] / 2, cy + size[1] / 2};
-                    if (spotClean(box, nodes, placed)) {
-                        return new double[] {cx, cy};
+                    if (!spotClean(box, nodes, placed)) {
+                        continue;
+                    }
+                    int cross = countSegHits(box, segs, segOwners, owner);
+                    if (cross < bestCross) {
+                        bestCross = cross;
+                        best = new double[] {cx, cy};
+                    }
+                    if (bestCross == 0) {
+                        return best;
                     }
                 }
             }
         }
-        return null;
+        return best;
+    }
+
+    /**
+     * 全部箭头的绝对坐标线段（含无标签的边）。标签落位要避开别人的线，
+     * 只避节点框和已放标签是不够的。
+     */
+    private void collectArrowSegments(
+            ArrayNode elements, List<double[]> segs, List<String> owners) {
+        for (JsonNode element : elements) {
+            if (!"arrow".equals(element.path("type").asText())) {
+                continue;
+            }
+            JsonNode points = element.get("points");
+            if (points == null || !points.isArray() || points.size() < 2) {
+                continue;
+            }
+            double ox = element.path("x").asDouble();
+            double oy = element.path("y").asDouble();
+            String id = element.path("id").asText("");
+            for (int i = 0; i + 1 < points.size(); i++) {
+                segs.add(new double[] {
+                    ox + points.get(i).get(0).asDouble(),
+                    oy + points.get(i).get(1).asDouble(),
+                    ox + points.get(i + 1).get(0).asDouble(),
+                    oy + points.get(i + 1).get(1).asDouble()});
+                owners.add(id);
+            }
+        }
+    }
+
+    /** 候选落点被多少条「别人的」线段穿过 */
+    private static int countSegHits(
+            double[] box, List<double[]> segs, List<String> owners,
+            String owner) {
+        return SceneGeometryKit.countSegHits(box, segs, owners, owner);
     }
 
     /** 落点与所有节点框（外扩 2px）和已放标签（外扩 4px）都不相交 */
@@ -1450,6 +1683,16 @@ public class ScenePlanner {
      */
     private double[] pack(
             List<Block> items, double gap, Partition partition) {
+        return pack(items, gap, partition, proximityEnabled);
+    }
+
+    /**
+     * 打包单个块的内部元素。把「就近摆」开关抽成参数，便于回归测试在关闭状
+     * 态下复跑同一份输入做 A/B（见 {@link ProximityOrderTest}）。
+     */
+    double[] pack(
+            List<Block> items, double gap, Partition partition,
+            boolean proximity) {
         if (items.size() == 1) {
             items.get(0).ox = 0;
             items.get(0).oy = 0;
@@ -1459,15 +1702,16 @@ public class ScenePlanner {
         }
         int bestCols = 0;
         double bestPenalty = Double.MAX_VALUE;
+        // 就近摆的目标函数只评「正在被打包的这一层模块」：跨模块边可能发生在
+        // 任意嵌套深度（模型常把整图兜进一个外层 group），必须在打包的这一层
+        // 现算 flow，而不是依赖根层 partition.flow（根层往往只有 1 个子块 → 空）。
+        Map<String, Map<String, Integer>> flow = flowBetween(items, partition);
+        boolean topLevel = !flow.isEmpty();
+        if (topLevel && proximity) {
+            orderModulesByProximity(items, gap, partition, flow);
+        }
         for (int cols = 1; cols <= items.size(); cols++) {
-            double[] size = applyGrid(items, cols, gap);
-            if (size[0] <= 0 || size[1] <= 0) {
-                continue;
-            }
-            double penalty = Math.abs(Math.log(
-                    (size[0] / size[1]) / TARGET_ASPECT))
-                    + BACKWARD_EDGE_COST
-                    * backwardEdges(items, partition.flow);
+            double penalty = packScore(items, cols, gap, flow);
             if (penalty < bestPenalty) {
                 bestPenalty = penalty;
                 bestCols = cols;
@@ -1478,6 +1722,45 @@ public class ScenePlanner {
         }
         // 循环里最后一次 applyGrid 未必是当选的那一列，再摆一次定稿
         return applyGrid(items, bestCols, gap);
+    }
+
+    /**
+     * 在被打包的 {@code items} 这一层现算「谁连谁」：每个图形归属到它所在的
+     * item 块（递归收成员），跨 item 的箭头计数。名字为 null 的占位块
+     * （{@code block.own}）不计入。
+     */
+    private Map<String, Map<String, Integer>> flowBetween(
+            List<Block> items, Partition partition) {
+        Map<String, Block> owner = new LinkedHashMap<>();
+        for (Block it : items) {
+            collectMemberIds(it, owner);
+        }
+        Map<String, Node> byId = new LinkedHashMap<>();
+        for (Node n : partition.nodes) {
+            byId.put(n.id, n);
+        }
+        Map<String, Map<String, Integer>> flow = new LinkedHashMap<>();
+        for (JsonNode element : partition.rawElements) {
+            if (!"arrow".equals(text(element, "type"))) {
+                continue;
+            }
+            Node from = byId.get(bindingId(element, "start"));
+            Node to = byId.get(bindingId(element, "end"));
+            if (from == null || to == null) {
+                continue;
+            }
+            Block bf = owner.get(from.id);
+            Block bt = owner.get(to.id);
+            if (bf == null || bt == null || bf == bt) {
+                continue;
+            }
+            if (bf.name == null || bt.name == null) {
+                continue;
+            }
+            flow.computeIfAbsent(bf.name, k -> new LinkedHashMap<>())
+                    .merge(bt.name, 1, Integer::sum);
+        }
+        return flow;
     }
 
     /** 按固定列数摆一次，返回整体尺寸（行内垂直居中，列居中对齐） */
