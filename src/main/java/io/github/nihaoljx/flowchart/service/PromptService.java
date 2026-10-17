@@ -4,9 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.nihaoljx.flowchart.graph.validate.ValidationIssue;
+import io.github.nihaoljx.flowchart.prompt.DiagramPromptRegistry;
+import io.github.nihaoljx.flowchart.prompt.DiagramTemplate;
+import io.github.nihaoljx.flowchart.prompt.PromptText;
 import io.github.nihaoljx.flowchart.session.SessionStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
@@ -64,13 +68,6 @@ public class PromptService {
      * 30 这个数字的判据是"整份 JSON 大约 3~5 KB"，再往上就开始明显拖慢并干扰。
      */
     public static final int EDIT_INLINE_MAX_ELEMENTS = 30;
-
-    /**
-     * md 里的 HTML 注释（只给人和 CI 看的内容）。`DOTALL` + 非贪婪：
-     * 注释可能跨多行，但绝不能一口吞到下一个注释的结尾。
-     */
-    private static final java.util.regex.Pattern COMMENT_PATTERN =
-            java.util.regex.Pattern.compile("(?s)<!--.*?-->");
 
     /**
      * 契约段要列举的元素分支（`scene.schema.json` 里 `definitions` 的键）。
@@ -145,6 +142,25 @@ public class PromptService {
                     "backgroundColor", "要填充就得给，不写等于没填");
 
     /**
+     * 图型提示词模板注册表：按图型注入专项规则（时序图 / 未来更多图型）。
+     *
+     * <p>为什么内核 md 里不直接写死各图型的规则：内核已经顶到字节闸门
+     * （v10.13.0 时 9987B / 上限 10000B，只剩 13B），每加一种图的规则都要从
+     * 通用规则里挤字节。拆出去以后图型模板各自单独计预算，加图型不再动内核。
+     */
+    private final DiagramPromptRegistry diagramPrompts;
+
+    /** 无参构造（单测 / 非 Spring）：只用 classpath 内置图型模板。 */
+    public PromptService() {
+        this(new DiagramPromptRegistry());
+    }
+
+    @Autowired
+    public PromptService(DiagramPromptRegistry diagramPrompts) {
+        this.diagramPrompts = diagramPrompts;
+    }
+
+    /**
      * classpath 资源缓存：只在首次加载时读一次文件。
      * 用 ConcurrentHashMap —— Spring MVC 请求处理多线程，懒加载的 put 必须线程安全
      * （HashMap 并发 put 可能链表成环导致后续 get 死循环，且仅在并发下暴露）。
@@ -166,6 +182,32 @@ public class PromptService {
      * 拆成两段分别渲染； 起还用来算元素数与抽骨架。
      */
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * 契约段缓存（report 2 优化 #7）。
+     *
+     * <p>{@link #buildContractBlock()} 的产物**对所有请求逐字节相同** —— 它只由
+     * classpath 里的 {@code scene.schema.json} 派生，而那份文件经
+     * {@link #resourceCache} 读一次后再不变。原实现每请求都重新
+     * {@code readTree} 解析 14.3KB JSON，再重拼约 500 token 的文本
+     * （{@code buildSystemBlock} 每请求都调它），纯属重复劳动。
+     *
+     * <p>用 {@code volatile} 发布：非 volatile 的懒加载在并发首次访问时
+     * 可能让一个线程看到**部分构造**的 String 引用（安全发布问题），
+     * volatile 写提供 happens-before。计算是幂等的，最坏情况两个线程
+     * 各算一次、后写者覆盖，结果等价。
+     */
+    private volatile String contractBlockCache;
+
+    /**
+     * 已解析的 schema {@code definitions} 节点缓存（同上 #7）。
+     *
+     * <p>{@link #buildContractBlock()} 与 {@link #contractSection(String)}
+     * 各自 {@code readTree(...).get("definitions")} 一次；Jackson 的
+     * {@code JsonNode} 是**可变**对象，但本类从不修改它（只读
+     * {@code get}/{@code fieldNames}），因此共享是安全的。
+     */
+    private volatile JsonNode definitionsCache;
 
     private static final Logger LOG =
             LoggerFactory.getLogger(PromptService.class);
@@ -189,8 +231,32 @@ public class PromptService {
      * @throws IOException 读资源文件失败
      */
     public String buildSystemBlock() throws IOException {
-        return stripComments(loadResource(SYSTEM_PROMPT_PATH))
+        return buildSystemBlock(null);
+    }
+
+    /**
+     * 静态层内容块：内核 md + 契约段 + （命中时）图型模板段。
+     *
+     * <p><b>装配顺序是刻意排的</b>：内核与契约对所有请求都一样，放在最前就是
+     * KV-cache 的**稳定前缀**；图型模板是唯一的变量，放在最后。反过来（图型段
+     * 插在中间）会把"内核 + 契约"这个公共前缀切碎，每换一种图就丢一次缓存。
+     *
+     * <p>图型的判定是**确定性关键词匹配**（{@link DiagramPromptRegistry#forRequest}），
+     * 不额外调 LLM 分类 —— 那要多付一次调用，而我们的 SLA 是百秒级。没命中
+     * 就只发内核，行为与拆分前完全一致。
+     *
+     * @param requestText 用户在输入框里的原始需求（用于挑图型模板）；空则只发内核
+     * @return system 消息正文
+     * @throws IOException 读资源文件失败
+     */
+    public String buildSystemBlock(String requestText) throws IOException {
+        String block = stripComments(loadResource(SYSTEM_PROMPT_PATH))
                 + "\n\n" + buildContractBlock();
+        DiagramTemplate template = diagramPrompts.forRequest(requestText);
+        if (template == null) {
+            return block;
+        }
+        return block + "\n\n" + diagramPrompts.render(template);
     }
 
     /**
@@ -243,7 +309,7 @@ public class PromptService {
      * CI / 人读文件照样看得到。
      */
     private static String stripComments(String md) {
-        return COMMENT_PATTERN.matcher(md).replaceAll("").strip();
+        return PromptText.stripComments(md);
     }
 
     /**
@@ -265,12 +331,34 @@ public class PromptService {
  * 本方法仍是**纯静态**的（同样受 `resourceCache` 缓存、同样进 system、
      * 同样是 KV-cache 稳定前缀），所以 KV-cache 收益一点没丢。
      *
+     * <p>产物本身也**缓存**（report 2 优化 #7）：它对所有请求逐字节相同，
+     * 原先每请求重算一次纯属重复劳动。首次调用算出后存入
+     * {@link #contractBlockCache}，之后直接返回同一实例。
+     *
      * @return 契约段正文
      * @throws IOException 读资源文件失败
      */
     public String buildContractBlock() throws IOException {
-        JsonNode definitions =
-                objectMapper.readTree(loadResource(SCHEMA_PATH)).get("definitions");
+        String cached = contractBlockCache;
+        if (cached != null) {
+            return cached;
+        }
+        String built = renderContractBlock();
+        contractBlockCache = built;
+        return built;
+    }
+
+    /**
+     * 契约段的实际渲染（每次调用都会从头算）。
+     *
+     * <p>与 {@link #buildContractBlock()} 拆开是为了让缓存逻辑只有一处：
+     * 公开入口只负责「查缓存 / 回填」，渲染细节留在私有方法里。
+     *
+     * @return 契约段正文（未走缓存）
+     * @throws IOException 读资源文件失败
+     */
+    private String renderContractBlock() throws IOException {
+        JsonNode definitions = schemaDefinitions();
         StringBuilder sb = new StringBuilder();
         sb.append("## 契约（scene.schema.json，字段与类型以此为准）\n");
         sb.append("场景 = {\"elements\":[...]}，数组顺序即层级；坐标单位 px、"
@@ -342,8 +430,7 @@ public class PromptService {
             throw new IllegalArgumentException("未知契约分支: " + branch
                     + "，允许: " + String.join("/", CONTRACT_BRANCHES));
         }
-        JsonNode definitions =
-                objectMapper.readTree(loadResource(SCHEMA_PATH)).get("definitions");
+        JsonNode definitions = schemaDefinitions();
         JsonNode def = definitions.get(branch);
         JsonNode props = def.get("properties");
         StringBuilder sb = new StringBuilder();
@@ -920,6 +1007,31 @@ public class PromptService {
                     e.getMessage());
             return "";
         }
+    }
+
+    /**
+     * 取 schema 的 {@code definitions} 节点（解析后缓存，report 2 优化 #7）。
+     *
+     * <p>{@link #buildContractBlock()} 与 {@link #contractSection(String)}
+     * 原先各自解析一遍 14.3KB 的 {@code scene.schema.json}；文件读已由
+     * {@link #resourceCache} 省掉，JSON 解析没有。这里统一成一份缓存的
+     * 已解析树，两个出口共享。
+     *
+     * <p>返回的 {@code JsonNode} 是缓存的**同一实例**，调用方只读不改
+     * （本类全部用法都是 {@code get}/{@code fieldNames} 只读遍历）。
+     *
+     * @return {@code definitions} 节点
+     * @throws IOException 读 / 解析 schema 失败
+     */
+    private JsonNode schemaDefinitions() throws IOException {
+        JsonNode cached = definitionsCache;
+        if (cached != null) {
+            return cached;
+        }
+        JsonNode parsed =
+                objectMapper.readTree(loadResource(SCHEMA_PATH)).get("definitions");
+        definitionsCache = parsed;
+        return parsed;
     }
 
     /**

@@ -2,6 +2,8 @@ package io.github.nihaoljx.flowchart.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.nihaoljx.flowchart.prompt.DiagramPromptRegistry;
+import io.github.nihaoljx.flowchart.prompt.DiagramTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -107,6 +109,24 @@ class PromptServiceContractTest {
         assertTrue(first.contains("scene.schema.json"),
                 "system 段必须标注契约来源（下游断言依赖这个字符串）");
         assertEquals(first, second, "system 段必须可重复构造，否则 KV-cache 必失效");
+    }
+
+    @Test
+    @DisplayName("契约段 / 解析树被缓存：重复调用返回同一实例且内容不变（report 优化 #7）")
+    void contractBlockAndSchemaTreeAreCached() throws IOException {
+        String first = promptService.buildContractBlock();
+        String second = promptService.buildContractBlock();
+
+        // 同一实例（不是"内容相等"）：缓存命中必须直接返回缓存对象，
+        // 若某次重构把缓存删了，这里会因 String 未驻留而大概率不等同。
+        assertSame(first, second,
+                "契约段产物对所有请求逐字节相同，必须缓存后复用同一实例");
+
+        // 缓存不得改变内容：与 schema 的覆盖面仍由上面的用例守住，
+        // 这里只锁"缓存前后文本自洽"。
+        assertFalse(first.isBlank(), "契约段不应为空");
+        assertTrue(first.contains("scene.schema.json"),
+                "缓存后的契约段仍必须标注来源");
     }
 
     @Test
@@ -265,6 +285,52 @@ class PromptServiceContractTest {
         assertTrue(bytes < 10000,
                 "system 块超过 10000 字节（约 2900 token），超出约定的 3000 token 上限；"
                         + "当前 " + bytes + " 字节");
+    }
+
+    // ---------------------------------------------------------------
+    // v10.14.0：提示词按图型分层（内核 + 契约 + 图型模板）
+    // ---------------------------------------------------------------
+    @Test
+    @DisplayName("图型模板：命中才注入，且拼在契约段之后（保住 KV-cache 稳定前缀）")
+    void diagramTemplateAppendedAfterContract() throws IOException {
+        String base = promptService.buildSystemBlock();
+        String withSequence =
+                promptService.buildSystemBlock("画一个登录的时序图");
+
+        assertFalse(base.contains("## 图型模板"),
+                "没命中图型时不该注入图型段（只发内核，行为与拆分前一致）");
+        assertTrue(withSequence.contains("## 图型模板"),
+                "用户原话含「时序图」应注入图型模板段");
+        assertTrue(withSequence.contains("diagramType: \"sequence\""),
+                "图型段必须给出可照抄的 diagramType 字面值");
+        // 顺序即缓存：内核 + 契约对所有请求都相同 ⇒ 必须是前缀，
+        // 图型段是唯一变量 ⇒ 必须在最后。插中间会把公共前缀切碎。
+        assertTrue(withSequence.indexOf("## 图型模板")
+                        > withSequence.indexOf("## 契约"),
+                "图型段必须在契约段之后，否则稳定前缀被切碎");
+        assertTrue(withSequence.startsWith("# System Prompt"),
+                "内核仍必须是块的开头");
+    }
+
+    @Test
+    @DisplayName("内核 + 最大图型模板仍受控：不超过 12000 字节")
+    void systemBlockWithDiagramTemplateBudget() throws IOException {
+        int base = promptService.buildSystemBlock()
+                .getBytes(StandardCharsets.UTF_8).length;
+        DiagramPromptRegistry registry = new DiagramPromptRegistry();
+        int extra = 0;
+        for (String type : registry.types()) {
+            DiagramTemplate template = registry.template(type);
+            if (template != null) {
+                extra = Math.max(extra, registry.render(template)
+                        .getBytes(StandardCharsets.UTF_8).length);
+            }
+        }
+        int worst = base + extra + 2;
+        assertTrue(worst < 12000,
+                "内核(" + base + ") + 最大图型模板(" + extra + ") = " + worst
+                        + " 字节，超过 12000 上限；"
+                        + "内核闸门见 singleBlockBudget，图型模板请自己瘦身");
     }
 
     @Test
