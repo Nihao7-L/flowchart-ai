@@ -97,4 +97,16 @@ public interface SessionStore {
     void releaseBindings(
             String sessionId,
             List<Map<String, Object>> freeArrows);
+
+    /**
+     * 逐出超过 TTL 仍未被访问的过期会话
+     *
+     * 内存实现里会话没有 TTL/淘汰/删除方法时**永不释放**
+     * （report 1.5 #7）：每次"重画/生成"都新开会话 id，
+     * 旧模型一直躺着吃内存。本方法让实现按最近访问时间
+     * 回收长期不活跃的会话。
+     *
+     * @return 本次实际逐出的会话数
+     */
+    int purgeExpired();
 }

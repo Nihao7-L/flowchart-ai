@@ -9,6 +9,12 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
 class InMemoryMemoryStoreTest {
 
     private static ValidationIssue issue(String field, String reason) {
@@ -85,5 +91,44 @@ class InMemoryMemoryStoreTest {
 
         assertTrue(store.recent("s1", 0).isEmpty());
         assertEquals(1, store.recent("s2", 0).size());
+    }
+
+    @Test
+    @DisplayName("并发写/读同一会话不再抛 ConcurrentModificationException（report 1.5 #1 回归）")
+    void concurrentWriteReadDoesNotThrow()
+            throws Exception {
+        InMemoryMemoryStore store = new InMemoryMemoryStore();
+        int writers = 8;
+        ExecutorService pool =
+                Executors.newFixedThreadPool(writers);
+        try {
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<?>> tasks = new java.util.ArrayList<>();
+            for (int w = 0; w < writers; w++) {
+                final int who = w;
+                tasks.add(pool.submit(() -> {
+                    start.await();
+                    for (int i = 0; i < 300; i++) {
+                        store.recordIssues("s1", List.of(
+                                issue("f" + who, "问题 " + i)));
+                        // 读方与写方并发：old 实现在这里可能抛
+                        // ConcurrentModificationException
+                        store.recent("s1", 8);
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> f : tasks) {
+                f.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        // 队列必须仍有界
+        List<MemoryStore.IssueEntry> all = store.recent("s1", 0);
+        assertTrue(all.size() <= 50, "并发写后队列仍须有界: "
+                + all.size());
+        assertTrue(all.size() > 0, "并发写后不应为空");
     }
 }

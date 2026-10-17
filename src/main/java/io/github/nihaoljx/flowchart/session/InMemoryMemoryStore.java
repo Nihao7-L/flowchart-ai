@@ -53,13 +53,20 @@ public class InMemoryMemoryStore implements MemoryStore {
                 }
                 deque = new ArrayDeque<>();
             }
-            for (ValidationIssue issue : issues) {
-                deque.addLast(new MemoryStore.IssueEntry(
-                        issue.field(), issue.reason(),
-                        issue.hint(), now));
-            }
-            while (deque.size() > MAX_ENTRIES_PER_SESSION) {
-                deque.pollFirst();
+            // 竞态修复（report 1.5 #1）：compute 只持 ConcurrentHashMap
+            // 的 bin 锁，而 recent() 用 synchronized(deque) 迭代 —— 两个
+            // 不同监视器，并发写/读会抛 ConcurrentModificationException
+            // 或读到撕裂状态。这里对齐成同一把 deque 监视器：写与读互斥。
+            // 锁序（bin → deque）单向，recent 只取 deque 不再取 bin，无死锁。
+            synchronized (deque) {
+                for (ValidationIssue issue : issues) {
+                    deque.addLast(new MemoryStore.IssueEntry(
+                            issue.field(), issue.reason(),
+                            issue.hint(), now));
+                }
+                while (deque.size() > MAX_ENTRIES_PER_SESSION) {
+                    deque.pollFirst();
+                }
             }
             return deque;
         });

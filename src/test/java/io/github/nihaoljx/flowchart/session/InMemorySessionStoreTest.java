@@ -213,6 +213,115 @@ class InMemorySessionStoreTest {
         assertEquals(2, elements.size());
     }
 
+    /**
+     * 竞态回归（report 1.5 #2）：并发删除同一会话的多个不同元素，
+     * 最终必须一个不剩——老实现在 models.get 的结果上裸做读→重建→put，
+     * 无锁；并发时两个 removeElements 会各拿一份旧列表，最后一个 put
+     * 回写覆盖另一份，被删元素"复活"，总删除数小于请求数。换成
+     * compute 原子临界区后不存在丢更新。
+     */
+    @Test
+    void concurrentRemoveElementsLosesNone()
+            throws Exception {
+        Map<String, Object> model = new HashMap<>();
+        java.util.ArrayList<Map<String, Object>> elems =
+                new java.util.ArrayList<>();
+        int total = 64;
+        for (int i = 0; i < total; i++) {
+            Map<String, Object> e = new HashMap<>();
+            e.put("id", "n" + i);
+            elems.add(e);
+        }
+        model.put("elements", elems);
+        store.setCurrentModel("s1", model);
+
+        int threads = 8;
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors
+                        .newFixedThreadPool(threads);
+        try {
+            java.util.concurrent.CountDownLatch start =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.List<java.util.concurrent.Future<?>> tasks =
+                    new java.util.ArrayList<>();
+            for (int i = 0; i < total; i++) {
+                final String id = "n" + i;
+                tasks.add(pool.submit(() -> {
+                    try {
+                        start.await();
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread()
+                                .interrupt();
+                        throw new RuntimeException(ie);
+                    }
+                    store.removeElements("s1",
+                            java.util.List.of(id));
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (java.util.concurrent.Future<?> f : tasks) {
+                f.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        @SuppressWarnings("unchecked")
+        java.util.List<Map<String, Object>> remaining =
+                (java.util.List<Map<String, Object>>)
+                        store.getCurrentModel("s1")
+                                .get("elements");
+        assertTrue(remaining.isEmpty(),
+                "并发删除 64 个元素后不应有残留，实际剩 "
+                        + remaining.size());
+    }
+
+    /**
+     * TTL 逐出（report 1.5 #7）：会话超过 TTL 未被访问就被
+     * purgeExpired 回收，读不到旧模型。
+     */
+    @Test
+    void expiredSessionIsPurgedAndReadableAgain() {
+        store = new InMemorySessionStore(
+                java.time.Duration.ofMillis(50));
+
+        Map<String, Object> model = new HashMap<>();
+        model.put("elements", "[]");
+        store.setCurrentModel("s-ttl", model);
+        assertEquals(model,
+                store.getCurrentModel("s-ttl"));
+
+        // 等等让会话过期（50ms TTL）
+        try {
+            Thread.sleep(80);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(ie);
+        }
+
+        assertTrue(store.purgeExpired() >= 1,
+                "过期会话应被逐出");
+        assertNull(store.getCurrentModel("s-ttl"),
+                "逐出后旧模型不可再读");
+    }
+
+    /** TTL 未到时 active 会话不被误逐出 */
+    @Test
+    void freshSessionSurvivesPurge() {
+        store = new InMemorySessionStore(
+                java.time.Duration.ofHours(1));
+
+        Map<String, Object> model = new HashMap<>();
+        model.put("elements", "[]");
+        store.setCurrentModel("s-fresh", model);
+
+        assertEquals(0, store.purgeExpired(),
+                "未过期活跃会话不应被逐出");
+        assertNotNull(
+                store.getCurrentModel("s-fresh"));
+    }
+
     /** 两个节点的会话模型：删除 / 旁路用例的公共底座 */
     private void seed() {
         Map<String, Object> n1 = new HashMap<>();
