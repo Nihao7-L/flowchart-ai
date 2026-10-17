@@ -16,7 +16,6 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -460,16 +459,7 @@ public class PromptService {
      * `type` 的 enum），其余分支用自己 `type` 的 const。
      */
     private static String branchNames(JsonNode def) {
-        JsonNode typeNode = def.get("properties").get("type");
-        JsonNode enumNode = typeNode.get("enum");
-        if (enumNode != null) {
-            List<String> names = new ArrayList<>();
-            for (JsonNode value : enumNode) {
-                names.add(value.asText());
-            }
-            return String.join(" / ", names);
-        }
-        return typeNode.get("const").asText();
+        return SchemaContractRenderer.branchNames(def);
     }
 
     /**
@@ -482,15 +472,7 @@ public class PromptService {
      * 真值是 schema 的 required，就照抄，别再自作聪明。
      */
     private static String requiredSuffix(JsonNode def) {
-        JsonNode required = def.get("required");
-        if (required == null || required.isEmpty()) {
-            return "";
-        }
-        List<String> keys = new ArrayList<>();
-        for (JsonNode key : required) {
-            keys.add(key.asText());
-        }
-        return "〔必填：" + String.join(",", keys) + "〕";
+        return SchemaContractRenderer.requiredSuffix(def);
     }
 
     /**
@@ -500,65 +482,13 @@ public class PromptService {
      * 提示词拼装失败等于整条生成链路跪掉，这里必须稳。
      */
     private static String renderProp(String name, JsonNode node, JsonNode definitions) {
-        String base = renderPropBase(name, node, definitions);
-        String hint = FIELD_HINTS.get(name);
-        return hint == null ? base : base + "(" + hint + ")";
+        return SchemaContractRenderer.renderProp(
+                name, node, definitions, FIELD_HINTS);
     }
 
     private static String renderPropBase(String name, JsonNode node, JsonNode definitions) {
-        JsonNode ref = node.get("$ref");
-        String refName = ref == null ? "" : ref.asText().substring(ref.asText().lastIndexOf('/') + 1);
-        if (!refName.isEmpty()) {
-            switch (refName) {
-                case "label":
-                    return name + "{\"text\"}";
-                case "binding":
-                    return name + "{\"id\"}";
-                case "point":
-                    // 与 arrayShape() 的 points 形态保持一致：首点必须写出来，
-                    // 见那边的注释（模型会把绝对坐标写进 points 导致落点翻倍）。
-                    // 目前 schema 里 point 只以 items.$ref 的形式出现、走不到这里，
-                    // 但留着一条不一致的写法迟早会咬人。
-                    return name + "[[0,0],[dx,dy]...]";
-                default:
-                    return renderProp(name, definitions.get(refName), definitions);
-            }
-        }
-        if (node.get("enum") != null) {
-            List<String> values = new ArrayList<>();
-            boolean numeric = true;
-            for (JsonNode value : node.get("enum")) {
-                values.add(value.asText());
-                numeric = numeric && value.isNumber();
-            }
-            String joined = String.join("|", values);
-            // ⚠️ 数字枚举不能与字符串枚举共用 [] 写法：textAlign[left|center|right]
-            // 和 fontFamily[1|2|3] 长得一模一样，模型照抄就写成 "1"（字符串），
-            // 而校验器要求 val.isInt() → 实测"写"类场景（写诗 / 算术 / emoji /
-            // 纯符号）首轮 4/4 全挂在 fontFamily 上。标成"数字"让形态自解释。
-            return numeric
-                    ? name + " " + joined + "(数字)"
-                    : name + "[" + joined + "]";
-        }
-        if (node.get("const") != null) {
-            return name;
-        }
-        String type = node.path("type").asText("");
-        switch (type) {
-            case "number":
-                return isExclusivePositive(node) ? name + "(>0)" : name;
-            case "integer":
-                return node.get("maximum") != null
-                        ? name + " 0-" + node.get("maximum").asInt()
-                        : name;
-            case "array":
-                return name + arrayShape(node);
-            case "string":
-                return name;
-            default:
-                // 没有 type 的（如 group 的 oneOf）就只报名字，别报成对象
-                return name;
-        }
+        return SchemaContractRenderer.renderPropBase(
+                name, node, definitions, FIELD_HINTS);
     }
 
     /**
@@ -573,18 +503,12 @@ public class PromptService {
      * 渲染成 `[[0,0],[dx,dy]...]` 让这个约定自解释。
      */
     private static String arrayShape(JsonNode node) {
-        JsonNode items = node.get("items");
-        if (items != null && items.get("$ref") != null
-                && items.get("$ref").asText().endsWith("/point")) {
-            return "[[0,0],[dx,dy]...]";
-        }
-        return "[...]";
+        return SchemaContractRenderer.arrayShape(node);
     }
 
     /** {code exclusiveMinimum:0} 表示「必须大于 0」，提示词里写成 `(>0)`。 */
     private static boolean isExclusivePositive(JsonNode node) {
-        JsonNode min = node.get("exclusiveMinimum");
-        return min != null && min.asInt() == 0;
+        return SchemaContractRenderer.isExclusivePositive(node);
     }
 
 
