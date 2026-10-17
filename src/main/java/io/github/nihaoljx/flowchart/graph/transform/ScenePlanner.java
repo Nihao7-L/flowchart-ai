@@ -518,10 +518,7 @@ public class ScenePlanner {
      * （竖堆 / 横堆）之间选哪个。
      */
     private static double viewportPenalty(double width, double height) {
-        if (width <= 0 || height <= 0) {
-            return Double.MAX_VALUE;
-        }
-        return Math.abs(Math.log((width / height) / VIEWPORT_ASPECT));
+        return SceneGeometryKit.viewportPenalty(width, height);
     }
 
     /**
@@ -956,12 +953,7 @@ public class ScenePlanner {
      * 沿边居中对称铺开，间距封顶 16px、且必须留在边内。
      */
     private static double fanSlide(int idx, int cnt, double span) {
-        if (cnt <= 1) {
-            return 0;
-        }
-        double step = Math.min(16, (span - 20) / (cnt + 1));
-        step = Math.max(step, 4);
-        return (idx - (cnt - 1) / 2.0) * step;
+        return SceneGeometryKit.fanSlide(idx, cnt, span);
     }
 
     /**
@@ -970,120 +962,30 @@ public class ScenePlanner {
      */
     private static double[] sideAnchor(
             Node n, double coordinate, boolean alongX, double slide) {
-        if (alongX) {
-            double x = coordinate >= n.x + n.w / 2
-                    ? n.x + n.w : n.x;
-            double y = Math.max(n.y + 8, Math.min(n.y + n.h - 8,
-                    n.y + n.h / 2 + slide));
-            return new double[] {x, y};
-        }
-        double y = coordinate >= n.y + n.h / 2
-                ? n.y + n.h : n.y;
-        double x = Math.max(n.x + 8, Math.min(n.x + n.w - 8,
-                n.x + n.w / 2 + slide));
-        return new double[] {x, y};
+        return SceneGeometryKit.sideAnchor(
+                new double[] {n.x, n.y, n.w, n.h}, coordinate, alongX, slide);
     }
 
     /** 候选折线与全部已路由折线的交叉 + 共线重叠总数（端点豁免） */
     private static int countCrossings(
             double[][] route, List<double[][]> routed) {
-        if (routed.isEmpty()) {
-            return 0;
-        }
-        int total = 0;
-        for (double[][] other : routed) {
-            for (int i = 0; i + 1 < route.length; i++) {
-                for (int j = 0; j + 1 < other.length; j++) {
-                    if (segCross(route[i], route[i + 1],
-                            other[j], other[j + 1])) {
-                        total++;
-                    }
-                }
-            }
-        }
-        return total;
+        return SceneGeometryKit.countCrossings(route, routed);
     }
 
     /** 轴对齐线段相交（共线重叠也算）；交点贴任一端点 10px 内豁免 */
     private static boolean segCross(
             double[] p1, double[] p2, double[] p3, double[] p4) {
-        boolean v1 = Math.abs(p1[0] - p2[0]) < 0.5;
-        boolean v2 = Math.abs(p3[0] - p4[0]) < 0.5;
-        if (v1 && v2) {
-            return Math.abs(p1[0] - p3[0]) < 3
-                    && Math.max(Math.min(p1[1], p2[1]),
-                            Math.min(p3[1], p4[1]))
-                    <= Math.min(Math.max(p1[1], p2[1]),
-                            Math.max(p3[1], p4[1])) - 4;
-        }
-        if (!v1 && !v2) {
-            return Math.abs(p1[1] - p3[1]) < 3
-                    && Math.max(Math.min(p1[0], p2[0]),
-                            Math.min(p3[0], p4[0]))
-                    <= Math.min(Math.max(p1[0], p2[0]),
-                            Math.max(p3[0], p4[0])) - 4;
-        }
-        double ix;
-        double iy;
-        if (v1) {
-            ix = p1[0];
-            iy = p3[1];
-        } else {
-            ix = p3[0];
-            iy = p1[1];
-        }
-        boolean on1 = ix >= Math.min(p1[0], p2[0])
-                && ix <= Math.max(p1[0], p2[0])
-                && iy >= Math.min(p1[1], p2[1])
-                && iy <= Math.max(p1[1], p2[1]);
-        boolean on2 = ix >= Math.min(p3[0], p4[0])
-                && ix <= Math.max(p3[0], p4[0])
-                && iy >= Math.min(p3[1], p4[1])
-                && iy <= Math.max(p3[1], p4[1]);
-        if (!on1 || !on2) {
-            return false;
-        }
-        // 端点 10px 内的接触不算交叉（同框出线/入线的必然汇聚）
-        double[][] segs = {p1, p2, p3, p4};
-        for (int i = 0; i < 4; i += 2) {
-            double dx = Math.abs(segs[i][0] - segs[i + 1][0]);
-            double dy = Math.abs(segs[i][1] - segs[i + 1][1]);
-            double longSide = Math.max(dx, dy);
-            if (longSide < 24) {
-                continue; // 极短段不参与豁免判定
-            }
-            // 端点距交点：取线段两端中较近者
-            double d = Math.min(
-                    Math.hypot(ix - segs[i][0], iy - segs[i][1]),
-                    Math.hypot(ix - segs[i + 1][0],
-                            iy - segs[i + 1][1]));
-            // 豁免仅对"交点位于段端部"成立：投影在端头 10px 内
-            double proj = dx > dy ? ix : iy;
-            double lo = dx > dy
-                    ? Math.min(segs[i][0], segs[i + 1][0])
-                    : Math.min(segs[i][1], segs[i + 1][1]);
-            double hi = dx > dy
-                    ? Math.max(segs[i][0], segs[i + 1][0])
-                    : Math.max(segs[i][1], segs[i + 1][1]);
-            boolean nearEnd = proj - lo < 10 || hi - proj < 10;
-            if (nearEnd && d < 24) {
-                return false;
-            }
-        }
-        return true;
+        return SceneGeometryKit.segCross(p1, p2, p3, p4);
     }
 
     /** 框的边缘锚点：alongX=true 取朝 coordinate 方向的左/右边中点 x，否则取上/下边中点 y */
     private static double side(Node n, double coordinate, boolean alongX) {
-        if (alongX) {
-            return coordinate >= n.x + n.w / 2 ? n.x + n.w : n.x;
-        }
-        return coordinate >= n.y + n.h / 2 ? n.y + n.h : n.y;
+        return SceneGeometryKit.side(
+                new double[] {n.x, n.y, n.w, n.h}, coordinate, alongX);
     }
 
     private static double clamp(double v, double[] interval) {
-        return Math.max(interval[0],
-                Math.min(interval[1], v));
+        return SceneGeometryKit.clamp(v, interval);
     }
 
     /**
@@ -1093,60 +995,19 @@ public class ScenePlanner {
      */
     private static List<double[]> freeIntervals(
             List<Node> nodes, boolean alongX) {
-        final double margin = 4;
-        final double pad = 60;
-        List<double[]> occupied = new ArrayList<>();
-        double lo = Double.MAX_VALUE;
-        double hi = -Double.MAX_VALUE;
+        List<double[]> spans = new ArrayList<>(nodes.size());
         for (Node n : nodes) {
-            double s = alongX ? n.x : n.y;
-            double e = alongX ? n.x + n.w : n.y + n.h;
-            occupied.add(new double[] {s - margin, e + margin});
-            lo = Math.min(lo, s);
-            hi = Math.max(hi, e);
+            spans.add(alongX
+                    ? new double[] {n.x, n.x + n.w}
+                    : new double[] {n.y, n.y + n.h});
         }
-        occupied.sort((a, b) -> Double.compare(a[0], b[0]));
-        List<double[]> free = new ArrayList<>();
-        double cursor = lo - pad;
-        for (double[] o : occupied) {
-            if (o[0] > cursor) {
-                free.add(new double[] {cursor, o[0]});
-            }
-            cursor = Math.max(cursor, o[1]);
-        }
-        if (hi + pad > cursor) {
-            free.add(new double[] {cursor, hi + pad});
-        }
-        return free;
+        return SceneGeometryKit.freeIntervals(spans, 4, 60);
     }
 
     /** 走廊候选排序：与 [lo,hi] 重叠宽者优先，同宽取离区间中心近者 */
     private static List<Integer> rankCorridors(
             List<double[]> corridors, double lo, double hi) {
-        List<Integer> order = new ArrayList<>();
-        for (int i = 0; i < corridors.size(); i++) {
-            order.add(i);
-        }
-        double mid = (lo + hi) / 2;
-        order.sort((a, b) -> {
-            double oa = overlap(corridors.get(a), lo, hi);
-            double ob = overlap(corridors.get(b), lo, hi);
-            if (Math.abs(ob - oa) > 1e-9) {
-                return Double.compare(ob, oa);
-            }
-            double ca = (corridors.get(a)[0] + corridors.get(a)[1]) / 2;
-            double cb = (corridors.get(b)[0] + corridors.get(b)[1]) / 2;
-            return Double.compare(Math.abs(ca - mid),
-                    Math.abs(cb - mid));
-        });
-        return order;
-    }
-
-    private static double overlap(
-            double[] interval, double lo, double hi) {
-        return Math.max(0,
-                Math.min(interval[1], hi)
-                        - Math.max(interval[0], lo));
+        return SceneGeometryKit.rankCorridors(corridors, lo, hi);
     }
 
     /**
@@ -1155,27 +1016,7 @@ public class ScenePlanner {
      */
     private static double[] nextChannel(
             double[] interval, List<Double> used, double ideal) {
-        double base = clamp(ideal, interval);
-        double[] offsets = {0, CHANNEL_GAP, -CHANNEL_GAP,
-            2 * CHANNEL_GAP, -2 * CHANNEL_GAP, 3 * CHANNEL_GAP,
-            -3 * CHANNEL_GAP, 4 * CHANNEL_GAP, -4 * CHANNEL_GAP};
-        for (int slot = 0; slot < offsets.length; slot++) {
-            double cand = base + offsets[slot];
-            if (cand < interval[0] || cand > interval[1]) {
-                continue;
-            }
-            boolean clash = false;
-            for (double u : used) {
-                if (Math.abs(u - cand) < CHANNEL_GAP - 1) {
-                    clash = true;
-                    break;
-                }
-            }
-            if (!clash) {
-                return new double[] {cand, slot};
-            }
-        }
-        return new double[] {base, offsets.length};
+        return SceneGeometryKit.nextChannel(interval, used, ideal);
     }
 
     /**
@@ -1191,48 +1032,25 @@ public class ScenePlanner {
         if (nodes == null) {
             return 0;
         }
-        final double clear = 5;
-        int hits = 0;
-        for (Node n : nodes) {
-            if (n == from || n == to) {
-                continue;
+        List<double[]> boxes = new ArrayList<>(nodes.size());
+        int skipA = -1;
+        int skipB = -1;
+        for (int i = 0; i < nodes.size(); i++) {
+            Node n = nodes.get(i);
+            if (n == from) {
+                skipA = i;
             }
-            double x1 = n.x - clear;
-            double y1 = n.y - clear;
-            double x2 = n.x + n.w + clear;
-            double y2 = n.y + n.h + clear;
-            for (int i = 0; i + 1 < route.length; i++) {
-                double sx = Math.min(route[i][0], route[i + 1][0]);
-                double ex = Math.max(route[i][0], route[i + 1][0]);
-                double sy = Math.min(route[i][1], route[i + 1][1]);
-                double ey = Math.max(route[i][1], route[i + 1][1]);
-                if (ex >= x1 && sx <= x2 && ey >= y1 && sy <= y2) {
-                    hits++;
-                    break;
-                }
+            if (n == to) {
+                skipB = i;
             }
+            boxes.add(new double[] {n.x, n.y, n.w, n.h});
         }
-        return hits;
+        return SceneGeometryKit.countHits(route, boxes, skipA, skipB, 5);
     }
 
     /** 去重零长段；两点直线补中点成三点（存活 SceneSanitizer 的 ≥3 点口径） */
     private static double[][] dedupe(double[][] route) {
-        List<double[]> pts = new ArrayList<>();
-        for (double[] p : route) {
-            if (!pts.isEmpty()
-                    && Math.abs(pts.get(pts.size() - 1)[0] - p[0]) < 0.5
-                    && Math.abs(pts.get(pts.size() - 1)[1] - p[1]) < 0.5) {
-                continue;
-            }
-            pts.add(p);
-        }
-        if (pts.size() == 2) {
-            double[] a = pts.get(0);
-            double[] b = pts.get(1);
-            pts.add(1, new double[] {(a[0] + b[0]) / 2,
-                (a[1] + b[1]) / 2});
-        }
-        return pts.toArray(new double[0][]);
+        return SceneGeometryKit.dedupe(route);
     }
 
     /** 绝对坐标折线写回箭头（x/y = 首点，points = 相对偏移） */
@@ -1251,7 +1069,7 @@ public class ScenePlanner {
 
     /** 一位小数：与 ElkLayoutEngine.round1 同口径，防浮点尾巴进契约 */
     private static double round1(double value) {
-        return Math.round(value * 10) / 10.0;
+        return SceneGeometryKit.round1(value);
     }
 
     /** 边标签字号（比节点文字小一档，mermaid 的视觉层级口径） */
@@ -1342,13 +1160,7 @@ public class ScenePlanner {
      * 行高 1.25×fontSize（与 sceneAdapter 的宽度真值同源）。
      */
     private static double[] labelSize(String content) {
-        double w = 0;
-        for (int i = 0; i < content.length(); i++) {
-            char c = content.charAt(i);
-            w += (c >= 0x2E80) ? 0.9 : 0.45;
-        }
-        double width = Math.max(w * LABEL_FONT, 24);
-        return new double[] {width, LABEL_FONT * 1.25};
+        return SceneGeometryKit.labelSize(content, LABEL_FONT);
     }
 
     /**
