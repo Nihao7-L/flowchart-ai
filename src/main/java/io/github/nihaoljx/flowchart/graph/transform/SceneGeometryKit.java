@@ -17,8 +17,12 @@ import java.util.List;
  *
  * <p>纪律：本类必须保持无状态、全静态。一旦有人往这里塞实例字段或
  * 场景依赖，就等于把巨型类又长了回来。
+ *
+ * <p>可见性：包私有 —— layout 包的 ElkLayoutEngine 复用端点吸附做不到
+ * （Java 没有「同模块内跨包可见」），所以这里必须 public。纪律不变：
+ * 无状态、全静态，谁往里塞实例字段谁把巨型类又长回来。
  */
-final class SceneGeometryKit {
+public final class SceneGeometryKit {
 
     /** 理想视口宽高比（16:9） */
     private static final double VIEWPORT_ASPECT = 16.0 / 9.0;
@@ -507,5 +511,247 @@ final class SceneGeometryKit {
         }
         double width = Math.max(w * font, 24);
         return new double[] {width, font * 1.25};
+    }
+
+    // ==================== 形状感知的端点吸附 ====================
+    //
+    // 背景（2026-10-18 用户 m06890 截图 + 探针实测）：菱形 / 椭圆的节点，
+    // 端点是按**外接矩形**算的 —— ELK 的 section start/end 落在外接矩形
+    // 边上（它看不到菱形斜边），前端 snapArrowEndsToAnchors 也只把端点
+    // 沿当前方向推到 bbox 边。于是"库存是否充足"菱形右下出边与菱形真实
+    // 斜边之间留 10~11px 空隙（探针 ek0 实测 10.0、ek1 11.5），视觉上
+    // 就是「箭头起点悬空」。
+    //
+    // 修法：出/入端锚点先按形状收进真实边界 —— 菱形/椭圆取射线与斜边的
+    // 交点，矩形保持原值。ELK 路由与 A* 路由两条回写路径都调它，端点
+    // 才真的贴着图形。
+    //
+    // 只做「收进边界」这一件事：不改方向、不延长线段。若端点在形状内部
+    // （不应发生，但防御性处理），保持原坐标不动。
+
+    /**
+     * 射线 {@code from → to} 与**矩形**边界的交点。
+     *
+     * <p>用途：ELK 的 section start/end 与箭头 from/to 无关（实测过
+     * start 落在目标中心），必须把端点按图形重新贴一次。矩形形状的
+     * 端点此前没人管，同样会浮空或长在图形里。
+     *
+     * <p>退化时返回 {@code from} 原值（无正交点/射线退化）。
+     *
+     * @param from 射线起点（通常是当前锚点）
+     * @param to   射线指向（另一个图形的中心）
+     * @param box  矩形 {@code {x, y, w, h}}
+     * @return 矩形边上的点 {@code {x, y}}
+     */
+    public static double[] edgePointOnBox(
+            double[] from, double[] to, double[] box) {
+        if (from == null || to == null || box == null) {
+            return from;
+        }
+        double w = box[2];
+        double h = box[3];
+        if (!(w > 0) || !(h > 0)) {
+            return from;
+        }
+        double dx = to[0] - from[0];
+        double dy = to[1] - from[1];
+        if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) {
+            return from;
+        }
+        double x0 = box[0];
+        double y0 = box[1];
+        double x1 = box[0] + w;
+        double y1 = box[1] + h;
+        // slab 法：射线与矩形四条边求交，取 t ∈ (0,1] 的最小正 t
+        // —— from 一般在矩形外，最小正 t 就是「从哪一侧进入矩形」
+        double best = -1;
+        double t;
+        t = slab(dx, dy, from, x0, y0, x1, y0);
+        if (t > 0 && (best < 0 || t < best)) {
+            best = t;
+        }
+        t = slab(dx, dy, from, x1, y0, x1, y1);
+        if (t > 0 && (best < 0 || t < best)) {
+            best = t;
+        }
+        t = slab(dx, dy, from, x1, y1, x0, y1);
+        if (t > 0 && (best < 0 || t < best)) {
+            best = t;
+        }
+        t = slab(dx, dy, from, x0, y1, x0, y0);
+        if (t > 0 && (best < 0 || t < best)) {
+            best = t;
+        }
+        if (best < 0) {
+            return from;
+        }
+        return new double[] {from[0] + dx * best, from[1] + dy * best};
+    }
+
+    /** 射线与线段所在直线的参数 t（不在线段范围内返 -1） */
+    private static double slab(double dx, double dy, double[] from,
+            double ax, double ay, double bx, double by) {
+        double ex = bx - ax;
+        double ey = by - ay;
+        double rx = ax - from[0];
+        double ry = ay - from[1];
+        double negEx = -ex;
+        double negEy = -ey;
+        double det = dx * negEy - dy * negEx;
+        if (Math.abs(det) < 1e-12) {
+            return -1;
+        }
+        double t = (rx * negEy - ry * negEx) / det;
+        double u = (dx * ry - dy * rx) / det;
+        if (t > 1e-9 && u >= -1e-9 && u <= 1 + 1e-9) {
+            return t;
+        }
+        return -1;
+    }
+
+    /**
+     * 图形类型是否使用非矩形边界（端点需按真实轮廓收）。
+     *
+     * @param type 契约里的 type 字段
+     * @return 菱形 / 椭圆返回 true
+     */
+    public static boolean hasSlopedBoundary(String type) {
+        return "diamond".equals(type) || "ellipse".equals(type);
+    }
+
+    /**
+     * 射线 {@code from → to} 与形状边界的交点，按形状真实轮廓算。
+     *
+     * <p>矩形退回外接矩形口径（与既有行为逐位一致，观感回归零风险）；
+     * 椭圆解二次方程；菱形按**四条边的线段求交**。
+     *
+     * <p>菱形取哪个交点是有讲究的：射线与凸四边形最多两个交点，而
+     * 调用方给的射线方向是「端点 → 另一个图形中心」，通常**从形状外面
+     * 指向里面**。这时想要的交点是**离 `from` 最远、但仍在该线段内
+     * （t &lt; 1）**的那个 —— 也就是「从哪一侧进入形状」，不是离 `from`
+     * 最近的「对侧出口」。
+     *
+     * <p>曾按直觉取「最小正 t」，结果是岔路：起点 (440,340) 正好是菱形
+     * 上顶点，四条边里只有 t=1 的下顶点命中，于是端点被推到对面顶点
+     * (440,460) —— 形态没变难看，但 10px 空隙仍在。改成「t ∈ (0,1) 取
+     * 最大」后，射线从外接矩形上边 (440,340) 指向下方目标中心时，正确
+     * 落在上斜边 (440,343.33)，空隙归零（python 复算验证）。
+     *
+     * <p>退化保护：形状尺寸非正、射线退化为点、无正交点时一律返回
+     * {@code to} 原值 —— 宁可留旧几何也不造 NaN。端点在 t≥1 之外
+     * （锚点已越过对侧）也返回原值。
+     *
+     * @param from 射线起点（形状外侧的点，通常就是当前锚点）
+     * @param to   射线指向（另一个端点/图形中心）
+     * @param box  形状外接矩形 {@code {x, y, w, h}}
+     * @param type 形状类型
+     * @return 边界上的点 {@code {x, y}}
+     */
+    public static double[] edgePointOnShape(
+            double[] from, double[] to, double[] box, String type) {
+        if (from == null || to == null || box == null) {
+            return to;
+        }
+        double w = box[2];
+        double h = box[3];
+        if (!(w > 0) || !(h > 0)) {
+            return to;
+        }
+        if (!hasSlopedBoundary(type)) {
+            return to;
+        }
+        double cx = box[0] + w / 2;
+        double cy = box[1] + h / 2;
+        double dx = to[0] - from[0];
+        double dy = to[1] - from[1];
+        if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) {
+            return to;
+        }
+        if ("ellipse".equals(type)) {
+            double a = w / 2;
+            double b = h / 2;
+            double fx = from[0] - cx;
+            double fy = from[1] - cy;
+            // (fx+t·dx)²/(w/2)² + (fy+t·dy)²/(h/2)² = 1
+            double qa = (dx * dx) / (a * a) + (dy * dy) / (b * b);
+            double qb = 2 * (fx * dx / (a * a) + fy * dy / (b * b));
+            double qc = (fx * fx) / (a * a) + (fy * fy) / (b * b) - 1;
+            double t = smallestPositiveRoot(qa, qb, qc);
+            if (t < 0) {
+                return to;
+            }
+            return new double[] {from[0] + dx * t, from[1] + dy * t};
+        }
+        // diamond：四个顶点 (cx, cy±hh)、(cx±hw, cy) 围成的凸四边形
+        // 的四条边，逐条求射线 from + t·(dx,dy) 与线段 a→b 的交点。
+        //
+        // 联立：
+        //   from + t·d = a + u·e   （d = 射线方向，e = 边方向）
+        //   ⇒ t·d - u·e = a - from =: r
+        // 2x2 方程组，det = d.x·(-e.y) - d.y·(-e.x) = -(d.x·e.y - d.y·e.x)
+        // 由克莱姆法则：
+        //   t = (r.x·(-e.y) - r.y·(-e.x)) / det
+        //   u = (d.x·r.y - d.y·r.x) / det
+        // 注意 ray 方向d 与边方向 e 平叉积为 0 时 det=0（平行/共线），跳过。
+        double hw = w / 2;
+        double hh = h / 2;
+        double[][] vertices = {
+                {cx, cy - hh}, {cx + hw, cy}, {cx, cy + hh}, {cx - hw, cy},
+        };
+        double best = -1;
+        for (int i = 0; i < 4; i++) {
+            double[] a = vertices[i];
+            double[] b = vertices[(i + 1) % 4];
+            double ex = b[0] - a[0];
+            double ey = b[1] - a[1];
+            double rx = a[0] - from[0];
+            double ry = a[1] - from[1];
+            double negEx = -ex;
+            double negEy = -ey;
+            double det = dx * negEy - dy * negEx;
+            if (Math.abs(det) < 1e-12) {
+                continue; // 平行或共线
+            }
+            double t = (rx * negEy - ry * negEx) / det;
+            double u = (dx * ry - dy * rx) / det;
+            // 只在 (0,1) 内的交点里取**最大**的 t：端点在外、射线指向
+            // 另一个图形中心时，「从哪侧进入形状」= 距离 from 最远、且仍
+            // 在本线段内的那个交点。取最小正 t 会命中对侧出口（实例见
+            // 方法 javadoc 的 (440,340)→(440,460) 退化）。
+            if (t > 1e-9 && t < 1 - 1e-9
+                    && u >= -1e-9 && u <= 1 + 1e-9
+                    && (best < 0 || t > best)) {
+                best = t;
+            }
+        }
+        if (best < 0) {
+            return to;
+        }
+        return new double[] {from[0] + dx * best, from[1] + dy * best};
+    }
+
+    /** 二次方程最小正根；无正根返回 -1 */
+    private static double smallestPositiveRoot(
+            double a, double b, double c) {
+        if (Math.abs(a) < 1e-12) {
+            if (Math.abs(b) < 1e-12) {
+                return -1;
+            }
+            double t = -c / b;
+            return t > 1e-9 ? t : -1;
+        }
+        double disc = b * b - 4 * a * c;
+        if (disc < 0) {
+            return -1;
+        }
+        double sq = Math.sqrt(disc);
+        double t1 = (-b - sq) / (2 * a);
+        double t2 = (-b + sq) / (2 * a);
+        double lo = Math.min(t1, t2);
+        double hi = Math.max(t1, t2);
+        if (lo > 1e-9) {
+            return lo;
+        }
+        return hi > 1e-9 ? hi : -1;
     }
 }

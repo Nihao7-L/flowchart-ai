@@ -148,6 +148,39 @@ class EdgeLabelPlacementTest {
             center[0] + size[0] / 2, center[1] + size[1] / 2};
     }
 
+    @Test
+    @DisplayName("短标签绑回箭头（带 containerId），长标签落为独立文字")
+    void shortLabelsBindToArrowLongLabelsStayLoose() throws Exception {
+        String laid = new ScenePlanner().arrange(
+                mixedLabelScene(), new ElkLayoutEngine(), Set.of());
+        JsonNode elements = MAPPER.readTree(laid).get("elements");
+
+        JsonNode boundLabel = null;
+        JsonNode looseLabel = null;
+        for (JsonNode el : elements) {
+            if (!"text".equals(el.path("type").asText())
+                    || !el.path("id").asText().endsWith("_lbl")) {
+                continue;
+            }
+            if ("短标签".equals(el.path("text").asText())) {
+                boundLabel = el;
+            } else if ("这是一个很长的标签需要落位成独立文字".equals(
+                    el.path("text").asText())) {
+                looseLabel = el;
+            }
+        }
+        // 短标签：绑回箭头，前端按折线中点定位
+        assertThat(boundLabel)
+                .as("短标签应编译成带 containerId 的文字").isNotNull();
+        assertThat(boundLabel.path("containerId").asText()).isNotEmpty();
+        // 长标签：独立文字，仍带 x/y 落位
+        assertThat(looseLabel)
+                .as("长标签应落为独立文字").isNotNull();
+        assertThat(looseLabel.has("containerId"))
+                .as("长标签不应绑箭头").isFalse();
+        assertThat(looseLabel.path("x").isNumber()).isTrue();
+    }
+
     // ==================== 场景构造 ====================
 
     /** 三个模块 × 4 个图形：模块内箭头 + 4 条带标签的跨模块箭头 */
@@ -170,6 +203,21 @@ class EdgeLabelPlacementTest {
         elements.add(arrow("x3", "c3", "a0", "回调"));
         elements.add(arrow("x4", "a0", "c2", "查询"));
         elements.add(arrow("x5", "b0", "a2", "校验"));
+        return "{\"elements\":[" + String.join(",", elements) + "]}";
+    }
+
+    /** 一根带短标签的箭头（应绑回箭头）+ 一根带长标签的箭头（应落为独立文字） */
+    private static String mixedLabelScene() {
+        List<String> elements = new ArrayList<>();
+        elements.add(rect("n1", "服务A", "域一"));
+        elements.add(rect("n2", "服务B", "域二"));
+        elements.add(rect("n3", "服务C", "域三"));
+        elements.add(rect("n4", "服务D", "域四"));
+        // 短标签（≤ BIND_MAX_WIDTH≈96px）：绑回箭头
+        elements.add(arrow("e1", "n1", "n2", "短标签"));
+        // 长标签（远超 96px）：落为独立文字
+        elements.add(arrow("e2", "n3", "n4",
+                "这是一个很长的标签需要落位成独立文字"));
         return "{\"elements\":[" + String.join(",", elements) + "]}";
     }
 

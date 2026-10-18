@@ -1,5 +1,7 @@
 package io.github.nihaoljx.flowchart.graph.layout;
 
+import io.github.nihaoljx.flowchart.graph.transform.SceneGeometryKit;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -19,8 +21,7 @@ import org.eclipse.elk.graph.ElkNode;
 import org.eclipse.elk.graph.util.ElkGraphUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition
-        .ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -145,7 +146,7 @@ public class ElkLayoutEngine implements LayoutEngine {
                     p.movable, p.movableEdges, p.width, p.gap,
                     p.siblingGap,
                     horizontal ? Direction.RIGHT : Direction.DOWN);
-            snapAll(p.movable);
+            // snapAll 已并入 runElk（边路由吸附要用归位后的坐标）
             if (!p.frozen.isEmpty()) {
                 shiftToFreeSlot(p.movable, p.frozen);
             }
@@ -502,6 +503,13 @@ public class ElkLayoutEngine implements LayoutEngine {
             shape.px -= minX;
             shape.py -= minY;
         }
+        // 先归位再画边：吸附用的 px/py 必须是最终写回的坐标。
+        // 历史缺陷：这里先 writeStraightRoute 再 snapAll，箭头端点按
+        // 未量化的 (330,380,...) 算，而图形坐标随后被 snapAll 挪到
+        // (340,340,...) ⇒ 端点与图形错开整整一个 quantize（用户
+        // m06890 截图里菱形出边"平行悬空 10px"就是这一格）。
+        // 与 runElk 的「snapAll 先于 writeBackEdgeRoutes」同口径。
+        snapAll(shapes);
         for (Edge edge : edges) {
             Shape from = byId.get(edge.from);
             Shape to = byId.get(edge.to);
@@ -531,10 +539,8 @@ public class ElkLayoutEngine implements LayoutEngine {
         if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
             return;
         }
-        double[] start = boxExit(fx, fy, dx, dy,
-                from.lw, from.lh);
-        double[] end = boxExit(tx, ty, -dx, -dy,
-                to.lw, to.lh);
+        double[] start = slopedExit(fx, fy, tx, ty, from);
+        double[] end = slopedExit(tx, ty, fx, fy, to);
         double mx = (start[0] + end[0]) / 2;
         double my = (start[1] + end[1]) / 2;
         ObjectNode arrow = edge.json;
@@ -544,6 +550,29 @@ public class ElkLayoutEngine implements LayoutEngine {
         appendPoint(points, end[0] - start[0], end[1] - start[1]);
         arrow.put("x", round1(start[0]));
         arrow.put("y", round1(start[1]));
+    }
+
+    /**
+     * 星形放射摆放的端点吸附：菱形/椭圆贴真实斜边，矩形仍走
+     * 外接矩形近似。
+     *
+     * <p>{@link #boxExit} 的方向是 (dx, dy) = 两端盒心连线，本方法
+     * 改用「from 心 → to 心」这条射线重新求交点 —— 两条射线本应同向，
+     * 独立成方法只是为了少传两个参数。
+     */
+    private static double[] slopedExit(
+            double fx, double fy, double tx, double ty, Shape from) {
+        double[] box = new double[] {
+                from.px, from.py, from.lw, from.lh,
+        };
+        if (SceneGeometryKit.hasSlopedBoundary(from.type)) {
+            return SceneGeometryKit.edgePointOnShape(
+                    new double[] {fx, fy},
+                    new double[] {tx, ty}, box, from.type);
+        }
+        return SceneGeometryKit.edgePointOnBox(
+                new double[] {fx, fy},
+                new double[] {tx, ty}, box);
     }
 
     /**
@@ -647,7 +676,12 @@ public class ElkLayoutEngine implements LayoutEngine {
             maxX = Math.max(maxX, shape.px + shape.lw);
             maxY = Math.max(maxY, shape.py + shape.lh);
         }
-        writeBackEdgeRoutes(elkEdges);
+        // 先归位再写边路由：端点吸附要按形状"落地后的最终坐标"算，
+        // 否则吸附用的 px/py 与随后 snapAll 的结果差一个 quantize，
+        // 菱形斜边又会漏出零点几到几像素的缝（m06890 的悬空就是
+        // 多个口径对不上叠出来的）。
+        snapAll(shapes);
+        writeBackEdgeRoutes(elkEdges, shapes);
         return new double[] {
             minX, minY, maxX - minX, maxY - minY,
         };
@@ -678,7 +712,11 @@ public class ElkLayoutEngine implements LayoutEngine {
      * 成 3 点共线折线，恰好 ≥3 点存活 SceneSanitizer 的摘除口径。
      */
     private void writeBackEdgeRoutes(
-            Map<Edge, ElkEdge> elkEdges) {
+            Map<Edge, ElkEdge> elkEdges, List<Shape> shapes) {
+        Map<String, Shape> byId = new LinkedHashMap<>();
+        for (Shape shape : shapes) {
+            byId.put(shape.id, shape);
+        }
         for (Map.Entry<Edge, ElkEdge> entry
                 : elkEdges.entrySet()) {
             ElkEdge elkEdge = entry.getValue();
@@ -697,6 +735,61 @@ public class ElkLayoutEngine implements LayoutEngine {
                     || !Double.isFinite(endX)
                     || !Double.isFinite(endY)) {
                 continue;
+            }
+            // 端点的形状感知吸附：ELK 的 section start/end 落在节点的
+            // **外接矩形**边上（它看不到菱形斜边 / 椭圆弧），于是菱形四
+            // 条出边都离真实边界差一个内接正方形半径 —— 用户 m06890
+            // 截图里就是那 ≈10px 的「箭头起点悬空」。
+            //
+            // 另一个必须修的坑：ELK 的 section 起点/终点与**箭头方向**
+            // 无关。2026-10-18 单层探针（hub 菱形上、k0 矩形下）实测
+            // start = (80,210) 恰是 k0 的中心，末点才落在 k0 上边。
+            // 第一版吸附用「start → toCenter」当射线方向，此时
+            // start == toCenter ⇒ 方向退化 → 直接原样返回，白改。
+            // 改成「fromCenter → toCenter」这条恒定有向的射线：起点
+            // 是 from 的中心（必在 from 内），第一个正交点就是 from
+            // 边界上的出射点；end 同理用 toCenter → fromCenter。
+            Shape fromShape = byId.get(entry.getKey().from);
+            Shape toShape = byId.get(entry.getKey().to);
+            if (fromShape != null && toShape != null) {
+                double[] fromCenter = {
+                        fromShape.px + fromShape.lw / 2,
+                        fromShape.py + fromShape.lh / 2,
+                };
+                double[] toCenter = {
+                        toShape.px + toShape.lw / 2,
+                        toShape.py + toShape.lh / 2,
+                };
+                double[] start;
+                double[] end;
+                if (SceneGeometryKit.hasSlopedBoundary(fromShape.type)) {
+                    start = SceneGeometryKit.edgePointOnShape(
+                            fromCenter, toCenter,
+                            new double[] {fromShape.px, fromShape.py,
+                                    fromShape.lw, fromShape.lh},
+                            fromShape.type);
+                } else {
+                    start = SceneGeometryKit.edgePointOnBox(
+                            fromCenter, toCenter,
+                            new double[] {fromShape.px, fromShape.py,
+                                    fromShape.lw, fromShape.lh});
+                }
+                if (SceneGeometryKit.hasSlopedBoundary(toShape.type)) {
+                    end = SceneGeometryKit.edgePointOnShape(
+                            toCenter, fromCenter,
+                            new double[] {toShape.px, toShape.py,
+                                    toShape.lw, toShape.lh},
+                            toShape.type);
+                } else {
+                    end = SceneGeometryKit.edgePointOnBox(
+                            toCenter, fromCenter,
+                            new double[] {toShape.px, toShape.py,
+                                    toShape.lw, toShape.lh});
+                }
+                startX = start[0];
+                startY = start[1];
+                endX = end[0];
+                endY = end[1];
             }
             // 先局部收集、全量校验，再一次性写回 —— 半路发现
             // 坏点时不能留下写了一半的 points 在箭头上

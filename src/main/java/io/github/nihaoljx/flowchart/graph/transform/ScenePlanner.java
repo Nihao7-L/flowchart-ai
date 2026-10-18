@@ -675,7 +675,7 @@ public class ScenePlanner {
             }
             occupancy.mark(route);
             routed.add(route);
-            writeRoute(arrows.get(slot), route);
+            writeRoute(arrows.get(slot), route, froms.get(slot), tos.get(slot));
             routedCount++;
         }
         if (routedCount > 0) {
@@ -1261,8 +1261,24 @@ public class ScenePlanner {
         return SceneGeometryKit.dedupe(route);
     }
 
-    /** 绝对坐标折线写回箭头（x/y = 首点，points = 相对偏移） */
-    private void writeRoute(ObjectNode arrow, double[][] abs) {
+    /**
+     * 绝对坐标折线写回箭头（x/y = 首点，points = 相对偏移）。
+     *
+     * <p>两端若是菱形/椭圆，先把端点收进真实斜边（用户 m06890 截图：
+     * 「库存是否充足」菱形出边悬空 10px，探针 ek0 实测 10.0 / ek1 11.5）。
+     * 锚点原本按外接矩形算 —— ELK 的 section start/end 落在外接矩形边上，
+     * 前端 snapArrowEndsToAnchors 也只会沿当前方向推到 bbox 边，都看不到
+     * 菱形斜边，二者叠加就是那 10px 空隙。
+     *
+     * <p>矩形/未知形状原样返回，因此矩形连线观感零变化。
+     *
+     * @param arrow 被写回的箭头元素
+     * @param abs   绝对坐标折线（会被就地收端点）
+     * @param from  源节点（拿 type 与最终 x/y/w/h）
+     * @param to    目标节点
+     */
+    private void writeRoute(ObjectNode arrow, double[][] abs, Node from, Node to) {
+        snapEndpointsToShapes(abs, from, to);
         double ox = abs[0][0];
         double oy = abs[0][1];
         ArrayNode points = arrow.putArray("points");
@@ -1273,6 +1289,35 @@ public class ScenePlanner {
         }
         arrow.put("x", round1(ox));
         arrow.put("y", round1(oy));
+    }
+
+    /**
+     * 把折线首/末点按形状真实轮廓收进菱形/椭圆边界。
+     *
+     * <p>射线取「端点 → 折线第二个点」的方向：端点一般就在外接矩形边上，
+     * 该方向几乎必然穿过形状内部，能取到从外侧进入的那个交点。若求不出
+     * 正交点（端点在中心、形状退化等）保持原值不动 —— 不造 NaN。
+     */
+    private static void snapEndpointsToShapes(double[][] abs, Node from, Node to) {
+        if (abs.length < 2) {
+            return;
+        }
+        if (from != null && SceneGeometryKit.hasSlopedBoundary(from.type())) {
+            double[] p = SceneGeometryKit.edgePointOnShape(
+                    abs[0], abs[1],
+                    new double[] {from.x, from.y, from.w, from.h}, from.type());
+            if (p != null && p != abs[1]) {
+                abs[0] = p;
+            }
+        }
+        if (to != null && SceneGeometryKit.hasSlopedBoundary(to.type())) {
+            double[] p = SceneGeometryKit.edgePointOnShape(
+                    abs[abs.length - 1], abs[abs.length - 2],
+                    new double[] {to.x, to.y, to.w, to.h}, to.type());
+            if (p != null && p != abs[abs.length - 2]) {
+                abs[abs.length - 1] = p;
+            }
+        }
     }
 
     /** 一位小数：与 ElkLayoutEngine.round1 同口径，防浮点尾巴进契约 */
@@ -1287,7 +1332,13 @@ public class ScenePlanner {
     private static final double LABEL_GAP = 16;
 
     /**
-     * 边标签治理：去重 + 落位成独立文字。
+     * 短标签绑回箭头的宽度上限（px）。超过这个宽度的标签落在线中段可读性
+     * 不够，仍走独立文字落位。约 8 个 CJK 字 / 16 个 Latin 字。
+     */
+    private static final double BIND_MAX_WIDTH = 96;
+
+    /**
+     * 边标签治理：去重 + 短标签绑回箭头 + 长标签落位成独立文字。
      *
      * 2026-10-15 regress_arch5 用户圈出的两坨噪音都出在标签上：
      * ① 网关 4 条出线各带一个同名「路由转发」，而箭头标签渲染时自动
@@ -1298,11 +1349,16 @@ public class ScenePlanner {
      * 治法（全确定性代码，不劳 LLM）：
      * ① 去重 —— 同一源节点 + 同名文字的标签只保留首条（mermaid/draw.io
      *    口径：重复标注是噪音不是信息）；
-     * ② 落位 —— 有 points 的箭头把标签编译成**独立文字元素**，放在出线
-     *    段旁（先取首段，短了取最长段），垂直偏移 16px，沿段滑动找空位，
-     *    与节点框/已放标签都不叠、且被其它线穿过最少；实在放不下才保留
-     *    绑定标签兜底。
-     * 适配层已验证：无 containerId 的 text 元素坐标原样生效。
+     * ② 短标签绑回箭头 —— 短（宽度 ≤ {@link #BIND_MAX_WIDTH}）且箭头
+     *    **中线**处既不压节点框、也不被别的线穿过的标签，编译成带
+     *    {@code containerId = 箭头 id} 的文字，由适配层落在线段中点
+     *    （绑定即归属，编辑时随箭头整体移动，不再是一坨游离文字）；
+     * ③ 长标签 / 中线被占 —— 退化为**独立文字元素**，放在出线段旁
+     *    （先取首段，短了取最长段），垂直偏移 16px，沿段滑动找空位，
+     *    与节点框/已放标签都不叠、且被其它线穿过最少；实在放不下才
+     *    保留绑定标签兜底。
+     * 适配层已验证：无 containerId 的 text 元素坐标原样生效；带
+     * containerId 指向 arrow/line 的文字会被定位到折线中点。
      */
     private void placeEdgeLabels(JsonNode root, Partition partition) {
         JsonNode elementsNode = root.get("elements");
@@ -1330,11 +1386,12 @@ public class ScenePlanner {
             }
             labeled.add(arrow);
         }
-        // ② 落位为独立文字
+        // ② 短标签绑回箭头；长标签 / 中线被占 → 落位为独立文字
         List<double[]> placed = new ArrayList<>();
         List<double[]> segs = new ArrayList<>();
         List<String> segOwners = new ArrayList<>();
         collectArrowSegments(elements, segs, segOwners);
+        Set<String> boundSources = new LinkedHashSet<>();
         for (ObjectNode arrow : labeled) {
             JsonNode points = arrow.get("points");
             if (points == null || !points.isArray()
@@ -1346,6 +1403,26 @@ public class ScenePlanner {
             double[] size = labelSize(content);
             double ox = arrow.get("x").asDouble();
             double oy = arrow.get("y").asDouble();
+            double[] mid = arrowMidpoint(points, ox, oy);
+            boolean binds = size[0] <= BIND_MAX_WIDTH
+                    && boundSources.add(owner)
+                    && canBindToArrow(
+                            arrow, size, mid, segs, segOwners, partition);
+            if (binds) {
+                ObjectNode label = objectMapper.createObjectNode();
+                label.put("id", owner + "_lbl");
+                label.put("type", "text");
+                // x/y 仅占位：GraphValidator 要求 text 必有坐标，适配层
+                // bindContainerTexts 会按折线中点重算并覆盖（见 sceneAdapter）。
+                label.put("x", round1(mid[0] - size[0] / 2));
+                label.put("y", round1(mid[1] - size[1] / 2));
+                label.put("text", content);
+                label.put("fontSize", LABEL_FONT);
+                label.put("containerId", owner);
+                elements.add(label);
+                arrow.remove("label");
+                continue;
+            }
             double[] spot = findLabelSpot(
                     points, ox, oy, size, partition.nodes, placed,
                     owner, segs, segOwners);
@@ -1353,7 +1430,7 @@ public class ScenePlanner {
                 continue;
             }
             ObjectNode label = objectMapper.createObjectNode();
-            label.put("id", arrow.path("id").asText("") + "_lbl");
+            label.put("id", owner + "_lbl");
             label.put("type", "text");
             label.put("x", round1(spot[0] - size[0] / 2));
             label.put("y", round1(spot[1] - size[1] / 2));
@@ -1367,6 +1444,63 @@ public class ScenePlanner {
                 spot[0] - size[0] / 2, spot[1] - size[1] / 2,
                 spot[0] + size[0] / 2, spot[1] + size[1] / 2});
         }
+    }
+
+    /**
+     * 折线的长度加权中点（与前端 {@code linearMidpoint} 同口径）：短标签
+     * 绑回箭头时落在线中段，而不是整条包围盒中心。
+     */
+    private static double[] arrowMidpoint(JsonNode points, double ox, double oy) {
+        List<double[]> pts = new ArrayList<>();
+        for (JsonNode p : points) {
+            pts.add(new double[] {
+                ox + p.path(0).asDouble(), oy + p.path(1).asDouble()});
+        }
+        double total = 0;
+        for (int i = 0; i + 1 < pts.size(); i++) {
+            total += Math.hypot(
+                    pts.get(i + 1)[0] - pts.get(i)[0],
+                    pts.get(i + 1)[1] - pts.get(i)[1]);
+        }
+        if (total < 1e-6) {
+            return pts.get(0);
+        }
+        double half = total / 2;
+        double acc = 0;
+        for (int i = 0; i + 1 < pts.size(); i++) {
+            double segLen = Math.hypot(
+                    pts.get(i + 1)[0] - pts.get(i)[0],
+                    pts.get(i + 1)[1] - pts.get(i)[1]);
+            if (acc + segLen >= half) {
+                double t = (half - acc) / segLen;
+                return new double[] {
+                    pts.get(i)[0] + t * (pts.get(i + 1)[0] - pts.get(i)[0]),
+                    pts.get(i)[1] + t * (pts.get(i + 1)[1] - pts.get(i)[1])};
+            }
+            acc += segLen;
+        }
+        return pts.get(pts.size() - 1);
+    }
+
+    /**
+     * 短标签能否绑回这根箭头：箭头中线处的外框不能压节点框、也不能被
+     * 别的线穿过（自己的边不算）。两个条件都满足才绑。
+     */
+    private boolean canBindToArrow(
+            ObjectNode arrow, double[] size, double[] mid,
+            List<double[]> segs, List<String> segOwners,
+            Partition partition) {
+        String id = arrow.path("id").asText("");
+        double[] box = {
+            mid[0] - size[0] / 2, mid[1] - size[1] / 2,
+            mid[0] + size[0] / 2, mid[1] + size[1] / 2};
+        for (Node n : partition.nodes) {
+            if (box[2] >= n.x - 2 && box[0] <= n.x + n.w + 2
+                    && box[3] >= n.y - 2 && box[1] <= n.y + n.h + 2) {
+                return false;
+            }
+        }
+        return countSegHits(box, segs, segOwners, id) == 0;
     }
 
     /**
@@ -1658,6 +1792,12 @@ public class ScenePlanner {
             minX = 0;
             minY = 0;
         }
+        // 归一化：把 subList 平移回"左上角为 (0,0)"。**箭头必须一起
+        // 平移** —— 历史缺陷：这里只挪了节点的 x/y，箭头 x/y 留着引擎
+        // 坐标系。placeEdgeLabels 拿箭头 x/y 当绝对原点算标签，而且首点
+        // 绝对坐标 = x + points[0]，引擎坐标系平移动画后箭头整体偏移
+        // (minX, minY)：实测 Mermaid 库存检查图 minY=-10，四条出边首点
+        // 齐刷刷浮在菱形上方 10px（用户 m06890 的「箭头起点悬空」）。
         double maxX = 0;
         double maxY = 0;
         for (Node node : shapes) {
@@ -1665,6 +1805,16 @@ public class ScenePlanner {
             node.y -= minY;
             maxX = Math.max(maxX, node.x + node.w);
             maxY = Math.max(maxY, node.y + node.h);
+        }
+        for (ObjectNode arrow : arrowOriginals.values()) {
+            if (isNumber(arrow, "x")) {
+                arrow.put("x", round1(
+                        arrow.get("x").asDouble() - minX));
+            }
+            if (isNumber(arrow, "y")) {
+                arrow.put("y", round1(
+                        arrow.get("y").asDouble() - minY));
+            }
         }
         Block box = new Block(null);
         box.contentW = maxX;
@@ -1940,7 +2090,8 @@ public class ScenePlanner {
 
     // ==================== 小工具 ====================
 
-    private String text(JsonNode node, String field) {
+    /** 读文本字段；非文本/缺失返回 null */
+    static String text(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value != null && value.isTextual()
                 ? value.asText() : null;
@@ -2022,6 +2173,16 @@ public class ScenePlanner {
             JsonNode value = node.get(field);
             return value == null || !value.isNumber()
                     ? 0 : value.asDouble();
+        }
+
+        /**
+         * 图形类型（契约里的 type 字段，如 rectangle / ellipse / diamond）。
+         *
+         * <p>端点吸附要用它区分「矩形按 bbox 就够」与「菱形/椭圆要收进
+         * 斜边」（见 {@link #snapEndpointsToShapes}）。
+         */
+        String type() {
+            return text(json, "type");
         }
     }
 

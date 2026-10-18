@@ -79,6 +79,16 @@ public final class GenericLayoutFamily implements LayoutFamily {
      * （旧路径实测），而 bbox 由布局后的真实坐标算出，天然贴身。
      * 单分组也画框：只要 LLM 显式声明了 group，就尊重它的语义意图。
      *
+     * <p>**去重**：LLM 已经自己画了同名 frame 时（它会被
+     * {@link ScenePlanner#matchFrames} 认领、几何由
+     * {@link ScenePlanner#writeFrames} 写成贴合成员的），本方**不再**
+     * 合成同名容器。不这么做的话同一批成员会被两层同名单框包住 —
+     * 截图里「已完成」套「已完成」正是这个问题。判据用 group 路径上
+     * 的**任一层**段名命中 frame.name，而不是整条路径逐字相等：
+     * 模型常把最外层 group 写成组合态外层路径（state-machine.md:27
+     * 「整图最外层用一个 group 兜住所有状态」），此时 LLM 框只覆盖
+     * 内层，合成外层仍会与它叠在一起。
+     *
      * <p>**层级来自 group 路径**（契约 `oneOf[string,string[]]`）：
      * `["处理中","订单"]` 同时归属「处理中」和「订单」两个容器，
      * 于是合成出「订单框里套着处理中框」的嵌套结构 —— 组合态就长这样。
@@ -99,10 +109,19 @@ public final class GenericLayoutFamily implements LayoutFamily {
             Map<String, String> names = new LinkedHashMap<>();
             Map<String, String> parents = new LinkedHashMap<>();
             Map<String, Integer> outerness = new LinkedHashMap<>();
+            // 已被 LLM 显式画框占用的容器名（matchFrames 按 name 认领时
+            // 用的是去掉空白后的原名，这里同口径）→ 画框者 id。
+            Map<String, String> drawnFrames = new LinkedHashMap<>();
             for (JsonNode el : elementsNode) {
                 String id = el.path("id").asText(null);
                 if (id != null) {
                     usedIds.add(id);
+                }
+                if ("frame".equals(text(el, "type"))) {
+                    String frameName = text(el, "name");
+                    if (frameName != null && !frameName.trim().isEmpty()) {
+                        drawnFrames.putIfAbsent(frameName.trim(), id);
+                    }
                 }
                 List<String> path = GroupPath.parse(el);
                 if (path.isEmpty()) {
@@ -123,6 +142,39 @@ public final class GenericLayoutFamily implements LayoutFamily {
                         boxes.merge(key, box, GenericLayoutFamily::union);
                     }
                 }
+            }
+            // 去重：LLM 已经画了同名 frame（matchFrames 认领它、
+            // writeFrames 把它的几何写成贴合成员的）时，该层不再合成 ——
+            // 否则同一批成员被两层同名单框包住（截图「已完成」套「已完成」）。
+            //
+            // 判据 = **该层段名**命中 frame.name（不是整条路径相等）：
+            // 模型常把最外层 group 写成组合态外层路径，此时 LLM 框只覆盖
+            // 内层，照整条路径比会对不上。只删这一层、不动它的父层：
+            // 父层仍要合成，否则外层语义消失（state-machine.md:27
+            // 要求最外层 group 兜住所有状态）。
+            //
+            // 删层前先把它的直接成员**上交给父层**当 children —— 与
+            // ScenePlanner.collectChildren 口径一致（渲染器只允许一个
+            // 元素属于一个 frame）。父层的 bbox 早已由这些成员的 box
+            // 算出，删层不影响它；父层的 children 由后面的 parents 反查
+            // 分支填，所以这里只搬 members、**保留 parents 条目**会被
+            // 那段跳过（该 key 已不在 members 里，反查时它不会被找到）。
+            Set<String> drawnKeys = new HashSet<>();
+            for (Map.Entry<String, String> entry : names.entrySet()) {
+                if (drawnFrames.containsKey(entry.getValue())) {
+                    drawnKeys.add(entry.getKey());
+                }
+            }
+            for (String key : drawnKeys) {
+                List<String> lifted = members.remove(key);
+                String parentKey = parents.get(key);
+                if (parentKey != null && lifted != null && !lifted.isEmpty()) {
+                    members.computeIfAbsent(parentKey, k -> new ArrayList<>())
+                            .addAll(lifted);
+                }
+                names.remove(key);
+                boxes.remove(key);
+                outerness.remove(key);
             }
             if (members.isEmpty()) {
                 return laidOut;
@@ -163,7 +215,14 @@ public final class GenericLayoutFamily implements LayoutFamily {
                 }
                 for (Map.Entry<String, String> entry : parents.entrySet()) {
                     if (key.equals(entry.getValue())) {
-                        children.add(frameIds.get(entry.getKey()));
+                        String childKey = entry.getKey();
+                        // 被占用的层把成员上交给本层后就没了 frames 条目，
+                        // 直接跳过，否则 children 里会写进 null
+                        if (!members.containsKey(childKey)
+                                && !frameIds.containsKey(childKey)) {
+                            continue;
+                        }
+                        children.add(frameIds.get(childKey));
                     }
                 }
             }
@@ -221,6 +280,15 @@ public final class GenericLayoutFamily implements LayoutFamily {
     private static String truncate(String name) {
         return name.length() <= MAX_GROUP_NAME
                 ? name : name.substring(0, MAX_GROUP_NAME);
+    }
+
+    /** 读 text 字段，非文本 / 缺失返回 null */
+    private static String text(JsonNode el, String field) {
+        JsonNode value = el.get(field);
+        if (value == null || !value.isTextual()) {
+            return null;
+        }
+        return value.asText();
     }
 
     private static double snap(double value) {
