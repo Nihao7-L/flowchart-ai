@@ -668,4 +668,46 @@ class SceneSanitizerTest {
         assertTrue(out.contains("\"color\":\"green\""), "正常→green: " + out);
         assertTrue(out.contains("\"color\":\"gray\""), "历史→gray: " + out);
     }
+
+    @Test
+    @DisplayName("children 完全相同的两个框 → 只留先出现的那个（同名框标题会压印成乱码）")
+    void duplicateFramesWithSameChildrenDropped() {
+        // 实测来源：state-machine 的模型输出里，同一批成员既有
+        // `notification` 又有 `processing` 两个框覆盖，位置相同 ⇒ 两个
+        // 标题字逐字叠印，渲染成 `poinfessing`（processing 三次压印）
+        String in = "{\"elements\":["
+                + "{\"id\":\"f1\",\"type\":\"frame\",\"name\":\"notification\","
+                + "\"children\":[\"a\",\"b\"]},"
+                + "{\"id\":\"f4\",\"type\":\"frame\",\"name\":\"processing\","
+                + "\"children\":[\"b\",\"a\"]},"
+                + "{\"id\":\"a\",\"type\":\"rectangle\"},"
+                + "{\"id\":\"b\",\"type\":\"rectangle\"}]}";
+
+        String out = sanitizer.sanitize(in);
+
+        assertTrue(out.contains("\"id\":\"f1\""),
+                "先出现的框必须留下: " + out);
+        assertFalse(out.contains("\"id\":\"f4\""),
+                "children 集合相同（顺序不同也算同一批）的重复框必须删掉: "
+                        + out);
+        assertTrue(out.contains("\"id\":\"a\"")
+                        && out.contains("\"id\":\"b\""),
+                "成员节点一个都不能丢: " + out);
+    }
+
+    @Test
+    @DisplayName("children 不同的框一律不动（嵌套框的外层与内层成员不同）")
+    void framesWithDifferentChildrenKept() {
+        String in = "{\"elements\":["
+                + "{\"id\":\"outer\",\"type\":\"frame\",\"name\":\"order\","
+                + "\"children\":[\"inner\"]},"
+                + "{\"id\":\"inner\",\"type\":\"frame\",\"name\":\"processing\","
+                + "\"children\":[\"a\"]},"
+                + "{\"id\":\"a\",\"type\":\"rectangle\"}]}";
+
+        String out = sanitizer.sanitize(in);
+
+        assertTrue(out.contains("\"id\":\"outer\""), "外层框保留: " + out);
+        assertTrue(out.contains("\"id\":\"inner\""), "内层框保留: " + out);
+    }
 }

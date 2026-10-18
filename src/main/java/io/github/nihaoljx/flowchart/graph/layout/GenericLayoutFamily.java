@@ -190,6 +190,67 @@ public final class GenericLayoutFamily implements LayoutFamily {
             if (members.isEmpty()) {
                 return laidOut;
             }
+            // 同名容器合并：模型常把同一条链的不同写法写成多条路径，
+            // 例 `processing` 节点的 group 是 `["processing","order"]`，
+            // 而它自己的子状态写 `["processing","notification","order"]`
+            // —— 后缀键不同（`processing/order` 与
+            // `processing/notification/order`），于是合成出**两个都叫
+            // processing 的框**，一个套 order 下的直接子状态、一个套
+            // notification 的子状态。渲染端把两个框画在各自 bbox 上，
+            // 标题字叠在一起成了乱码（2026-10-18 state-machine 实测：
+            // 三个框标题渲染成 `prdeessing`/`poinfessing`/`pardeessing`，
+            // 就是 processing 三个字形互相压印）。
+            //
+            // 图上「一个名字只该有一个框」：同名的多个容器合成一个，
+            // bbox 取并集、成员取并集、父层统一取**最外层**那个的父
+            // （这样合并后的框仍挂在正确的外层下）。骨架键保留 outerness
+            // 最小的那个 —— 它已经在最前面，后续 order 排序天然稳定。
+            Map<String, String> byName = new LinkedHashMap<>();
+            for (String key : new ArrayList<>(members.keySet())) {
+                String name = names.get(key);
+                if (name == null) {
+                    continue;
+                }
+                String keeper = byName.get(name);
+                if (keeper == null) {
+                    byName.put(name, key);
+                    continue;
+                }
+                int keepOut = outerness.getOrDefault(keeper, 0);
+                int thisOut = outerness.getOrDefault(key, 0);
+                String sink;
+                String gone;
+                if (keepOut <= thisOut) {
+                    sink = keeper;
+                    gone = key;
+                } else {
+                    sink = key;
+                    gone = keeper;
+                    byName.put(name, key);
+                }
+                List<String> moved = members.remove(gone);
+                if (moved != null && !moved.isEmpty()) {
+                    members.computeIfAbsent(sink, k -> new ArrayList<>())
+                            .addAll(moved);
+                }
+                double[] gbox = boxes.remove(gone);
+                if (gbox != null) {
+                    boxes.merge(sink, gbox, GenericLayoutFamily::union);
+                }
+                String gParent = parents.remove(gone);
+                if (gParent != null && !gParent.isEmpty()) {
+                    // 并进更外层的容器时，父层跟着走；并进更内层的容器
+                    // 时保留被并者的父层（它就是这条链真正的外层）
+                    if (sink.equals(keeper) && keepOut <= thisOut) {
+                        parents.put(sink, gParent);
+                    }
+                }
+                outerness.remove(gone);
+                names.remove(gone);
+            }
+            if (members.isEmpty()) {
+                return laidOut;
+            }
             List<String> order = new ArrayList<>(members.keySet());
             order.sort(Comparator.comparingInt(
                     key -> outerness.getOrDefault(key, 0)));

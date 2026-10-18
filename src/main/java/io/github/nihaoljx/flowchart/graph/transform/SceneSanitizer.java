@@ -251,12 +251,41 @@ public class SceneSanitizer {
             }
 
             List<JsonNode> kept = new ArrayList<>();
+            // ⓪b 重复框去重：children 完全相同的两个 frame 是同一个框画了
+            // 两遍 —— 模型给同一批成员同时写了「正确的名字」和「错的名字」，
+            // 例 `frame_1:notification{awaiting_notification,notified}` 与
+            // `frame_4:processing{...同一批...}`。两个框被画在同一位置，
+            // 标题字逐字压印，渲染出来是乱码（2026-10-18 state-machine
+            // 实测：三个框标题显示成 `prdeessing`/`poinfessing`/
+            // `pardeessing`，就是 `processing` 三个字形互相叠加）。
+            // 保留**先出现**的那个：模型给的顺序即其意图顺序，且它通常
+            // 就是名字对得上内容的那个。
+            Set<String> keptFrameChildren = new java.util.HashSet<>();
             for (JsonNode element : elements) {
                 if (!element.isObject()) {
                     kept.add(element);
                     continue;
                 }
                 ObjectNode obj = (ObjectNode) element;
+
+                // ⓪b 续：真正丢掉被判定为重复的那个框（判定已在上面的
+                // 预扫描里算完，这里只做去重执行，保证「谁先出现谁留下」）
+                if ("frame".equals(obj.path("type").asText())) {
+                    JsonNode childs = obj.get("children");
+                    if (childs != null && childs.isArray()
+                            && !childs.isEmpty()) {
+                        List<String> names = new ArrayList<>();
+                        for (JsonNode c : childs) {
+                            names.add(c.asText());
+                        }
+                        java.util.Collections.sort(names);
+                        if (!keptFrameChildren.add(
+                                String.join("\u0000", names))) {
+                            dropped++;
+                            continue;
+                        }
+                    }
+                }
 
                 // ① 类型名用了库内别名 → 回归契约名
                 JsonNode type = obj.get("type");
@@ -588,15 +617,28 @@ public class SceneSanitizer {
      * 节点 label 文本（兼容直接字符串与对象两种写法）。
      */
     private static String nodeName(ObjectNode obj) {
-        JsonNode label = obj.get("label");
-        if (label == null) {
-            return "";
+        String text = labelText(obj.get("label"));
+        return text == null ? "" : text;
+    }
+
+    /**
+     * 取一个「显示名」字段里的文本：既认裸字符串，也认
+     * {@code {"text": "..."}} 这种对象写法（label 与 frame 的 name 都会
+     * 出现这两种形态）。取不到（null / 非文本 / 空对象）返回 {@code null}，
+     * 由调用方决定这是不是「没有名字」。
+     */
+    private static String labelText(JsonNode node) {
+        if (node == null) {
+            return null;
         }
-        if (label.isTextual()) {
-            return label.asText();
+        if (node.isTextual()) {
+            return node.asText();
         }
-        JsonNode text = label.get("text");
-        return text != null && text.isTextual() ? text.asText() : "";
+        if (node.isObject()) {
+            JsonNode text = node.get("text");
+            return text != null && text.isTextual() ? text.asText() : null;
+        }
+        return null;
     }
 
     /**
