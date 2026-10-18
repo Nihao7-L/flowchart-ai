@@ -145,7 +145,15 @@ public final class GenericLayoutFamily implements LayoutFamily {
                     names.putIfAbsent(key, path.get(i));
                     parents.putIfAbsent(key, i + 1 < path.size()
                             ? GroupPath.containerKey(path, i + 1) : "");
-                    outerness.putIfAbsent(key, path.size() - 1 - i);
+                    // outerness：**i 越大越靠外**（path 是从内到外排的，
+                    // path.get(0) 是最内层段名、path.get(size-1) 是最外层）。
+                    // 曾误写 `path.size()-1-i`，方向正好相反：外层容器算出
+                    // 0、内层算出 1，于是内层框的 padding 反而比外层大，
+                    // 「外层只装内层」时两者膨胀到同一矩形、标题逐字压印成
+                    // 乱码（2026-10-19 state-machine 实测 `pubcatsdeg` /
+                    // `pnaiekeingtes`），z 序也把内层画到了外层身上。
+                    outerness.putIfAbsent(key, i);
+
                     if (i == 0 && id != null) {
                         members.get(key).add(id);
                     }
@@ -190,30 +198,31 @@ public final class GenericLayoutFamily implements LayoutFamily {
             if (members.isEmpty()) {
                 return laidOut;
             }
-            // 同名容器合并：模型常把同一条链的不同写法写成多条路径，
-            // 例 `processing` 节点的 group 是 `["processing","order"]`，
-            // 而它自己的子状态写 `["processing","notification","order"]`
-            // —— 后缀键不同（`processing/order` 与
-            // `processing/notification/order`），于是合成出**两个都叫
-            // processing 的框**，一个套 order 下的直接子状态、一个套
-            // notification 的子状态。渲染端把两个框画在各自 bbox 上，
-            // 标题字叠在一起成了乱码（2026-10-18 state-machine 实测：
-            // 三个框标题渲染成 `prdeessing`/`poinfessing`/`pardeessing`，
-            // 就是 processing 三个字形互相压印）。
+            // 同名容器合并：**仅限同一父层下的同名同深容器**。
             //
-            // 图上「一个名字只该有一个框」：同名的多个容器合成一个，
-            // bbox 取并集、成员取并集、父层统一取**最外层**那个的父
-            // （这样合并后的框仍挂在正确的外层下）。骨架键保留 outerness
-            // 最小的那个 —— 它已经在最前面，后续 order 排序天然稳定。
+            // 判据不能只看名字 —— `processing/payment` 与
+            // `processing/shipping` 两层都叫 processing，但它们的父层
+            // 不同（payment / shipping），是两个语义不同的复合状态，
+            // 必须保持两个框。只看名字会把它们并成一个横跨整张画布的
+            // 大框（2026-10-19 state-machine 实测：frame_4 processing
+            // 被撑成 1580px 宽，把 payment 与 shipping 两组子状态圈进
+            // 同一个框，框标题还与 payment 框的标题压在一起）。
+            //
+            // 真正该合并的是：同一父层、同一深度、同名，也就是模型把
+            // 同一条链写成多条路径（后缀键不同但父键相同）。
             Map<String, String> byName = new LinkedHashMap<>();
             for (String key : new ArrayList<>(members.keySet())) {
                 String name = names.get(key);
                 if (name == null) {
                     continue;
                 }
-                String keeper = byName.get(name);
+                // 合并键 = 父层键 + 深度 + 名字：只有三者全同才是同一个框
+                String mergeKey = parents.getOrDefault(key, "")
+                        + "\u0001" + outerness.getOrDefault(key, 0)
+                        + "\u0001" + name;
+                String keeper = byName.get(mergeKey);
                 if (keeper == null) {
-                    byName.put(name, key);
+                    byName.put(mergeKey, key);
                     continue;
                 }
                 int keepOut = outerness.getOrDefault(keeper, 0);
@@ -226,7 +235,7 @@ public final class GenericLayoutFamily implements LayoutFamily {
                 } else {
                     sink = key;
                     gone = keeper;
-                    byName.put(name, key);
+                    byName.put(mergeKey, key);
                 }
                 List<String> moved = members.remove(gone);
                 if (moved != null && !moved.isEmpty()) {
@@ -252,6 +261,9 @@ public final class GenericLayoutFamily implements LayoutFamily {
                 return laidOut;
             }
             List<String> order = new ArrayList<>(members.keySet());
+            // 按 outerness 升序：内层盒先入数组、外层盒后入，渲染时先画的
+            // 在底下 ⇒ 外层框在底层、内层框压在上面。若顺序反了，内层框
+            // 会被外层框盖住，看起来只剩一个框。
             order.sort(Comparator.comparingInt(
                     key -> outerness.getOrDefault(key, 0)));
             Map<String, String> frameIds = new LinkedHashMap<>();
@@ -284,14 +296,24 @@ public final class GenericLayoutFamily implements LayoutFamily {
                     frame.put("strokeWidth", 2);
                     frame.put("backgroundColor", "transparent");
                 }
-                frame.put("x", snap(box[0] - FRAME_PADDING));
-                frame.put("y", snap(box[1] - FRAME_PADDING));
+                // 内边距按嵌套深度放大：外层容器只装着内层容器时，
+                // 两者的成员包围盒**完全相同**，若各减同一个
+                // FRAME_PADDING，两个框就落在同一个矩形上，标题字逐字
+                // 压印成乱码（2026-10-19 state-machine 实测：
+                // `sub_states` 与 `processing` 双框叠印成 `pubcatsdeg`，
+                // `parallel_states` 与 `processing` 叠印成
+                // `pnaiekeingtes`）。外框比内框多让出一圈，既消掉叠印，
+                // 也让「框套框」的层次看得出来。
+                int outernessValue = outerness.getOrDefault(key, 0);
+                double pad = FRAME_PADDING * (1 + outernessValue);
+                frame.put("x", snap(box[0] - pad));
+                frame.put("y", snap(box[1] - pad));
                 frame.put("width",
-                        snap(box[2] + FRAME_PADDING)
-                                - snap(box[0] - FRAME_PADDING));
+                        snap(box[2] + pad)
+                                - snap(box[0] - pad));
                 frame.put("height",
-                        snap(box[3] + FRAME_PADDING)
-                                - snap(box[1] - FRAME_PADDING));
+                        snap(box[3] + pad)
+                                - snap(box[1] - pad));
                 ArrayNode children = frame.putArray("children");
                 for (String member : members.get(key)) {
                     children.add(member);

@@ -125,8 +125,19 @@ final class GroupFrameDedupTest {
         JsonNode outer = findFrameByName(root, "订单");
         assertNotNull(outer);
         List<String> kids = childrenOf(outer);
-        assertEquals(List.of("frame_1", "frame_2"), kids,
-                "外层 children = 两个子框 id（成员属于子框，不重复出现）");
+        // 用框名反查 id：合成框的编号顺序取决于 outerness 排序，
+        // 是内部实现细节，测试不该把 frame_N 写死
+        List<String> kidNames = new ArrayList<>();
+        for (String kid : kids) {
+            if (kid.startsWith("frame")) {
+                kidNames.add(frameName(root, kid));
+            }
+        }
+        assertEquals(2, kidNames.size(),
+                "外层应只收两个子框 id，实际: " + kids);
+        assertTrue(kidNames.containsAll(List.of("已完成", "处理中")),
+                "外层 children = 两个子框 id（成员属于子框，不重复出现），实际: "
+                        + kidNames);
         JsonNode innerA = findFrameByName(root, "已完成");
         assertTrue(childrenOf(innerA).containsAll(List.of("n1", "n2")),
                 "内层 children 直接收成员，实际: " + childrenOf(innerA));
@@ -199,7 +210,14 @@ final class GroupFrameDedupTest {
         assertTrue(kids.contains("n1"),
                 "被删层的成员要上交给外层，实际: " + kids);
         // 「处理中」仍是一个子框被外层收（它的成员 n2 归它自己）
-        assertTrue(kids.contains("n2") || kids.contains("frame_1"),
+        boolean hasProcessingFrame = false;
+        for (String kid : kids) {
+            if (kid.startsWith("frame")
+                    && "处理中".equals(frameName(root, kid))) {
+                hasProcessingFrame = true;
+            }
+        }
+        assertTrue(kids.contains("n2") || hasProcessingFrame,
                 "n2 要么直接交给外层、要么归兄弟子框，实际: " + kids);
     }
 
@@ -303,6 +321,15 @@ final class GroupFrameDedupTest {
         List<String> ids = new ArrayList<>();
         frame.path("children").forEach(c -> ids.add(c.asText()));
         return ids;
+    }
+
+    private static String frameName(JsonNode root, String frameId) {
+        for (JsonNode el : root.get("elements")) {
+            if (frameId.equals(el.path("id").asText())) {
+                return el.path("name").asText();
+            }
+        }
+        return "";
     }
 
     private static double[] geometry(JsonNode el) {
