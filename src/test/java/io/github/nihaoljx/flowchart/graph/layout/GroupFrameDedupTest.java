@@ -218,6 +218,49 @@ final class GroupFrameDedupTest {
         assertNotNull(findFrameByName(root, "已完成"));
     }
 
+    @Test
+    @DisplayName("并行区 group 段带「并行：」前缀：合成框画成紫色虚线，标题去掉前缀")
+    void parallelRegionIsStyledPurpleDashed() throws Exception {
+        // group 段名 "并行：通知" ⇒ 该层合成框描边紫 + 虚线，
+        // 显示标题只剩「通知」（前缀只用于后端识别）
+        String scene = """
+            {"elements":[
+              {"id":"n1","type":"rectangle","x":40,"y":60,"width":80,"height":40,"label":"待通知","group":["并行：通知","订单"]},
+              {"id":"n2","type":"rectangle","x":200,"y":60,"width":80,"height":40,"label":"已通知","group":["并行：通知","订单"]}
+            ]}
+            """;
+        JsonNode root = addFrames(scene);
+
+        JsonNode region = findFrameByName(root, "通知");
+        assertNotNull(region, "并行区框应去掉前缀只叫「通知」");
+        assertEquals("dashed", region.path("strokeStyle").asText(),
+                "并行区框必须是虚线");
+        assertEquals("#a855f7", region.path("strokeColor").asText(),
+                "并行区框必须紫色描边");
+        assertEquals(2, region.path("strokeWidth").asInt(),
+                "虚线描边宽度 2");
+    }
+
+    @Test
+    @DisplayName("普通 group 不带前缀：合成框不染紫色虚线")
+    void normalGroupIsNotStyled() throws Exception {
+        String scene = """
+            {"elements":[
+              {"id":"n1","type":"rectangle","x":40,"y":60,"width":80,"height":40,"label":"A","group":["处理中","订单"]},
+              {"id":"n2","type":"rectangle","x":200,"y":60,"width":80,"height":40,"label":"B","group":["处理中","订单"]}
+            ]}
+            """;
+        JsonNode root = addFrames(scene);
+
+        JsonNode inner = findFrameByName(root, "处理中");
+        assertNotNull(inner);
+        assertTrue(inner.path("strokeStyle").asText().isEmpty()
+                        || !"dashed".equals(inner.path("strokeStyle").asText()),
+                "普通 group 框不应是虚线");
+        assertTrue(inner.path("strokeColor").asText().isEmpty(),
+                "普通 group 框不应有紫色描边");
+    }
+
     // ---------- 测试内 helper（不放 src/test 之外，只服务本类断言） ----------
 
     private static JsonNode addFrames(String scene) throws Exception {

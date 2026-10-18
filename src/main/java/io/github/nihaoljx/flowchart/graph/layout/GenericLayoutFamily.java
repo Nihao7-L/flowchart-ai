@@ -36,6 +36,17 @@ public final class GenericLayoutFamily implements LayoutFamily {
     /** frame 包住成员时的四周留白（LayoutSpec.MODULE_PADDING 同源） */
     private static final double FRAME_PADDING = LayoutSpec.MODULE_PADDING;
 
+    /**
+     * 并行区前缀：group 段名带此前缀（如 {@code ["并行：通知","订单"]}）时，
+     * 对应那一层合成框画成紫色虚线，用来表达「多台状态机同时跑」的并行正交区。
+     * 前缀只用于后端识别，显示标题时由 {@link #stripParallel} 去掉，只留「通知」。
+     * 与 activity-diagram.md 的「并行：校验」同一约定。
+     */
+    private static final String PARALLEL_PREFIX = "并行：";
+
+    /** 并行区框的描边色（紫） */
+    private static final String PARALLEL_STROKE = "#a855f7";
+
     private final ScenePlannerHolder plannerHolder;
 
     /** planner + engine 成对出现，用持有者避免构造器里藏引擎 */
@@ -183,6 +194,7 @@ public final class GenericLayoutFamily implements LayoutFamily {
             order.sort(Comparator.comparingInt(
                     key -> outerness.getOrDefault(key, 0)));
             Map<String, String> frameIds = new LinkedHashMap<>();
+            Map<String, Boolean> parallel = new LinkedHashMap<>();
             for (String key : order) {
                 String frameId = "frame_" + frameIds.size();
                 while (usedIds.contains(frameId)) {
@@ -190,6 +202,9 @@ public final class GenericLayoutFamily implements LayoutFamily {
                 }
                 usedIds.add(frameId);
                 frameIds.put(key, frameId);
+                // 该层段名带「并行：」前缀 ⇒ 视为并行正交区，画紫色虚线。
+                parallel.put(key, names.get(key) != null
+                        && names.get(key).startsWith(PARALLEL_PREFIX));
             }
             ArrayNode frames = MAPPER.createArrayNode();
             for (String key : order) {
@@ -197,10 +212,17 @@ public final class GenericLayoutFamily implements LayoutFamily {
                 if (box == null) {
                     continue;
                 }
+                boolean isParallel = Boolean.TRUE.equals(parallel.get(key));
                 ObjectNode frame = frames.addObject();
                 frame.put("id", frameIds.get(key));
                 frame.put("type", "frame");
-                frame.put("name", truncate(names.get(key)));
+                frame.put("name", truncate(stripParallel(names.get(key))));
+                if (isParallel) {
+                    frame.put("strokeColor", PARALLEL_STROKE);
+                    frame.put("strokeStyle", "dashed");
+                    frame.put("strokeWidth", 2);
+                    frame.put("backgroundColor", "transparent");
+                }
                 frame.put("x", snap(box[0] - FRAME_PADDING));
                 frame.put("y", snap(box[1] - FRAME_PADDING));
                 frame.put("width",
@@ -280,6 +302,12 @@ public final class GenericLayoutFamily implements LayoutFamily {
     private static String truncate(String name) {
         return name.length() <= MAX_GROUP_NAME
                 ? name : name.substring(0, MAX_GROUP_NAME);
+    }
+
+    /** 去掉并行区前缀「并行：」，只留显示标题（如「通知」） */
+    private static String stripParallel(String name) {
+        return name != null && name.startsWith(PARALLEL_PREFIX)
+                ? name.substring(PARALLEL_PREFIX.length()) : name;
     }
 
     /** 读 text 字段，非文本 / 缺失返回 null */

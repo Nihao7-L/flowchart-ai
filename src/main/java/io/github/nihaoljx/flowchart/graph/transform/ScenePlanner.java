@@ -1532,9 +1532,17 @@ public class ScenePlanner {
             List<Node> nodes, List<double[]> placed,
             String owner, List<double[]> segs, List<String> segOwners) {
         int count = points.size();
+        if (count < 2) {
+            return null;
+        }
         double[] best = null;
         int bestCross = Integer.MAX_VALUE;
-        for (int i = 0; i < Math.min(count - 1, 4); i++) {
+        // 法向偏移（像素）：先近后远，近处更贴合线段、观感更紧
+        double gap = LABEL_GAP;
+        double[] normalOffsets = {gap, gap * 2, gap * 3};
+        // 沿段滑动（像素）：交错探测，覆盖更宽范围以逃离别的线
+        double[] slides = {0, -14, 14, -28, 28, -42, 42, -56, 56};
+        for (int i = 0; i < count - 1; i++) {
             double x1 = ox + points.get(i).get(0).asDouble();
             double y1 = oy + points.get(i).get(1).asDouble();
             double x2 = ox + points.get(i + 1).get(0).asDouble();
@@ -1550,26 +1558,25 @@ public class ScenePlanner {
             double nx = -dy;
             double ny = dx;
             for (int side = 1; side >= -1; side -= 2) {
-                for (int step = 0; step <= 3; step++) {
-                    // 滑动序列：0、-14、+14、-28（沿段方向交错探测）
-                    double slide = step == 0 ? 0
-                            : (step % 2 == 1 ? -1 : 1)
-                                    * ((step + 1) / 2) * 14.0;
-                    double cx = mx + nx * LABEL_GAP * side + dx * slide;
-                    double cy = my + ny * LABEL_GAP * side + dy * slide;
-                    double[] box = {
-                        cx - size[0] / 2, cy - size[1] / 2,
-                        cx + size[0] / 2, cy + size[1] / 2};
-                    if (!spotClean(box, nodes, placed)) {
-                        continue;
-                    }
-                    int cross = countSegHits(box, segs, segOwners, owner);
-                    if (cross < bestCross) {
-                        bestCross = cross;
-                        best = new double[] {cx, cy};
-                    }
-                    if (bestCross == 0) {
-                        return best;
+                for (int no = 0; no < normalOffsets.length; no++) {
+                    double off = normalOffsets[no] * side;
+                    for (double slide : slides) {
+                        double cx = mx + nx * off + dx * slide;
+                        double cy = my + ny * off + dy * slide;
+                        double[] box = {
+                            cx - size[0] / 2, cy - size[1] / 2,
+                            cx + size[0] / 2, cy + size[1] / 2};
+                        if (!spotClean(box, nodes, placed)) {
+                            continue;
+                        }
+                        int cross = countSegHits(box, segs, segOwners, owner);
+                        if (cross < bestCross) {
+                            bestCross = cross;
+                            best = new double[] {cx, cy};
+                        }
+                        if (bestCross == 0) {
+                            return best;
+                        }
                     }
                 }
             }

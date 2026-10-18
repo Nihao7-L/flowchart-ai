@@ -312,6 +312,131 @@ class ScenePlannerTest {
     }
 
     @Test
+    @DisplayName("架构图多层：路由/缓存/注册/监控/日志 标签落位且不重叠不压线")
+    void architectureMultiLayerLabelsClean() throws Exception {
+        // 用户原始诉求「架构图标签残留（路由/缓存/注册/监控/日志）」的回归：
+        // 五个业务层、层间调用都带标签，曾出现标签摞成一坨、压在线上不可读。
+        // 修复后（②③ 边标签治理 + 短标签绑箭头）必须：① 有坐标的独立文字；
+        // ② 任意两个独立标签不重叠；③ 独立标签不压在任一条箭头上。
+        List<String> elements = new ArrayList<>();
+        // 接入层
+        elements.add(rect("gw", "网关", quote("接入层")));
+        // 路由层
+        elements.add(rect("rt", "路由", quote("路由层")));
+        // 服务层
+        elements.add(rect("order", "订单服务", quote("服务层")));
+        elements.add(rect("user", "用户服务", quote("服务层")));
+        // 缓存层
+        elements.add(rect("cache", "Redis 缓存", quote("缓存层")));
+        // 注册层
+        elements.add(rect("reg", "注册中心", quote("注册层")));
+        // 监控层
+        elements.add(rect("mon", "监控", quote("监控层")));
+        // 日志层
+        elements.add(rect("log", "日志", quote("日志层")));
+        // 数据层
+        elements.add(rect("db", "数据库", quote("数据层")));
+        // 层间调用，都带标签
+        elements.add(arrowLabeled("e1", "gw", "rt", "转发"));
+        elements.add(arrowLabeled("e2", "rt", "order", "路由到订单"));
+        elements.add(arrowLabeled("e3", "rt", "user", "路由到用户"));
+        elements.add(arrowLabeled("e4", "order", "cache", "读缓存"));
+        elements.add(arrowLabeled("e5", "user", "cache", "读缓存"));
+        elements.add(arrowLabeled("e6", "order", "reg", "注册"));
+        elements.add(arrowLabeled("e7", "user", "reg", "注册"));
+        elements.add(arrowLabeled("e8", "order", "mon", "上报"));
+        elements.add(arrowLabeled("e9", "user", "mon", "上报"));
+        elements.add(arrowLabeled("e10", "order", "log", "写日志"));
+        elements.add(arrowLabeled("e11", "user", "log", "写日志"));
+        elements.add(arrowLabeled("e12", "order", "db", "读写"));
+        String laid = planner.arrange(
+                sceneOf(elements.toArray(new String[0])),
+                engine, Set.of());
+        JsonNode root = mapper.readTree(laid);
+        try {
+            java.nio.file.Files.writeString(
+                java.nio.file.Paths.get("target/probe_arch.json"),
+                mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root),
+                java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception ignore) {}
+
+        List<JsonNode> standaloneLabels = new ArrayList<>();
+        List<JsonNode> boundLabels = new ArrayList<>();
+        List<JsonNode> arrows = new ArrayList<>();
+        int bound = 0;
+        for (JsonNode el : root.get("elements")) {
+            String t = el.path("type").asText();
+            if ("arrow".equals(t)) {
+                arrows.add(el);
+                if (el.has("label")) {
+                    bound++;
+                }
+            } else if ("text".equals(t)
+                    && el.path("id").asText().endsWith("_lbl")) {
+                if (el.hasNonNull("containerId")) {
+                    boundLabels.add(el);
+                } else {
+                    standaloneLabels.add(el);
+                }
+            }
+        }
+        assertEquals(0, bound, "能落位的标签不该留在箭头上（自动居中不可控）");
+        assertTrue(standaloneLabels.size() + boundLabels.size() >= 8,
+                "绝大多数标签应落位为独立文字或绑回箭头，实际: "
+                        + (standaloneLabels.size() + boundLabels.size()));
+
+        // ① 每个独立标签都拿到坐标；绑回箭头的标签由前端落在线中点，
+        //    后端的 x/y 只是占位（可能越界），不参与压线判定
+        for (JsonNode lbl : standaloneLabels) {
+            assertTrue(lbl.hasNonNull("x") && lbl.hasNonNull("y"),
+                    "独立标签必须有坐标: " + lbl.path("id").asText());
+        }
+
+        // ② 诊断：打印标签坐标
+        StringBuilder dump = new StringBuilder("LABELS:\n");
+        for (JsonNode lbl : standaloneLabels) {
+            dump.append("  [standalone] ").append(lbl.path("id").asText())
+                    .append(" \"").append(lbl.path("text").asText())
+                    .append("\" @(").append(lbl.path("x").asText())
+                    .append(",").append(lbl.path("y").asText())
+                    .append(")\n");
+        }
+        for (JsonNode lbl : boundLabels) {
+            dump.append("  [bound] ").append(lbl.path("id").asText())
+                    .append(" \"").append(lbl.path("text").asText())
+                    .append("\" containerId=").append(lbl.path("containerId").asText())
+                    .append("\n");
+        }
+        System.out.println(dump);
+
+        // ③ 独立标签（非绑回箭头的）不压在任一条箭头的任一段上
+        //    注意：arrow.points 是相对箭头 x/y 的偏移，必须加回 x/y 才得到
+        //    绝对坐标（与独立标签的 x/y 同坐标系），否则会误判压线。
+        for (JsonNode lbl : standaloneLabels) {
+            double[] box = textBox(lbl);
+            for (JsonNode arrow : arrows) {
+                JsonNode pts = arrow.get("points");
+                if (pts == null || !pts.isArray()
+                        || pts.size() < 2) {
+                    continue;
+                }
+                double ax = arrow.path("x").asDouble();
+                double ay = arrow.path("y").asDouble();
+                for (int k = 0; k < pts.size() - 1; k++) {
+                    double x1 = ax + pts.get(k).get(0).asDouble();
+                    double y1 = ay + pts.get(k).get(1).asDouble();
+                    double x2 = ax + pts.get(k + 1).get(0).asDouble();
+                    double y2 = ay + pts.get(k + 1).get(1).asDouble();
+                    assertFalse(segHitsBox(x1, y1, x2, y2, box),
+                            "标签「" + lbl.path("text").asText()
+                                    + "」压在箭头 " + arrow.path("id").asText()
+                                    + " 的线上");
+                }
+            }
+        }
+    }
+
+    @Test
     @DisplayName("多模块：同模块成员聚成一块，模块之间互不重叠")
     void modulesArePackedApart() throws Exception {
         String laid = planner.arrange(modularScene(), engine, Set.of());
@@ -914,6 +1039,59 @@ class ScenePlannerTest {
     private static boolean overlaps(double[] a, double[] b) {
         return a[0] < b[2] && b[0] < a[2]
                 && a[1] < b[3] && b[1] < a[3];
+    }
+
+    /** 用 fontSize 与文字长度估算一个独立标签的包围盒 [x,y,w,h] */
+    private static double[] textBox(JsonNode lbl) {
+        double x = lbl.path("x").asDouble();
+        double y = lbl.path("y").asDouble();
+        int font = lbl.hasNonNull("fontSize")
+                ? lbl.path("fontSize").asInt() : 16;
+        String text = lbl.path("text").asText();
+        // 中文按 font 宽、拉丁按 0.6*font 宽估算
+        double w = 0;
+        for (int i = 0; i < text.length(); i++) {
+            w += (text.charAt(i) > 0x2E80)
+                    ? font : font * 0.6;
+        }
+        double h = font * 1.2;
+        return new double[] {x, y, x + w, y + h};
+    }
+
+    /** Liang-Barsky：线段是否与轴对齐 box 真有交叠（擦边/贴角不算，与
+     * 生产代码 {@code SceneGeometryKit.segHitsBox} 同口径，避免把标签框
+     * 自身边缘的擦边误报成压线）。 */
+    private static boolean segHitsBox(double x1, double y1,
+            double x2, double y2, double[] box) {
+        double dx = x2 - x1, dy = y2 - y1;
+        double[] p = {-dx, dx, -dy, dy};
+        double[] q = {x1 - box[0], box[2] - x1, y1 - box[1], box[3] - y1};
+        double t0 = 0, t1 = 1;
+        for (int i = 0; i < 4; i++) {
+            if (Math.abs(p[i]) < 1e-12) {
+                if (q[i] < 0) {
+                    return false;
+                }
+                continue;
+            }
+            double r = q[i] / p[i];
+            if (p[i] < 0) {
+                if (r > t1) {
+                    return false;
+                }
+                if (r > t0) {
+                    t0 = r;
+                }
+            } else {
+                if (r < t0) {
+                    return false;
+                }
+                if (r < t1) {
+                    t1 = r;
+                }
+            }
+        }
+        return t0 < t1;
     }
 
     private JsonNode findFrame(String json, String name)
