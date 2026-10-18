@@ -316,13 +316,13 @@ class SceneGeometryKitTest {
     }
 
     @Test
-    @DisplayName("countSegHits：豁免自己那条边，只数别人的线段")
-    void countSegHitsSkipsOwnSegments() {
+    @DisplayName("countSegHits：自己的边只在标签真避开它时豁免")
+    void countSegHitsSkipsOwnSegmentsOnlyWhenClear() {
         double[] box = {100, 100, 140, 120};
         List<double[]> segs = new ArrayList<>();
         List<String> owners = new ArrayList<>();
-        // 自己那条边从标签框里穿过（贴着标签放是允许的）
-        segs.add(new double[] {90, 110, 150, 110});
+        // 自己那条边从标签框下侧擦过（净框内缩 1px 不碰它）→ 豁免
+        segs.add(new double[] {90, 121, 150, 121});
         owners.add("arrow_a");
         // 别人的线横穿标签框
         segs.add(new double[] {120, 90, 120, 130});
@@ -333,14 +333,37 @@ class SceneGeometryKitTest {
 
         assertThat(SceneGeometryKit.countSegHits(
                 box, segs, owners, "arrow_a")).isEqualTo(1);
-        // 换谁是自己：另一条穿框的线变成「自己的」
+        // 换谁是自己：那条擦边线归 arrow_a 所有，不再豁免；但它本来就
+        // 在框外（y=121 > 框底 120），不改变计数
         assertThat(SceneGeometryKit.countSegHits(
                 box, segs, owners, "arrow_b")).isEqualTo(1);
         // 都不豁免
         assertThat(SceneGeometryKit.countSegHits(
-                box, segs, owners, null)).isEqualTo(2);
+                box, segs, owners, null)).isEqualTo(1);
         // 空集合
         assertThat(SceneGeometryKit.countSegHits(
                 box, new ArrayList<>(), new ArrayList<>(), "x")).isZero();
+    }
+
+    @Test
+    @DisplayName("countSegHits：自己的边横穿标签时不构成豁免")
+    void countSegHitsDoesNotExemptOwnSegmentCuttingLabel() {
+        double[] box = {100, 100, 140, 120};
+        List<double[]> segs = new ArrayList<>();
+        List<String> owners = new ArrayList<>();
+        // 自己的竖线穿过标签框 —— 压自己的线照样不可读，必须计入
+        segs.add(new double[] {120, 90, 120, 130});
+        owners.add("arrow_a");
+        // 别人的线横穿
+        segs.add(new double[] {110, 110, 130, 110});
+        owners.add("arrow_b");
+
+        assertThat(SceneGeometryKit.countSegHits(
+                box, segs, owners, "arrow_a"))
+                .as("自己的竖线横穿标签，不应豁免").isEqualTo(2);
+        assertThat(SceneGeometryKit.countSegHits(
+                box, segs, owners, "arrow_b")).isEqualTo(2);
+        assertThat(SceneGeometryKit.countSegHits(
+                box, segs, owners, null)).isEqualTo(2);
     }
 }

@@ -138,6 +138,59 @@ public class SceneSanitizer {
     static final java.util.Map<String, String> TYPE_ALIASES =
             java.util.Map.of("circle", "ellipse");
 
+    /**
+     * 决策/分支语义词：矩形节点的 label 命中其中任一 ⇒ 改成菱形。
+     * 模型常把判断点画成矩形（实测 flow 图「支付处理三选一分支」
+     * 没有菱形判断点、state-machine 的状态分支也是矩形）。
+     * 菱形是结构图里判断点的标准形态，改之零歧义。
+     */
+    static final Set<String> DECISION_HINTS = Set.of(
+            "判断", "决策", "分支", "是否", "选择", "条件",
+            "判定", "校验", "检查", "if", "?");
+
+    /**
+     * 分支结局词：节点 label 命中 ⇒ 也升级成菱形。
+     * 这是用户对照图后明确点名的那类（「库存不足 / 支付失败 / 物流异常
+     * 应为红菱形」）—— 它们本身是某条分支的结局 / 再路由点，
+     * 画成矩形会让「这是一条岔路」看不出来。
+     */
+    static final Set<String> BRANCH_OUTCOME_HINTS = Set.of(
+            "失败", "异常", "不足", "错误", "超时", "取消", "退回",
+            "拒绝", "告警", "报警", "库存不足", "缺货");
+
+    /** 语义配色兜底（仅在模型没写 color 时生效，零覆盖风险） */
+    static final java.util.Map<String, String> COLOR_ERROR =
+            java.util.Map.ofEntries(
+                    java.util.Map.entry("异常", "red"),
+                    java.util.Map.entry("失败", "red"),
+                    java.util.Map.entry("不足", "red"),
+                    java.util.Map.entry("取消", "red"),
+                    java.util.Map.entry("超时", "red"),
+                    java.util.Map.entry("退回", "red"),
+                    java.util.Map.entry("错误", "red"),
+                    java.util.Map.entry("拒绝", "red"),
+                    java.util.Map.entry("告警", "red"),
+                    java.util.Map.entry("报警", "red"),
+                    java.util.Map.entry("fail", "red"),
+                    java.util.Map.entry("error", "red"),
+                    java.util.Map.entry("timeout", "red"),
+                    java.util.Map.entry("cancel", "red"));
+    static final java.util.Map<String, String> COLOR_DONE = java.util.Map.of(
+            "完成", "blue", "结束", "blue", "终态", "blue",
+            "done", "blue", "complete", "blue");
+    static final java.util.Map<String, String> COLOR_WAIT = java.util.Map.of(
+            "等待", "yellow", "进行中", "yellow", "处理中", "yellow",
+            "审核中", "yellow", "pending", "yellow", "waiting", "yellow",
+            "processing", "yellow");
+    static final java.util.Map<String, String> COLOR_PARALLEL = java.util.Map.of(
+            "并行", "purple");
+    static final java.util.Map<String, String> COLOR_OK = java.util.Map.of(
+            "正常", "green", "可用", "green", "成功", "green",
+            "启用", "green", "ok", "green", "success", "green");
+    static final java.util.Map<String, String> COLOR_HISTORY = java.util.Map.of(
+            "历史", "gray", "归档", "gray", "旧", "gray",
+            "archive", "gray");
+
     /** 严格的十进制数字（不接受 NaN / Infinity / 1e5 这类形态） */
     private static final java.util.regex.Pattern NUMERIC_TEXT =
             java.util.regex.Pattern.compile("-?\\d+(\\.\\d+)?");
@@ -185,6 +238,7 @@ public class SceneSanitizer {
             int unbound = 0;
             int aliased = 0;
             int rebased = 0;
+            int inferredColor = 0;
 
             // 先收集全图 id：只有"两端都指向真实元素"的箭头才敢丢 points
             // （绑到不存在元素的箭头要让校验器照常报错，不能被这里掩盖）
@@ -210,6 +264,15 @@ public class SceneSanitizer {
                         && TYPE_ALIASES.containsKey(type.asText())) {
                     obj.put("type",
                             TYPE_ALIASES.get(type.asText()));
+                    aliased++;
+                }
+
+                // ①b 决策 / 分支点画成菱形（矩形 + 命中语义词 ⇒ diamond）。
+                // 背景：模型把判断点画成矩形（实测 flow 图「支付处理三选一
+                // 分支」没有菱形判断点），菱形是结构图里判断点的标准形态。
+                if (type != null && "rectangle".equals(type.asText())
+                        && isDecisionLabel(obj)) {
+                    obj.put("type", "diamond");
                     aliased++;
                 }
 
@@ -259,6 +322,10 @@ public class SceneSanitizer {
                 // ⑤ label 归一化
                 JsonNode label = obj.get("label");
                 if (label == null || label.isNull()) {
+                    // ⑤b 没 label 时仍补语义配色（节点 id/type 也能透露结局）
+                    if (inferColor(obj, nodeName(obj))) {
+                        inferredColor++;
+                    }
                     kept.add(obj);
                     continue;
                 }
@@ -272,12 +339,18 @@ public class SceneSanitizer {
                     obj.remove("label");
                     dropped++;
                 }
+                // ⑤b 语义配色兜底：模型漏写 color 时按 label / id 推断，
+                // 不覆盖已显式写对的 color（零覆盖风险）。
+                if (inferColor(obj, nodeName(obj))) {
+                    inferredColor++;
+                }
                 kept.add(obj);
             }
 
             if (repaired == 0 && dropped == 0
                     && coerced == 0 && unbound == 0
-                    && aliased == 0 && rebased == 0) {
+                    && aliased == 0 && rebased == 0
+                    && inferredColor == 0) {
                 return commentStripped ? source : json;
             }
             ((ObjectNode) root).set(
@@ -285,9 +358,9 @@ public class SceneSanitizer {
             LOG.info("宽容归一化：label 补齐 {} 处、空壳/非法丢弃 {} 处、"
                             + "数字字符串还原 {} 处、绑定箭头摘非折线 points {} 处、"
                             + "类型别名归一 {} 处、绝对坐标 points 回落 {} 处、"
-                            + "剥注释 {} 处",
+                            + "语义配色 {} 处、剥注释 {} 处",
                     repaired, dropped, coerced, unbound,
-                    aliased, rebased, commentStripped ? 1 : 0);
+                    aliased, rebased, inferredColor, commentStripped ? 1 : 0);
             return objectMapper
                     .writeValueAsString(root);
         } catch (Exception e) {
@@ -509,5 +582,108 @@ public class SceneSanitizer {
             array.add(element);
         }
         return array;
+    }
+
+    /**
+     * 节点 label 文本（兼容直接字符串与对象两种写法）。
+     */
+    private static String nodeName(ObjectNode obj) {
+        JsonNode label = obj.get("label");
+        if (label == null) {
+            return "";
+        }
+        if (label.isTextual()) {
+            return label.asText();
+        }
+        JsonNode text = label.get("text");
+        return text != null && text.isTextual() ? text.asText() : "";
+    }
+
+    /**
+     * 矩形是否实为决策点：label 命中 DECISION_HINTS 或 BRANCH_OUTCOME_HINTS。
+     * 命中 ⇒ 调方应升级成菱形。
+     */
+    private static boolean isDecisionLabel(ObjectNode obj) {
+        if (!"rectangle".equals(obj.path("type").asText())) {
+            return false;
+        }
+        String name = nodeName(obj);
+        if (name.isEmpty()) {
+            return false;
+        }
+        for (String hint : DECISION_HINTS) {
+            if (name.contains(hint)) {
+                return true;
+            }
+        }
+        for (String hint : BRANCH_OUTCOME_HINTS) {
+            if (name.contains(hint)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 语义配色兜底（只在模型没写 color 时生效）。
+     *
+     * <p>背景：实测 state-machine / flow 图所有节点 color=null，
+     * 模型完全忽略配色语义（红=异常/失败、蓝=终态、黄=进行中、
+     * 紫=并行、绿=正常、灰=历史）。这里按 label / id 文本推断，
+     * 不覆盖已写对的 color —— 零覆盖风险。
+     *
+     * <p>优先级：错误类 &gt; 终态类 &gt; 等待类 &gt; 并行类 &gt; 正常类 &gt;
+     * 历史类；首个命中即停。
+     *
+     * @return 真的改了 color 才返回 true
+     */
+    private boolean inferColor(ObjectNode obj, String name) {
+        if (obj.has("color") || name == null || name.isEmpty()) {
+            return false;
+        }
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        for (java.util.Map.Entry<String, String> e
+                : COLOR_ERROR.entrySet()) {
+            if (name.contains(e.getKey()) || lower.contains(e.getKey())) {
+                obj.put("color", e.getValue());
+                return true;
+            }
+        }
+        for (java.util.Map.Entry<String, String> e
+                : COLOR_DONE.entrySet()) {
+            if (name.contains(e.getKey()) || lower.contains(e.getKey())) {
+                obj.put("color", e.getValue());
+                return true;
+            }
+        }
+        for (java.util.Map.Entry<String, String> e
+                : COLOR_WAIT.entrySet()) {
+            if (name.contains(e.getKey()) || lower.contains(e.getKey())) {
+                obj.put("color", e.getValue());
+                return true;
+            }
+        }
+        for (java.util.Map.Entry<String, String> e
+                : COLOR_PARALLEL.entrySet()) {
+            if (name.contains(e.getKey()) || lower.contains(e.getKey())) {
+                obj.put("color", e.getValue());
+                return true;
+            }
+        }
+        for (java.util.Map.Entry<String, String> e
+                : COLOR_OK.entrySet()) {
+            if (name.contains(e.getKey()) || lower.contains(e.getKey())) {
+                obj.put("color", e.getValue());
+                return true;
+            }
+        }
+        for (java.util.Map.Entry<String, String> e
+                : COLOR_HISTORY.entrySet()) {
+            if (name.contains(e.getKey()) || lower.contains(e.getKey())) {
+                obj.put("color", e.getValue());
+                return true;
+            }
+        }
+        return false;
     }
 }

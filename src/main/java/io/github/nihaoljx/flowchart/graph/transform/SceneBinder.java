@@ -59,9 +59,35 @@ public class SceneBinder {
      */
     private static final double SNAP_TOLERANCE = 12.0;
 
-    /** 可以当连线端点的图形类型 */
+    /**
+     * 可以当连线端点的图形类型
+     *
+     * <p>刻意不含 frame / embeddable / magicframe：绑到画框上前端会摘
+     * （isSafeBindingTarget），绑到嵌网页上更不允许。
+     */
     private static final Set<String> SHAPE_TYPES =
             Set.of("rectangle", "ellipse", "diamond");
+
+    /**
+     * 时序图生命线 id 前缀（SequenceLayout 合成，见其 LIFELINE_COLOR）。
+     *
+     * <p>为什么必须排除：生命线是 2px 宽、透明底、dashed 的**装饰元素**
+     * （参与者框下面那条竖虚线），语义上不是"可连线的图形"。
+     * SequenceLayout 刻意给消息箭头写显式 x/y/points（见其 javadoc
+     * 「不绑端点 —— 绑定会让前端按框边推导几何，行位就丢了」），但
+     * SceneBinder 跑在它下游（SceneGate.runPipeline 的顺序），把两端
+     * 落在生命线上的两点箭头升级成绑定式并
+     * {@code remove("x")/remove("y")/remove("points")} —— 行位就此
+     * 丢失，前端只剩两个 2px 竖条的中心连线。实测 5 图里 sequence 的
+     * 13 条消息 x/y/points 全为 0、scene_renderer 报 26 个端点悬空，
+     * 根因就是这一条。
+     *
+     * <p>为什么用 id 前缀而不是"无 label 的 rectangle"这类形态判据：
+     * 判定必须与 SequenceLayout 的命名约定同源（它写死 life_ + id），
+     * 而"透明/虚线/窄"是任何元素都可能有的合法样式，按形态排除会误伤
+     * 作者刻意画的细框。id 前缀是合成元素的稳定指纹。
+     */
+    private static final String LIFELINE_ID_PREFIX = "life_";
 
     private final ObjectMapper objectMapper =
             new ObjectMapper();
@@ -114,6 +140,12 @@ public class SceneBinder {
         List<JsonNode> shapes = new ArrayList<>();
         for (JsonNode elem : elements) {
             if (!elem.isObject()) {
+                continue;
+            }
+            String id = text(elem, "id");
+            // 时序图生命线是排版引擎合成的装饰元素，不是可连线的图形
+            // （详见 LIFELINE_ID_PREFIX 的说明）
+            if (id != null && id.startsWith(LIFELINE_ID_PREFIX)) {
                 continue;
             }
             JsonNode type = elem.get("type");

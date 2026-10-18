@@ -33,6 +33,25 @@ public final class SceneGeometryKit {
     /** 连线标签基准字号（px） */
     private static final double LABEL_FONT = 16;
 
+    /**
+     * 「自己的线是否真切进净框」的内缩量（罚分口径）：1px。
+     * 只滤端点/折角贴脸，浅擦边仍计入。
+     *
+     * <p>只剩罚分器 {@code findLabelSpot} 一个调用方：绑定闸门
+     * {@code canBindToArrow} 实测深度内缩救不了折角中点（折线中点几乎
+     * 必然坐在折点上，标签盒永远被自己的两段真切穿过，inset 1/3/5/7 全
+     * cuts=true），已改为「own 线整体豁免」（见 canBindToArrow javadoc）。
+     */
+    private static final double CORE_INSET_STRICT = 1;
+
+    /**
+     * 「自己的线是否真切进净框」的内缩量（绑定闸门口径）：3px。
+     * 折线中点恰是折角时标签框有一半盖住那零点几 px 的折角，是渲染期
+     * 结构必然（{@code bindContainerTexts} 把文字居中在折线中点），
+     * 内缩 3px 后折角贴脸必被放过，只有自己的线真横穿 6px 以上才否决。
+     */
+    private static final double CORE_INSET_BIND = 3;
+
     private SceneGeometryKit() {
     }
 
@@ -389,23 +408,69 @@ public final class SceneGeometryKit {
     }
 
     /**
-     * 矩形被多少条线段穿过，{@code owner} 名下的线段豁免。
+     * 矩形被多少条线段穿过，{@code owner} 名下的线段**仅在标签确实避开
+     * 它时**豁免：文字没有底色，压在自己的线上照样不可读（2026-10-18
+     * 实测：竖边 x=220 的箭头，标签中心线偏 16px 放、半宽 21.6px，
+     * 框右缘 225.6 &gt; 220 压线，旧口径无条件豁免后报 0 穿过，标签
+     * 就落在了自己的线上）。
+     *
+     * <p>判定用「标签框内缩 1px 的净框」，且自己的线段必须**真的切进
+     * 净框**（交段长度 ≥2px、横贯深度 ≥2px）才取消豁免 —— 端点/折角
+     * 贴脸仍算避开，否则竖直线箭头中段的标签必被自己那条线的两个端点
+     * 否决，「短标签绑回箭头」全灭；反过来真压线（实测竖边 x=220 的
+     * 箭头，标签半宽 21.6px、偏 16px 放，框右缘 225.6 &gt; 220）就照
+     * 常计入，与别人的线同权。
      *
      * <p>边标签落位用：文字元素没有底色，被别的线穿过就不可读，而标签
-     * 压自己那条边是可接受的（ELK {@code edgeLabels.inline} 同口径）。
+     * 贴着自己的线放是可接受的（ELK {@code edgeLabels.inline} 同口径）。
+     *
+     * <p>判定基线是<b>外框</b>而不是内缩净框：边标签是文字元素，没有
+     * 底色也没有衬边，线只要碰到框沿就与字形相切（前端 {@code
+     * sceneAdapter} 同样按外框裁切命中）。但自己的线段有<b>端点/折角
+     * 贴脸豁免</b>：正交路由的首段终点常与标签框擦个边（标签框是
+     * 「中点 ± 半高」，中点恰是折角时框的一半会盖住折角那零点几
+     * px），那不是压线。豁免的边界由 {@link #cutsCore} 给 —— 真真切
+     * 进净框 2px 以上才算被穿。
+     *
+     * <p><b>2026-10-18 修正（实测后）</b>：原先 5 参版的 {@code false}
+     * （内缩 3px）想同时服务绑定闸门，但绑定路径上折线中点几乎必然坐
+     * 在折点上，标签盒永远被自己的两段真切穿过 —— 实测竖直线 x=220 的
+     * 箭头，绑回盒 [205.6,250.0,234.4,270.0]（半宽 14.4，线距两缘都
+     * 14.4 &gt; 3），任何内缩都判 cuts=true。绑定闸门 {@code canBindToArrow}
+     * 已改为「own 线整体豁免」，这里只留<b>罚分口径</b>（strict=true）
+     * 一个调用方：问「哪个候选更干净」，多一个折点贴脸必须让它输给真
+     * 干净的候选。
      *
      * @param box    标签外框 {@code {x1, y1, x2, y2}}
      * @param segs   线段集合，每个 {@code {x1, y1, x2, y2}}
      * @param owners 与 {@code segs} 等长的归属标识（箭头的 id）
-     * @param owner  当前标签所属箭头 id，命中即跳过
+     * @param owner  当前标签所属箭头 id；其线段仅在真切进净框时取消豁免
      * @return 穿过的线段条数
      */
     static int countSegHits(
             double[] box, List<double[]> segs, List<String> owners,
             String owner) {
+        return countSegHits(box, segs, owners, owner, true);
+    }
+
+    /**
+     * 同 {@link #countSegHits(double[], List, List, String)}，但可指定
+     * 自己的线的判定口径。
+     *
+     * @param strictOwnSegment {@code true} = 罚分口径（自己的线真切进
+     *                         净框才计入，折角贴脸豁免）；{@code false}
+     *                         = 宽口径（内缩更多）。绑定闸门不走这里，
+     *                         见 {@link #countSegHits(double[], List, List, String)}
+     *                         的说明与 {@code canBindToArrow}
+     */
+    static int countSegHits(
+            double[] box, List<double[]> segs, List<String> owners,
+            String owner, boolean strictOwnSegment) {
         int hits = 0;
         for (int i = 0; i < segs.size(); i++) {
-            if (owner != null && owner.equals(owners.get(i))) {
+            boolean own = owner != null && owner.equals(owners.get(i));
+            if (own && !cutsCore(segs.get(i), box,
+                    strictOwnSegment ? CORE_INSET_STRICT : CORE_INSET_BIND)) {
                 continue;
             }
             if (segHitsBox(segs.get(i), box)) {
@@ -413,6 +478,82 @@ public final class SceneGeometryKit {
             }
         }
         return hits;
+    }
+
+    /**
+     * 线段是否**真的切过**标签中心区（内缩 {@code inset} px 的净框，且切
+     * 进去的深度至少 2px）：端点/折角贴脸不算压线。
+     *
+     * <p>之所以要 2px 深度而不是「碰到就算」：竖直线箭头（正交路由最
+     * 常见的形态）的首段终点与标签框可能只差零点几 px —— 标签框是
+     * 「中点 ± 半高」，中点恰是折点时框的一半会盖住折角那一点。那不
+     * 算压线。反过来切进净框 2px 以上的就是真穿字。
+     *
+     * @param inset 净框相对外框的内缩量；罚分口径 1px、绑定闸门 3px
+     */
+    private static boolean cutsCore(double[] s, double[] box, double inset) {
+        double[] core = {
+            box[0] + inset, box[1] + inset, box[2] - inset, box[3] - inset};
+        if (core[0] >= core[2] || core[1] >= core[3]) {
+            return false;
+        }
+        // 先确认线段与净框真有正长度交段（擦边/贴角在这里就被滤掉）
+        double inside = clippedLength(s, core);
+        if (inside < 2) {
+            return false;
+        }
+        // 再要求横贯深度 ≥2px：水平线看 y 落进净框的深度，竖直线看 x。
+        // （正交路由只产出轴对齐线段，斜线仅防御性地按 x 判定。）
+        boolean horizontal = Math.abs(s[3] - s[1]) < 1e-9;
+        double y = horizontal ? Math.min(s[1], s[3]) : Math.min(s[0], s[2]);
+        double lo = horizontal ? core[1] : core[0];
+        double hi = horizontal ? core[3] : core[2];
+        if (y < lo || y > hi) {
+            return false;
+        }
+        double depth = Math.min(y - lo, hi - y);
+        return depth >= 2;
+    }
+
+    /** 线段落在矩形内的那一段的长度（0 表示不相交） */
+    private static double clippedLength(double[] s, double[] core) {
+        double dx = s[2] - s[0];
+        double dy = s[3] - s[1];
+        if (Math.abs(dx) < 1e-12 && Math.abs(dy) < 1e-12) {
+            return 0;
+        }
+        double[] p = {-dx, dx, -dy, dy};
+        double[] q = {s[0] - core[0], core[2] - s[0],
+            s[1] - core[1], core[3] - s[1]};
+        double t0 = 0, t1 = 1;
+        for (int i = 0; i < 4; i++) {
+            if (Math.abs(p[i]) < 1e-12) {
+                if (q[i] < 0) {
+                    return 0;
+                }
+                continue;
+            }
+            double r = q[i] / p[i];
+            if (p[i] < 0) {
+                if (r > t1) {
+                    return 0;
+                }
+                if (r > t0) {
+                    t0 = r;
+                }
+            } else {
+                if (r < t0) {
+                    return 0;
+                }
+                if (r < t1) {
+                    t1 = r;
+                }
+            }
+        }
+        if (t0 >= t1) {
+            return 0;
+        }
+        return Math.hypot(dx, dy) * (t1 - t0);
     }
 
     /**

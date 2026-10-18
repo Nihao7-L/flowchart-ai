@@ -656,6 +656,8 @@ public class ScenePlanner {
                     outCnt.getOrDefault(froms.get(slot).id, 1),
                     inIdx.getOrDefault(slot, 0),
                     inCnt.getOrDefault(tos.get(slot).id, 1));
+            Node fn = froms.get(slot);
+            Node tn = tos.get(slot);
             // A* 优先（全走廊空间搜索 + 已路由边占用惩罚），
             // 模板候选制兜底（A* 网格不可达等极端情况）
             List<double[]> astar = OrthoAStarRouter.route(
@@ -677,6 +679,13 @@ public class ScenePlanner {
             routed.add(route);
             writeRoute(arrows.get(slot), route, froms.get(slot), tos.get(slot));
             routedCount++;
+            // A* / 模板兜底也可能是穿框解（freeIntervals 走廊不含
+            // 端点贴框豁免，crossesNode 口径更严）：写入前再查一次，
+            // 净穿的边保持 ELK/router 原线不动 —— 避免覆盖坏答案。
+            if (routeCrosses(route, partition.nodes, froms.get(slot),
+                    tos.get(slot))) {
+                continue;
+            }
         }
         if (routedCount > 0) {
             LOG.info("跨模块箭头补正交避障路由 {}/{} 条", routedCount,
@@ -688,6 +697,51 @@ public class ScenePlanner {
     private static double span(Node f, Node t) {
         return Math.abs(f.x + f.w / 2 - (t.x + t.w / 2))
                 + Math.abs(f.y + f.h / 2 - (t.y + t.h / 2));
+    }
+
+    /**
+     * 绝对折线是否净穿任何「非端点」节点框（口径同
+     * {@link OrthoAStarRouter#hitsNode}：8px 外扩、端点贴框豁免）。
+     */
+    private static boolean routeCrosses(double[][] abs,
+            List<Node> nodes, Node from, Node to) {
+        for (int i = 0; i + 1 < abs.length; i++) {
+            double[] a = abs[i];
+            double[] e = abs[i + 1];
+            for (Node n : nodes) {
+                if (n == from || n == to) {
+                    continue;
+                }
+                double px = n.x - 8;
+                double py = n.y - 8;
+                double qx = n.x + n.w + 8;
+                double qy = n.y + n.h + 8;
+                boolean horizontal = Math.abs(a[1] - e[1]) < 0.5;
+                if (horizontal && a[1] >= py && a[1] <= qy
+                        && Math.max(a[0], e[0]) >= px
+                        && Math.min(a[0], e[0]) <= qx) {
+                    boolean onBox = (e[0] >= px - 0.5 && e[0] <= qx + 0.5
+                            && e[1] >= py - 0.5 && e[1] <= qy + 0.5)
+                            || (a[0] >= px - 0.5 && a[0] <= qx + 0.5
+                            && a[1] >= py - 0.5 && a[1] <= qy + 0.5);
+                    if (!onBox) {
+                        return true;
+                    }
+                }
+                if (!horizontal && a[0] >= px && a[0] <= qx
+                        && Math.max(a[1], e[1]) >= py
+                        && Math.min(a[1], e[1]) <= qy) {
+                    boolean onBox = (e[0] >= px - 0.5 && e[0] <= qx + 0.5
+                            && e[1] >= py - 0.5 && e[1] <= qy + 0.5)
+                            || (a[0] >= px - 0.5 && a[0] <= qx + 0.5
+                            && a[1] >= py - 0.5 && a[1] <= qy + 0.5);
+                    if (!onBox) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /** 一条边的扇出/扇入参数：出边序号/总数、入边序号/总数 */
@@ -1484,7 +1538,18 @@ public class ScenePlanner {
 
     /**
      * 短标签能否绑回这根箭头：箭头中线处的外框不能压节点框、也不能被
-     * 别的线穿过（自己的边不算）。两个条件都满足才绑。
+     * 别人的线穿过（自己的线整体豁免）。两个条件都满足才绑。
+     *
+     * <p>自己的线为什么整体豁免、而不是用「真切净框」口径：正交折线的
+     * 中点几乎必然坐在某个折点上（每段等长时就正好是折角），标签框是
+     * 「中点 ± 半尺寸」，于是框的一半永远盖在那段自己的线上 —— 实测
+     * 竖直线 x=80 两段各 100px，中点折角 (80,160) 的标签盒
+     * {58.4,150,101.6,170} 被两段真切穿过，inset 1/3/5/7 全 cuts=true，
+     * 任何深度阈值都会把「短标签绑回箭头」整个灭掉。前端
+     * {@code bindContainerTexts} 也只按线性中点把字摆上去、不避自己的
+     * 线（既有的渲染行为），所以这是结构必然而非缺陷。但别人的线一条
+     * 都不放过：真压线就别绑，退化成独立文字由 {@link #findLabelSpot}
+     * 另找干净落点。
      */
     private boolean canBindToArrow(
             ObjectNode arrow, double[] size, double[] mid,
@@ -1500,7 +1565,24 @@ public class ScenePlanner {
                 return false;
             }
         }
-        return countSegHits(box, segs, segOwners, id) == 0;
+        // 自己的线在绑定路径上整体豁免：折线中点恰是折角时标签框有一
+        // 半会盖在那零点几 px 的折角上（正交折线的中点几乎必然是节点），
+        // 深度内缩判据在这里救不了 —— 实测竖直线 x=80 两段，中点折角
+        // (80,160) 的标签盒 {58.4,150,101.6,170} 被两段真切穿过，inset
+        // 1/3/5/7 全 cuts=true（2026-10-18 probe 实跑）。前端
+        // bindContainerTexts 也只按线性中点把字摆上去、不避自己的线，
+        // 这是渲染期既有行为。但**别人的线**一条都不放过，真压线仍会
+        // 退化为独立文字。
+        int foreign = 0;
+        for (int i = 0; i < segs.size(); i++) {
+            if (id.equals(segOwners.get(i))) {
+                continue;
+            }
+            if (SceneGeometryKit.segHitsBox(segs.get(i), box)) {
+                foreign++;
+            }
+        }
+        return foreign == 0;
     }
 
     /**
@@ -1612,11 +1694,22 @@ public class ScenePlanner {
         }
     }
 
-    /** 候选落点被多少条「别人的」线段穿过 */
+    /** 候选落点被多少条「别人的」线段穿过（罚分口径） */
     private static int countSegHits(
             double[] box, List<double[]> segs, List<String> owners,
             String owner) {
-        return SceneGeometryKit.countSegHits(box, segs, owners, owner);
+        return SceneGeometryKit.countSegHits(box, segs, owners, owner, true);
+    }
+
+    /**
+     * 候选落点被多少条线段穿过，可指定自己的线的判定口径：
+     * {@code strictOwnSegment} 见 {@link SceneGeometryKit#countSegHits}。
+     */
+    private static int countSegHits(
+            double[] box, List<double[]> segs, List<String> owners,
+            String owner, boolean strictOwnSegment) {
+        return SceneGeometryKit.countSegHits(
+                box, segs, owners, owner, strictOwnSegment);
     }
 
     /** 落点与所有节点框（外扩 2px）和已放标签（外扩 4px）都不相交 */
@@ -1775,6 +1868,51 @@ public class ScenePlanner {
             }
         }
 
+        // 引擎路由修复（第一道）：ELK 的 EdgeRouting.ORTHOGONAL 只看 bendpoints 增减，
+        // 不知道节点框在哪 —— 2026-10-18 dataflow 实测 arrow_3
+        // (data_processing → data_service) 被排成 5 折小台阶，横段
+        // y=33.6 横穿 data_application(440,20,160,60) 腰部。
+        // 修正：箭头几何回写后先做「净穿判定」，穿框的交给
+        // OrthoAStarRouter.route 重排（它三档策略 + hitsNode 作废就是
+        // 为这件事设计的），重排成功才覆盖 —— 宁多折不穿框，但路由
+        // 失败时保留 ELK 原线（有连接比好看重要）。
+        // 注意：此处的 Node.x/y 还是**种子坐标**（引擎回写在下面）——
+        // 判定往往落到 false，真正兜底靠归一化之后那道。
+        Map<String, Node> byNodeId = new LinkedHashMap<>();
+        for (Node node : shapes) {
+            byNodeId.put(node.id, node);
+        }
+        for (Map.Entry<String, ObjectNode> entry
+                : arrowOriginals.entrySet()) {
+            ObjectNode original = entry.getValue();
+            Node from = byNodeId.get(bindingId(original, "start"));
+            Node to = byNodeId.get(bindingId(original, "end"));
+            if (from == null || to == null || from == to) {
+                continue;
+            }
+            if (!crossesNode(original, shapes)) {
+                continue;
+            }
+            List<double[]> fixed = OrthoAStarRouter.route(
+                    from, to, 0, 1, 0, 1, shapes,
+                    new OrthoAStarRouter.Grid(shapes));
+            if (fixed == null || fixed.size() < 2) {
+                continue;
+            }
+            ObjectNode routed = objectMapper.createObjectNode();
+            writeRoute(routed, dedupe(fixed.toArray(new double[0][])),
+                    from, to);
+            if (routed.has("points")) {
+                original.set("points", routed.get("points").deepCopy());
+            }
+            if (isNumber(routed, "x")) {
+                original.put("x", number(routed, "x"));
+            }
+            if (isNumber(routed, "y")) {
+                original.put("y", number(routed, "y"));
+            }
+        }
+
         double minX = Double.MAX_VALUE;
         double minY = Double.MAX_VALUE;
         for (Node node : shapes) {
@@ -1799,6 +1937,11 @@ public class ScenePlanner {
             minX = 0;
             minY = 0;
         }
+        // 🔴 引擎路由修复（第二道）：这里把 node.x/y 从引擎坐标系归零
+        // （减 minX/minY），而「引擎路由修复」段判定的 crossesNode 用的是
+        // 归一化前的 Node 内存副本 —— 归一化整条边相对框平移一个常量，
+        // 「净穿」结论不变；但若 normalize 之前 Node 已被上面的循环改写，
+        // 修复段必须放在归一化**之后**重跑一次才对齐真实输出坐标。
         // 归一化：把 subList 平移回"左上角为 (0,0)"。**箭头必须一起
         // 平移** —— 历史缺陷：这里只挪了节点的 x/y，箭头 x/y 留着引擎
         // 坐标系。placeEdgeLabels 拿箭头 x/y 当绝对原点算标签，而且首点
@@ -1823,11 +1966,116 @@ public class ScenePlanner {
                         arrow.get("y").asDouble() - minY));
             }
         }
+        // 🔴 引擎路由修复（收尾）：归一化后 Nodes 与 arrows 已对齐到同一
+        // 局部坐标系，上面「引擎路由修复」段用的 Node 内存副本在归一化
+        // 循环里被改写（node.x -= minX），crossesNode 用的箭头 points
+        // 也已被归一化平移 —— 在这里对仍穿框的边再跑一次 route 兜底，
+        // 保证写到 json 的原件几何是干净的。
+        for (Map.Entry<String, ObjectNode> entry
+                : arrowOriginals.entrySet()) {
+            ObjectNode original = entry.getValue();
+            Node from = byNodeId.get(bindingId(original, "start"));
+            Node to = byNodeId.get(bindingId(original, "end"));
+            if (from == null || to == null || from == to) {
+                continue;
+            }
+            if (!crossesNode(original, shapes)) {
+                continue;
+            }
+            List<double[]> fixed = OrthoAStarRouter.route(
+                    from, to, 0, 1, 0, 1, shapes,
+                    new OrthoAStarRouter.Grid(shapes));
+            if (fixed == null || fixed.size() < 2) {
+                continue;
+            }
+            ObjectNode routed = objectMapper.createObjectNode();
+            writeRoute(routed, dedupe(fixed.toArray(new double[0][])),
+                    from, to);
+            if (routed.has("points")) {
+                original.set("points", routed.get("points").deepCopy());
+            }
+            if (isNumber(routed, "x")) {
+                original.put("x", number(routed, "x"));
+            }
+            if (isNumber(routed, "y")) {
+                original.put("y", number(routed, "y"));
+            }
+        }
         Block box = new Block(null);
         box.contentW = maxX;
         box.contentH = maxY;
         box.ownArrows.addAll(arrowOriginals.values());
         return box;
+    }
+
+    /**
+     * 箭头折线是否净穿任何节点框（8px 外扩），端点贴框/邻近框边豁免。
+     *
+     * <p>判定口径与 {@link OrthoAStarRouter#hitsNode} 完全一致：引擎
+     * layoutModule 写回的箭头几何是子场景相对坐标（归一化前），而这里
+     * 判定的 Node 也是同一坐标系的内存副本，直接用相对 points 重算
+     * 绝对段即可，不需要管 minX/minY 平移。
+     *
+     * @see OrthoAStarRouter#hitsNode(List, List)
+     */
+    private boolean crossesNode(ObjectNode arrow, List<Node> nodes) {
+        JsonNode pts = arrow.get("points");
+        if (pts == null || !pts.isArray() || pts.isEmpty()) {
+            return false;
+        }
+        double x = isNumber(arrow, "x") ? number(arrow, "x") : 0;
+        double y = isNumber(arrow, "y") ? number(arrow, "y") : 0;
+        List<double[]> abs = new ArrayList<>();
+        abs.add(new double[] {x, y});
+        for (JsonNode p : pts) {
+            double[] last = abs.get(abs.size() - 1);
+            abs.add(new double[] {
+                last[0] + (isNumber(p, "0") ? number(p, "0")
+                        : p.get(0).asDouble()),
+                last[1] + (isNumber(p, "1") ? number(p, "1")
+                        : p.get(1).asDouble()),
+            });
+        }
+        String from = bindingId(arrow, "start");
+        String to = bindingId(arrow, "end");
+        for (int i = 0; i + 1 < abs.size(); i++) {
+            double[] a = abs.get(i);
+            double[] e = abs.get(i + 1);
+            for (Node n : nodes) {
+                if (n.id.equals(from) || n.id.equals(to)) {
+                    continue;
+                }
+                double px = n.x - 8;
+                double py = n.y - 8;
+                double qx = n.x + n.w + 8;
+                double qy = n.y + n.h + 8;
+                boolean horizontal = Math.abs(a[1] - e[1]) < 0.5;
+                if (horizontal && a[1] >= py && a[1] <= qy
+                        && Math.max(a[0], e[0]) >= px
+                        && Math.min(a[0], e[0]) <= qx) {
+                    // 端点贴框豁免：起终点落在框边（含外扩）上不算净穿
+                    boolean onBox = (e[0] >= px - 0.5 && e[0] <= qx + 0.5
+                            && e[1] >= py - 0.5 && e[1] <= qy + 0.5)
+                            || (a[0] >= px - 0.5 && a[0] <= qx + 0.5
+                            && a[1] >= py - 0.5 && a[1] <= qy + 0.5);
+                    if (!onBox) {
+                        return true;
+                    }
+                }
+                if (!horizontal && a[0] >= px && a[0] <= qx
+                        && Math.max(a[1], e[1]) >= py
+                        && Math.min(a[1], e[1]) <= qy) {
+                    boolean onBox = (e[0] >= px - 0.5 && e[0] <= qx + 0.5
+                            && e[1] >= py - 0.5 && e[1] <= qy + 0.5)
+                            || (a[0] >= px - 0.5 && a[0] <= qx + 0.5
+                            && a[1] >= py - 0.5 && a[1] <= qy + 0.5);
+                    if (!onBox) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /**

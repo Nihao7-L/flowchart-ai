@@ -578,4 +578,94 @@ class SceneSanitizerTest {
             from = at + needle.length();
         }
     }
+
+    // ---------------- 决策点 → 菱形 ----------------
+
+    @Test
+    @DisplayName("矩形 label 命中判断/决策/分支 ⇒ 升级成 diamond")
+    void decisionRectBecomesDiamond() {
+        String in = "{\"elements\":["
+                + "{\"id\":\"r1\",\"type\":\"rectangle\","
+                + "\"label\":{\"text\":\"判断订单是否合法\"}},"
+                + "{\"id\":\"r2\",\"type\":\"rectangle\","
+                + "\"label\":\"分支路由\"},"
+                + "{\"id\":\"r3\",\"type\":\"rectangle\","
+                + "\"label\":{\"text\":\"库存校验\"}}]}";
+
+        String out = sanitizer.sanitize(in);
+
+        assertEquals(3, countOccurrences(out, "\"type\":\"diamond\""),
+                "三个决策矩形都应变菱形，实际: " + out);
+        assertEquals(0, countOccurrences(out, "\"type\":\"rectangle\""),
+                "不应再有矩形，实际: " + out);
+    }
+
+    @Test
+    @DisplayName("普通矩形（无决策语义）保持 rectangle")
+    void plainRectStaysRect() {
+        String in = "{\"elements\":["
+                + "{\"id\":\"r1\",\"type\":\"rectangle\","
+                + "\"label\":{\"text\":\"订单详情\"}}]}";
+
+        String out = sanitizer.sanitize(in);
+
+        assertTrue(out.contains("\"type\":\"rectangle\""),
+                "普通流程节点不应被改成菱形，实际: " + out);
+    }
+
+    // ---------------- 语义配色兜底 ----------------
+
+    @Test
+    @DisplayName("未写 color 的异常/失败节点 ⇒ 推断 red")
+    void errorNodeGetsRed() {
+        String in = "{\"elements\":["
+                + "{\"id\":\"r1\",\"type\":\"rectangle\","
+                + "\"label\":{\"text\":\"支付失败\"}},"
+                + "{\"id\":\"r2\",\"type\":\"rectangle\","
+                + "\"label\":\"库存不足\"}]}";
+
+        String out = sanitizer.sanitize(in);
+
+        assertEquals(2, countOccurrences(out, "\"color\":\"red\""),
+                "失败/不足节点应判红，实际: " + out);
+    }
+
+    @Test
+    @DisplayName("已写 color 的节点不被覆盖")
+    void existingColorNotOverridden() {
+        String in = "{\"elements\":["
+                + "{\"id\":\"r1\",\"type\":\"rectangle\",\"color\":\"green\","
+                + "\"label\":{\"text\":\"支付失败\"}}]}";
+
+        String out = sanitizer.sanitize(in);
+
+        assertTrue(out.contains("\"color\":\"green\""),
+                "已显式写对的 color 必须保留，实际: " + out);
+        assertFalse(out.contains("\"color\":\"red\""),
+                "不应覆盖模型已写对的配色，实际: " + out);
+    }
+
+    @Test
+    @DisplayName("终态/等待/并行/正常/历史节点各得对应色")
+    void semanticColorsAssigned() {
+        String in = "{\"elements\":["
+                + "{\"id\":\"a\",\"type\":\"rectangle\","
+                + "\"label\":{\"text\":\"已完成\"}},"
+                + "{\"id\":\"b\",\"type\":\"rectangle\","
+                + "\"label\":\"处理中\"},"
+                + "{\"id\":\"c\",\"type\":\"rectangle\","
+                + "\"label\":\"并行区\"},"
+                + "{\"id\":\"d\",\"type\":\"rectangle\","
+                + "\"label\":\"正常服务\"},"
+                + "{\"id\":\"e\",\"type\":\"rectangle\","
+                + "\"label\":\"历史归档\"}]}";
+
+        String out = sanitizer.sanitize(in);
+
+        assertTrue(out.contains("\"color\":\"blue\""), "完成→blue: " + out);
+        assertTrue(out.contains("\"color\":\"yellow\""), "进行中→yellow: " + out);
+        assertTrue(out.contains("\"color\":\"purple\""), "并行→purple: " + out);
+        assertTrue(out.contains("\"color\":\"green\""), "正常→green: " + out);
+        assertTrue(out.contains("\"color\":\"gray\""), "历史→gray: " + out);
+    }
 }

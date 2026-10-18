@@ -1041,21 +1041,29 @@ class ScenePlannerTest {
                 && a[1] < b[3] && b[1] < a[3];
     }
 
-    /** 用 fontSize 与文字长度估算一个独立标签的包围盒 [x,y,w,h] */
+    /**
+     * 用 fontSize 与文字长度估算一个独立标签的包围盒 [x,y,w,h]。
+     *
+     * <p>口径必须与生产 {@code SceneGeometryKit.labelSize} 逐字一致
+     * （CJK 0.9×font、Latin 0.45×font、宽下限 24、高 1.25×font）——
+     * 2026-10-18 实测：这里曾用「中文按 font 宽、高 1.2×font」的近似，
+     * 盒宽比生产宽 6.4px，「读缓存」标签右缘凭空越过 e10 竖线 0.4px，
+     * 假阳性报压线（生产盒其实离线 4.4px）。两侧同源才不会漂移。
+     */
     private static double[] textBox(JsonNode lbl) {
         double x = lbl.path("x").asDouble();
         double y = lbl.path("y").asDouble();
         int font = lbl.hasNonNull("fontSize")
                 ? lbl.path("fontSize").asInt() : 16;
         String text = lbl.path("text").asText();
-        // 中文按 font 宽、拉丁按 0.6*font 宽估算
+        // 中文按 0.9*font 宽、拉丁按 0.45*font 宽估算（与 labelSize 同源）
         double w = 0;
         for (int i = 0; i < text.length(); i++) {
             w += (text.charAt(i) > 0x2E80)
-                    ? font : font * 0.6;
+                    ? font * 0.9 : font * 0.45;
         }
-        double h = font * 1.2;
-        return new double[] {x, y, x + w, y + h};
+        double h = font * 1.25;
+        return new double[] {x, y, x + Math.max(w, 24), y + h};
     }
 
     /** Liang-Barsky：线段是否与轴对齐 box 真有交叠（擦边/贴角不算，与

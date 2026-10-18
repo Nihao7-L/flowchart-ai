@@ -223,6 +223,28 @@ final class OrthoAStarRouter {
      * 取总代价最小 —— JointJS manhattan 的锚点候选 + A* 主体，再加
      * libavoid 式占用惩罚（边与边分离的根治点）。
      */
+    /**
+     * 跨模块边求路由，折点硬约束 ≤1（用户诉求：最好没有或只有一个弯折）。
+     *
+     * <p>策略优先级：
+     * <ol>
+     *   <li>straightStub=true 且 maxBends=1：两端 stub 直出、全程仅 1 个折点
+     *       （L 形），这是首选；</li>
+     *   <li>maxBends=4（仍可绕障）：仅当 ① 全锚点组合都无法在 1 折内连通
+     *       （被节点挡死）才放宽，此时仍尽量直出；</li>
+     *   <li>straightStub=false：最后兜底，允许 stub 拐出。</li>
+     * </ol>
+     * 一旦某一档找到解就采用它，因此「能 1 折绝不 2 折」。
+     *
+     * <p>但「有解即返回」有个陷阱：1 折的 L 形恰好从第三个节点身上抄近路时，
+     * 代价（60 + 长度）远低于 4 折绕行（600），算法没有任何动机绕开 ——
+     * 2026-10-18 dataflow 实测：data_processing → data_service 之间横着
+     * data_application(440,20,160,60)，1 折解横段 y≈33.6 直接切过它腰部，
+     * 而 {1,4} 档本来有 cross=[] 的 y=-40 走廊解。
+     * 所以每档的最优解先过 {@link #hitsNode}：只要净穿任何无关节点
+     * （端点贴框豁免仍保留），该档作废、继续放宽折点预算。
+     * 三档全穿框才退回最后一条 best —— 宁穿框也不丢连接，悬空比压线更糟。
+     */
     static List<double[]> route(
             ScenePlanner.Node f, ScenePlanner.Node t,
             int outIdx, int outCnt, int inIdx, int inCnt,
@@ -232,37 +254,52 @@ final class OrthoAStarRouter {
         }
         double[] sSlides = slidePair(outIdx, outCnt);
         double[] eSlides = slidePair(inIdx, inCnt);
-        double bestCost = Double.POSITIVE_INFINITY;
-        List<double[]> bestPolyline = null;
-        for (int sSide = 0; sSide < 4; sSide++) {
-            for (double sSlide : sSlides) {
-                double[] sa = quantizeAnchor(grid, f, sSide,
-                        sideAnchorAt(f, sSide, sSlide));
-                for (int eSide = 0; eSide < 4; eSide++) {
-                    for (double eSlide : eSlides) {
-                        double[] ea = quantizeAnchor(grid, t, eSide,
-                                sideAnchorAt(t, eSide, eSlide));
-                        List<double[]> path = astarOne(
-                                grid, nodes, sa, sSide, ea, eSide, true);
-                        if (path == null) {
-                            path = astarOne(
-                                    grid, nodes, sa, sSide, ea, eSide, false);
-                        }
-                        if (path == null) {
-                            continue;
-                        }
-                        double cost = pathCost(path);
-                        if (cost < bestCost) {
-                            bestCost = cost;
-                            bestPolyline = path;
+        int[][] strategies = {{1, 1}, {1, 4}, {0, 4}};
+        List<double[]> fallback = null;
+        double fallbackCost = Double.POSITIVE_INFINITY;
+        for (int[] strat : strategies) {
+            boolean straightStub = strat[0] == 1;
+            int maxBends = strat[1];
+            double bestCost = Double.POSITIVE_INFINITY;
+            List<double[]> bestPolyline = null;
+            for (int sSide = 0; sSide < 4; sSide++) {
+                for (double sSlide : sSlides) {
+                    double[] sa = quantizeAnchor(grid, f, sSide,
+                            sideAnchorAt(f, sSide, sSlide));
+                    for (int eSide = 0; eSide < 4; eSide++) {
+                        for (double eSlide : eSlides) {
+                            double[] ea = quantizeAnchor(grid, t, eSide,
+                                    sideAnchorAt(t, eSide, eSlide));
+                            List<double[]> path = astarOne(
+                                    grid, nodes, sa, sSide, ea, eSide,
+                                    straightStub, maxBends);
+                            if (path == null) {
+                                continue;
+                            }
+                            double cost = pathCost(path);
+                            if (cost < bestCost) {
+                                bestCost = cost;
+                                bestPolyline = path;
+                            }
                         }
                     }
                 }
             }
+            if (bestPolyline == null) {
+                continue;
+            }
+            List<double[]> merged = mergeCollinear(bestPolyline);
+            if (hitsNode(merged, nodes)) {
+                // 本档最优净穿无关节点：留着当兜底，继续放宽折点预算
+                if (bestCost < fallbackCost) {
+                    fallbackCost = bestCost;
+                    fallback = merged;
+                }
+                continue;
+            }
+            return snapJogs(merged, nodes);
         }
-        return bestPolyline == null
-                ? null
-                : snapJogs(mergeCollinear(bestPolyline), nodes);
+        return fallback;
     }
 
     /**
@@ -493,7 +530,7 @@ final class OrthoAStarRouter {
     private static List<double[]> astarOne(
             Grid grid, List<ScenePlanner.Node> nodes,
             double[] sa, int sSide, double[] ea, int eSide,
-            boolean straightStub) {
+            boolean straightStub, int maxBends) {
         int sDir = SIDE_TO_DIR[sSide];
         int eDir = SIDE_TO_DIR[eSide];
         int sCol = grid.colOf(sa[0]) + DIR_DX[sDir];
@@ -513,6 +550,7 @@ final class OrthoAStarRouter {
         int total = cols * rows * 4;
         double[] dist = new double[total];
         int[] prev = new int[total];
+        byte[] bends = new byte[total]; // 到达该 state 时累计的折点数
         Arrays.fill(dist, Double.POSITIVE_INFINITY);
         Arrays.fill(prev, -1);
         // state = (row * cols + col) * 4 + dir
@@ -539,6 +577,7 @@ final class OrthoAStarRouter {
             loops++;
             int dir = state % 4;
             double base = dist[state];
+            int curBends = bends[state];
             for (int nd = 0; nd < 4; nd++) {
                 if (nd == (dir + 2) % 4) {
                     continue; // 禁止掉头
@@ -556,6 +595,11 @@ final class OrthoAStarRouter {
                         || grid.blocked(nCol, nRow, nodes)) {
                     continue;
                 }
+                // 折点硬约束：超过 maxBends 的路径直接剪掉（用户诉求 ≤1）
+                int nBends = curBends + (nd == dir ? 0 : 1);
+                if (nBends > maxBends) {
+                    continue;
+                }
                 double step = COST_STEP
                         + (nd == dir ? 0 : COST_TURN)
                         + (grid.occupied(nCol, nRow) ? COST_OCCUPIED : 0)
@@ -566,6 +610,7 @@ final class OrthoAStarRouter {
                 if (candidate < dist[nState] - 1e-9) {
                     dist[nState] = candidate;
                     prev[nState] = state;
+                    bends[nState] = (byte) nBends;
                     open.add(new double[] {
                             candidate + heuristic(grid, nCol, nRow, ea),
                             nState});

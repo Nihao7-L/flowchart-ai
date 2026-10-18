@@ -64,11 +64,20 @@ class EdgeLabelPlacementTest {
                 label.path("x").asDouble(), label.path("y").asDouble(),
                 label.path("x").asDouble() + size[0],
                 label.path("y").asDouble() + size[1]};
-            // 自己那条边不算：标签贴着自己的线是允许的
+            // 自己那条边不算：标签贴着自己的线是允许的（绑回箭头的短
+            // 标签本来就被前端 bindContainerTexts 摆在折线中点上，而正
+            // 交折线的中点几乎必然坐在折点上）
             String owner = label.path("id").asText()
                     .replaceFirst("_lbl$", "");
-            int crossed = SceneGeometryKit.countSegHits(
-                    box, segs, segOwners, owner);
+            int crossed = 0;
+            for (int i = 0; i < segs.size(); i++) {
+                if (owner.equals(segOwners.get(i))) {
+                    continue;
+                }
+                if (SceneGeometryKit.segHitsBox(segs.get(i), box)) {
+                    crossed++;
+                }
+            }
             assertThat(crossed)
                     .as("标签「%s」%s 被 %d 条别的线穿过", content, box, crossed)
                     .isZero();

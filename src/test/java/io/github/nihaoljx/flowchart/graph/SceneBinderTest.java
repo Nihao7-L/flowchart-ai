@@ -147,4 +147,60 @@ class SceneBinderTest {
         assertFalse(out.contains("points"),
                 "容差内的端点应被吸附: " + out);
     }
+
+    /**
+     * 时序图生命线不是可连线的图形：吸附会把 SequenceLayout 写好的
+     * 显式 x/y/points 抹掉（remove 三件套），消息箭头的行位就此丢失。
+     *
+     * @see io.github.nihaoljx.flowchart.graph.transform.SceneBinder#LIFELINE_ID_PREFIX
+     */
+    @Test
+    @DisplayName("生命线不是连线端点：两点箭头保持显式 x/y/points 原样")
+    void keepsArrowAnchoredOnLifelines() {
+        // 仿 SequenceLayout 产物：参与者框 + 2px 生命线 + 水平消息箭头
+        String life1 = "{\"id\":\"life_a\",\"type\":\"rectangle\","
+                + "\"x\":200,\"y\":180,\"width\":2,\"height\":980,"
+                + "\"backgroundColor\":\"transparent\","
+                + "\"strokeStyle\":\"dashed\"}";
+        String life2 = "{\"id\":\"life_b\",\"type\":\"rectangle\","
+                + "\"x\":540,\"y\":180,\"width\":2,\"height\":980,"
+                + "\"backgroundColor\":\"transparent\","
+                + "\"strokeStyle\":\"dashed\"}";
+        String json = "{\"elements\":[" + life1 + "," + life2 + ","
+                + "{\"id\":\"msg_0\",\"type\":\"arrow\","
+                + "\"x\":200,\"y\":300,"
+                + "\"points\":[[0,0],[340,0]],"
+                + "\"label\":{\"text\":\"输入密码\"}}]}";
+
+        // 原样返回（引用相等）：一个字节都不该被改
+        assertSame(json, binder.bind(json));
+    }
+
+    /**
+     * 正常的参与者框照样是合法端点 —— 生命线豁免不许把整个吸附能力废掉。
+     */
+    @Test
+    @DisplayName("生命线豁免不影响普通矩形的吸附")
+    void stillBindsToOrdinaryShapesBesideLifelines() {
+        String life1 = "{\"id\":\"life_a\",\"type\":\"rectangle\","
+                + "\"x\":200,\"y\":180,\"width\":2,\"height\":980}";
+        String json = "{\"elements\":[" + R1 + "," + R2 + "," + life1 + ","
+                + "{\"id\":\"a1\",\"type\":\"arrow\","
+                + "\"x\":160,\"y\":35,"
+                + "\"points\":[[0,0],[240,0]]}]}";
+
+        String out = binder.bind(json);
+
+        assertTrue(out.contains("\"id\":\"r1\""),
+                "普通矩形仍应被吸附: " + out);
+        assertTrue(out.contains("\"id\":\"r2\""),
+                "普通矩形仍应被吸附: " + out);
+        assertFalse(out.contains("points"),
+                "升级为绑定式后不应残留 points: " + out);
+        // 绑定目标必须是参与者框，不是生命线：
+        // start/end 两处引用的 id 都不该是 life_a
+        assertFalse(out.contains("\"start\":{\"id\":\"life_a\"}")
+                        || out.contains("\"end\":{\"id\":\"life_a\"}"),
+                "生命线不该被选为绑定端点: " + out);
+    }
 }
