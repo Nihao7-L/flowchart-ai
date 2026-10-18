@@ -226,15 +226,15 @@ final class OrthoAStarRouter {
     /**
      * 跨模块边求路由，折点硬约束 ≤1（用户诉求：最好没有或只有一个弯折）。
      *
-     * <p>策略优先级：
+     * <p>策略优先级（折点预算逐级放宽，每一级都先试 stub 直出、再试
+     * stub 拐出）：
      * <ol>
-     *   <li>straightStub=true 且 maxBends=1：两端 stub 直出、全程仅 1 个折点
-     *       （L 形），这是首选；</li>
-     *   <li>maxBends=4（仍可绕障）：仅当 ① 全锚点组合都无法在 1 折内连通
-     *       （被节点挡死）才放宽，此时仍尽量直出；</li>
-     *   <li>straightStub=false：最后兜底，允许 stub 拐出。</li>
+     *   <li>maxBends=1：两端 stub 直出、全程仅 1 个折点（L 形），首选；</li>
+     *   <li>maxBends=2：Z 形正交走线，最常见的绕行形态；</li>
+     *   <li>maxBends=3、4：只在前面几级全被节点挡死时才放宽；</li>
+     *   <li>straightStub 降为 false：最后兜底，允许 stub 拐出。</li>
      * </ol>
-     * 一旦某一档找到解就采用它，因此「能 1 折绝不 2 折」。
+     * 一旦某一档找到**不穿节点**的解就采用它，因此「能 1 折绝不 2 折」。
      *
      * <p>但「有解即返回」有个陷阱：1 折的 L 形恰好从第三个节点身上抄近路时，
      * 代价（60 + 长度）远低于 4 折绕行（600），算法没有任何动机绕开 ——
@@ -243,7 +243,7 @@ final class OrthoAStarRouter {
      * 而 {1,4} 档本来有 cross=[] 的 y=-40 走廊解。
      * 所以每档的最优解先过 {@link #hitsNode}：只要净穿任何无关节点
      * （端点贴框豁免仍保留），该档作废、继续放宽折点预算。
-     * 三档全穿框才退回最后一条 best —— 宁穿框也不丢连接，悬空比压线更糟。
+    // 全部档位都穿框才退回最后一条 best —— 宁穿框也不丢连接，悬空比压线更糟。
      */
     static List<double[]> route(
             ScenePlanner.Node f, ScenePlanner.Node t,
@@ -254,7 +254,16 @@ final class OrthoAStarRouter {
         }
         double[] sSlides = slidePair(outIdx, outCnt);
         double[] eSlides = slidePair(inIdx, inCnt);
-        int[][] strategies = {{1, 1}, {1, 4}, {0, 4}};
+        // 折点预算逐级放宽：1 → 2 → 3 → 4，两段（stub 直出 / 允许拐出）
+        // 都按这个顺序试。中间档不能省 —— 2 折的 Z 形正交走线是最常见的
+        // 绕行形态，少了它就会从「1 折不通」直接跳到「4 折」，端上看到
+        // 一条来回折三次的长线（2026-10-19 dataflow 实测：18 条箭头里
+        // 4 条是 4 折、最长绕 1200px）。
+        int[][] strategies = {
+                {1, 1}, {1, 2}, {1, 3}, {1, 4},
+                {0, 1}, {0, 2}, {0, 3}, {0, 4},
+        };
+
         List<double[]> fallback = null;
         double fallbackCost = Double.POSITIVE_INFINITY;
         for (int[] strat : strategies) {
