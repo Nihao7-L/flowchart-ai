@@ -522,11 +522,18 @@ public class ElkLayoutEngine implements LayoutEngine {
     }
 
     /**
-     * 把一条边写成"源盒边缘 → 目标盒边缘"的 3 点共线折线。
+     * 把一条边写成"源盒边缘 → 目标盒边缘"的 3 点折线。
      *
-     * 协议与 {@link #writeBackEdgeRoutes} 一致：x / y = 首点绝对
+     * <p>协议与 {@link #writeBackEdgeRoutes} 一致：x / y = 首点绝对
      * 坐标，points = 相对首点的偏移、首点 [0,0]。补足 3 点是为了
      * 存活 SceneSanitizer 对绑定箭头"少于 3 点即摘"的口径。
+     *
+     * <p>中间点放在**直角拐点**上，不是两端点连线的中点。星形放射布局
+     * 里枢纽与叶子的盒心连线天然是斜的，若把中点取在斜线上，三点共线
+     * ⇒ 整条边是一根斜线：既违反"全正交"契约，又会把画布包围盒撑大
+     * （实测 state-machine 的 processing→已取消/已完成 两根辐条斜着
+     * 扎到 x=-293，整图被撑出 293px 空白）。所以这里走 Z 形：
+     * 先沿长轴走一半，再横过去，最后沿长轴收进目标。
      */
     private void writeStraightRoute(
             Edge edge, Shape from, Shape to) {
@@ -541,13 +548,36 @@ public class ElkLayoutEngine implements LayoutEngine {
         }
         double[] start = slopedExit(fx, fy, tx, ty, from);
         double[] end = slopedExit(tx, ty, fx, fy, to);
-        double mx = (start[0] + end[0]) / 2;
-        double my = (start[1] + end[1]) / 2;
+        double ex = end[0] - start[0];
+        double ey = end[1] - start[1];
+        // 拐点：水平位移更大就「先横后竖」，否则「先竖后横」；
+        // 单侧位移接近 0（本来就正交）时不插拐点，退化成 2 点直线，
+        // 由后面的补点逻辑补中点。
+        List<double[]> route = new ArrayList<>();
+        route.add(new double[] {0, 0});
+        if (Math.abs(ex) > 0.5 && Math.abs(ey) > 0.5) {
+            if (Math.abs(ex) >= Math.abs(ey)) {
+                route.add(new double[] {round1(ex), 0});
+            } else {
+                route.add(new double[] {0, round1(ey)});
+            }
+        }
+        route.add(new double[] {round1(ex), round1(ey)});
+        // 统一走一遍几何后处理：合并共线冗余弯，保证全正交。
+        // 直线边化简后可能被压回 2 点，补回中点维持 ≥3 点不变式。
+        route = Polyline.orthogonalizeAndSimplify(route);
+        if (route.size() == 2) {
+            double[] a = route.get(0);
+            double[] b = route.get(1);
+            route.add(1, new double[] {
+                    round1((a[0] + b[0]) / 2),
+                    round1((a[1] + b[1]) / 2) });
+        }
         ObjectNode arrow = edge.json;
         ArrayNode points = arrow.putArray("points");
-        appendPoint(points, 0, 0);
-        appendPoint(points, mx - start[0], my - start[1]);
-        appendPoint(points, end[0] - start[0], end[1] - start[1]);
+        for (double[] point : route) {
+            appendPoint(points, point[0], point[1]);
+        }
         arrow.put("x", round1(start[0]));
         arrow.put("y", round1(start[1]));
     }

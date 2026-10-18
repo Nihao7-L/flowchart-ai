@@ -175,10 +175,18 @@ public final class SequenceLayout implements LayoutFamily {
             double y = TOP + nodeH + FIRST_GAP + j * ROW_HEIGHT;
             lastRowY = y;
             double dx = to[0] - from[0];
+            // x/y 是**箭头起点**（= from），points 是相对起点的位移，所以
+            // 第二点要写成带符号的 dx —— 与前端 sceneAdapter 的口径一致
+            // （x: abs[0].x，points: p - abs[0]），箭头朝向由 dx 的正负
+            // 表达，箭头头部画在末点上。
+            // 曾经写成 x = min(from,to)：左往右的消息恰好对得上（from 就
+            // 是最小值），从右往左的消息却把起点算到左边、相对位移又是负
+            // 的，箭头实际落在 min + dx = from - |dx|，比画布左缘还远
+            // （实测 600→2640 的回程消息落在 -1440，整图被撑出 1440px 空白）。
             ObjectNode arrow = MAPPER.createObjectNode();
             arrow.put("id", "msg_" + j);
             arrow.put("type", "arrow");
-            arrow.put("x", snap(Math.min(from[0], to[0])));
+            arrow.put("x", snap(from[0]));
             arrow.put("y", snap(y));
             arrow.put("width", snap(Math.abs(dx)));
             arrow.put("height", 0);

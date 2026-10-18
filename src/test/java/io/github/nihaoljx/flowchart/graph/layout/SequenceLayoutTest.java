@@ -158,6 +158,43 @@ class SequenceLayoutTest {
     }
 
     @Test
+    @DisplayName("回程消息（从右往左）的箭头起点是 from，不得画到画布外")
+    void reverseMessageStaysInsideCanvas() throws Exception {
+        Map<String, SpecNode> nodes = nodes(
+                "fe", "前端", "log", "日志服务");
+        List<SpecEdge> edges = List.of(
+                new SpecEdge("fe", "log", "记录日志", null),
+                new SpecEdge("log", "fe", "日志记录结果", null));
+        SequenceLayout layout = new SequenceLayout();
+        JsonNode root = M.readTree(layout.arrange(
+                placeholderScene(nodes, edges), nodes, edges));
+
+        JsonNode fwd = elementById(root, "msg_0");
+        JsonNode back = elementById(root, "msg_1");
+
+        // x/y 是箭头起点（= from），points 是相对起点的位移：
+        // 这条口径与前端 sceneAdapter 一致（x: abs[0].x,
+        // points: p - abs[0]），箭头朝向由 dx 正负表达。
+        double feCenter = elementById(root, "fe").get("x").asDouble()
+                + elementById(root, "fe").get("width").asDouble() / 2;
+        double logCenter = elementById(root, "log").get("x").asDouble()
+                + elementById(root, "log").get("width").asDouble() / 2;
+        assertEquals(feCenter, fwd.get("x").asDouble(), 1e-6,
+                "去程消息的起点应是 from 列中心");
+        assertEquals(logCenter, back.get("x").asDouble(), 1e-6,
+                "回程消息的起点应是 from（右列），不是最左端");
+
+        double backDx = back.get("points").get(1).get(0).asDouble();
+        assertTrue(backDx < 0,
+                "回程消息的相对位移应为负（箭头朝左）");
+        assertEquals(feCenter, back.get("x").asDouble() + backDx, 1e-6,
+                "回程消息的末点应落在 to 列中心");
+        // 末点为负说明箭头画到了画布左缘之外 —— 正是这条回归要防的
+        assertTrue(back.get("x").asDouble() + backDx >= 0,
+                "回程消息不得画到 x<0 的画布外");
+    }
+
+    @Test
     @DisplayName("注册表：sequence 命中、未知值降级 generic、types 含两者")
     void registryRouting() {
         LayoutFamilyRegistry registry = new LayoutFamilyRegistry(
