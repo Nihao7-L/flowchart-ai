@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import io.github.nihaoljx.flowchart.graph.validate.RelationCatalog;
+import io.github.nihaoljx.flowchart.graph.layout.GroupPath;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutEngine;
 import io.github.nihaoljx.flowchart.graph.layout.LayoutSpec;
 
@@ -150,7 +152,8 @@ public class ScenePlanner {
                 effectiveJson = objectMapper.writeValueAsString(root);
             }
             boolean dirtyChildren = hasChildren(elements);
-            Partition partition = partition(elements);
+            Partition partition = partition(elements,
+                    elementsNode instanceof ArrayNode arr ? arr : null);
 
             if (editMode || !partition.active()) {
                 String laid = engine.layout(effectiveJson, fixedIds);
@@ -321,14 +324,53 @@ public class ScenePlanner {
      * 例如 `["下单", "订单域"]` 表示"下单"隶属于"订单域"。
      */
     private Partition partition(List<JsonNode> elements) {
+        return partition(elements, null);
+    }
+
+    /**
+     * 分区，并在需要时把「删掉的元素」同步写回所属数组。
+     *
+     * `arrange()` 的 elements 是从 root 的 ArrayNode 拆出来的独立 List，
+     * 在 List 上删元素不会动到 root —— 而 matchFrames 合并同名框正是
+     * 靠删除实现的（2026-10-19：删了 List 没删 ArrayNode，多出来的框
+     * 仍旧原样写出，图上「架构」画三遍）。传 owner 进来就两边同步。
+     */
+    private Partition partition(List<JsonNode> elements, ArrayNode owner) {
         List<Node> nodes = collectNodes(elements);
 
         // ① LLM 标注：图形自带的 group 直接建模块树
+        //
+        // 建树前先剔掉「其实是某个节点自己」的层：模型常把层名同时写成
+        // 节点 label 和一层 group（2026-10-19 data-pipeline 实跑，
+        // data_collection 叫「数据采集层」、flume 又挂在额外的「数据采集层」
+        // 层里），不剔的话「大数据处理系统」「架构」会被拆成多套同名框。
+        //
+        // 判据是「那个同名节点自己就在这一层里吗」：组合态标准写法
+        // （order/处理中/支付中 各自 label 等于自己所在层的名字）必须保留，
+        // 只有同名节点在别处时那层才是多写的。
+        Map<String, List<String>> labelOwners = new LinkedHashMap<>();
+        for (Node node : nodes) {
+            String label = nodeLabel(node.json);
+            if (label != null && !label.isEmpty()) {
+                labelOwners.putIfAbsent(label, groupPath(node.json));
+            }
+        }
         Map<String, List<String>> grouped = new LinkedHashMap<>();
         for (Node node : nodes) {
-            List<String> path = groupPath(node.json);
+            List<String> raw = groupPath(node.json);
+            List<String> path = GroupPath.stripNodeLikeLayers(raw, raw, labelOwners);
             if (!path.isEmpty()) {
                 grouped.put(node.id, path);
+            }
+        }
+        // 把路径方向归一（从内到外）并写回元素本身。写回是必须的：
+        // 下游 addGroupFrames / 回灌提示词都读 group 字段，不写回会得到
+        // 「树按归一后排、框按原始画」的两套层级（框照样重复、还互相错位）。
+        normalizeGroupOrientation(grouped);
+        for (Node node : nodes) {
+            List<String> path = grouped.get(node.id);
+            if (path != null) {
+                GroupPath.write((ObjectNode) node.json, path);
             }
         }
         Block root = buildTree(nodes, grouped);
@@ -339,7 +381,7 @@ public class ScenePlanner {
         // 需求，它不标组说明需求里没有分区语义；后端按前缀猜错的
         // 模块比不分区更难看（mermaid 的 subgraph 同哲学：只认显式声明）。
 
-        matchFrames(root, elements);
+        matchFrames(root, elements, owner);
         // 2026-10-16 数量阈值正式废弃：分区是语义决策，不是数量决策。
         // 只要 LLM 显式标注了 group（哪怕只有一组），就按它分区 ——
         // 单组同样值得走分区路径（模块内自排、与其他图形分开打包），
@@ -374,6 +416,9 @@ public class ScenePlanner {
     /**
      * 按「图形 id → 从内到外的模块名」建模块树；没有分组的图形留在根块
      * （根块自己的图形会被当成一个整块参与打包，不会丢）。
+     *
+     * <p>入参路径必须已经是**从内到外**（{@link #normalizeGroupOrientation}
+     * 保证），这里只做机械建树。
      */
     private Block buildTree(
             List<Node> nodes, Map<String, List<String>> grouped) {
@@ -399,6 +444,79 @@ public class ScenePlanner {
         return root;
     }
 
+    /**
+     * 把「图形 id → 分组名列表」统一排成**从内到外**，原地改写。
+     *
+     * <p>模型写数组的顺序不可靠：同一份 dataflow，一次给
+     * `["架构","大数据处理系统","数据采集层"]`，另一次给
+     * `["大数据处理系统","数据采集层"]` —— 同一个「大数据处理系统」前后挪了一位。
+     * 按契约（从内到外）硬解释的后果是整张图被拆成六套同名框
+     * （2026-10-19 suite15 实测：14 个节点分入 12 个模块、6 个同名根框）。
+     *
+     * <p>可靠的是**跨路径重复出现的公共层**：`大数据处理系统` 在 6 条路径里
+     * 都出现，每条末位的 `数据采集层`/`数据存储层`/… 只出现一次 ——
+     * 公共的那个必然在所有分支之上，是外层。判据依次是：
+     * 出现次数多者在外 → 成员集合真包含者在外 → 多数投票位置深者在内。
+     */
+    private static void normalizeGroupOrientation(
+            Map<String, List<String>> grouped) {
+        List<List<String>> paths = new ArrayList<>(grouped.values());
+        if (paths.isEmpty()) {
+            return;
+        }
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        Map<String, Integer> votes = new LinkedHashMap<>();
+        Map<String, Set<String>> members = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : grouped.entrySet()) {
+            List<String> path = entry.getValue();
+            for (int i = 0; i < path.size(); i++) {
+                String name = path.get(i);
+                counts.merge(name, 1, Integer::sum);
+                // 路径是从内到外排 ⇒ 越靠前越深，给大值
+                votes.merge(name, path.size() - i, Integer::sum);
+                members.computeIfAbsent(name, k -> new LinkedHashSet<>())
+                        .add(entry.getKey());
+            }
+        }
+        List<String> names = new ArrayList<>(counts.keySet());
+        names.sort((a, b) -> {
+            int byCount = Integer.compare(counts.get(b), counts.get(a));
+            if (byCount != 0) {
+                return byCount;
+            }
+            Set<String> sa = members.getOrDefault(a, Set.of());
+            Set<String> sb = members.getOrDefault(b, Set.of());
+            if (sb.containsAll(sa) && !sa.containsAll(sb)) {
+                return 1;
+            }
+            if (sa.containsAll(sb) && !sb.containsAll(sa)) {
+                return -1;
+            }
+            return Integer.compare(
+                    votes.getOrDefault(b, 0), votes.getOrDefault(a, 0));
+        });
+        // rank 越小 = 越靠数组前面 = 越内层（契约要求从内到外）。
+        // 所以出现次数多的公共层要拿到**更大**的 rank，排序后才落到尾部。
+        Map<String, Integer> rank = new LinkedHashMap<>();
+        for (int i = 0; i < names.size(); i++) {
+            rank.put(names.get(i), names.size() - 1 - i);
+        }
+        for (Map.Entry<String, List<String>> entry : grouped.entrySet()) {
+            List<String> path = entry.getValue();
+            if (path.size() < 2) {
+                continue;
+            }
+            // GroupPath.parse 返回 List.copyOf 的**不可变**列表，
+            // 直接 path.sort 会抛 UnsupportedOperationException，被
+            // arrange 的 catch 吞成「排版跳过，退回单层布局」——
+            // 整条分区路径失效，框退回按原始 group 合成（同名框 x6）。
+            // 所以必须拷贝一份再排。
+            List<String> sorted = new ArrayList<>(path);
+            sorted.sort((a, b) -> Integer.compare(
+                    rank.getOrDefault(a, 0), rank.getOrDefault(b, 0)));
+            grouped.put(entry.getKey(), sorted);
+        }
+    }
     private int countModules(Block root) {
         List<Block> all = new ArrayList<>();
         flatten(root, all);
@@ -431,6 +549,27 @@ public class ScenePlanner {
         return path;
     }
 
+    /**
+     * 读图形上的文字，兼容字符串与 `{"text":"..."}` 两种写法
+     * （LLM 实跑两种都出现过，2026-10-19 dataflow 全是对象形态）。
+     */
+    private static String nodeLabel(JsonNode element) {
+        JsonNode label = element.get("label");
+        if (label == null) {
+            return null;
+        }
+        if (label.isTextual()) {
+            return label.asText().trim();
+        }
+        if (label.isObject()) {
+            JsonNode text = label.get("text");
+            if (text != null && text.isTextual()) {
+                return text.asText().trim();
+            }
+        }
+        return null;
+    }
+
     private void addName(List<String> path, String raw) {
         String name = raw == null ? "" : raw.trim();
         if (name.isEmpty()) {
@@ -445,14 +584,25 @@ public class ScenePlanner {
     }
 
     /**
+    /**
      * 把 LLM 画的 `frame` 认领给同名模块。
      *
- * 先精确匹配，再"包含"匹配（LLM 常把 name 写成「订单域模块」这类）。
+     * 先精确匹配，再"包含"匹配（LLM 常把 name 写成「订单域模块」这类）。
      * 匹配不上的一律原样不动 —— 不去猜它的成员：布局会把它原本覆盖的
      * 节点打散到不同模块，按"几何兜底"重算只会得到一个横跨全图的大框，
      * 比不处理更难看。
+     *
+     * 同名多框合并（2026-10-19 data-pipeline 实测）：模型会把同一个概念
+     * 拆成好几个 frame —— 输入里「架构」出现 3 次、「大数据处理系统」也
+     * 出现 3 次，每个只收自己那批成员。旧实现「块已被认领就跳过」让后
+     * 两个框无处可去、原样留在图上，于是同名框各画三遍、互相错位、线条
+     * 横穿整张画布。现在：模块只认第一个同名框（几何由 writeFrames 写成
+     * 贴合成员），其余同名框直接删 —— 它们装的是同一概念下的不同成员，
+     * 合并后成员都归那一个框，删除不丢信息。
      */
-    private void matchFrames(Block root, List<JsonNode> elements) {
+    private void matchFrames(Block root, List<JsonNode> elements, ArrayNode owner) {
+        Set<String> claimed = new LinkedHashSet<>();
+        List<JsonNode> redundant = new ArrayList<>();
         for (JsonNode element : elements) {
             if (!element.isObject()
                     || !"frame".equals(text(element, "type"))) {
@@ -462,11 +612,33 @@ public class ScenePlanner {
             if (name == null || name.trim().isEmpty()) {
                 continue;
             }
-            Block block = findBlock(root, name.trim());
-            if (block == null || block.frame != null) {
+            String key = name.trim();
+            Block block = findBlock(root, key);
+            if (block != null && block.frame == null) {
+                block.frame = (ObjectNode) element;
+                claimed.add(key);
                 continue;
             }
-            block.frame = (ObjectNode) element;
+            // 同名框又来一个：这个块已被认领（装着同一概念的另一批成员），
+            // 或压根没有对应模块 —— 都是多余的框
+            if (claimed.contains(key) || block != null) {
+                redundant.add(element);
+            }
+        }
+        if (redundant.isEmpty()) {
+            return;
+        }
+        elements.removeAll(redundant);
+        if (owner != null) {
+            // 同步删掉 root 数组里的副本：上面删的只是拆出来的 List
+            for (int i = owner.size() - 1; i >= 0; i--) {
+                for (JsonNode gone : redundant) {
+                    if (owner.get(i) == gone) {
+                        owner.remove(i);
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -913,6 +1085,13 @@ public class ScenePlanner {
      * {@link ProximityOrderTest}）。
      */
     static boolean proximityEnabled = true;
+
+    /**
+     * 主轴续接虚拟边的总开关（默认开）。回归测试把它关掉，用同一份输入
+     * 跑两遍做 A/B，确认「跨子块中转的本块内连接」被折叠成一条直连后
+     * 主轴不再断成两截。
+     */
+    static boolean spineEnabled = true;
 
     /**
      * 块中心到块中心（含画框内边距）的曼哈顿距离，单位与 {@link Block#outerW()}
@@ -1746,7 +1925,8 @@ public class ScenePlanner {
         List<Block> items = new ArrayList<>();
         if (!block.shapes.isEmpty()) {
             Block own = layoutOwnShapes(
-                    block.shapes, engine, partition, horizontal);
+                    block.shapes, engine, partition, horizontal,
+                    block.children);
             block.own = own;
             items.add(own);
         }
@@ -1793,9 +1973,120 @@ public class ScenePlanner {
      * <p>返回的占位块只带尺寸（`shapes` 为空）：真正的图形仍归
      * 外层块持有，避免同一次平移被算两遍。
      */
+    /**
+     * 主轴续接用的虚拟箭头：把「经过子块中转的本块内连接」折叠成一条直连。
+     *
+     * <p>只用于喂布局引擎排层，**不进 arrowOriginals、不会被写回原件**，
+     * 所以图上不会多出一条线。判据：
+     * <ol>
+     *   <li>箭头 {@code u → v}，{@code u} 在本块 own、{@code v} 属于某个子块；</li>
+     *   <li>存在箭头 {@code v' → w}，{@code v'} 属于**同一个子块**、
+     *       {@code w} 在本块 own；</li>
+     *   <li>{@code u != w}，且这条 {@code u → w} 本块内还没有直连箭头。</li>
+     * </ol>
+     * 命中即补一条 {@code u → w}。flow 图实测（2026-10-19）：本块
+     * own 是 `用户下单→库存检查→支付处理` 与 `订单确认→物流处理` 两条
+     * 断链 + 孤立节点 `订单完成`，而 `支付处理 →(支付宝/微信/银行卡)→
+     * 订单确认` 的中转全在子块里 —— 补上虚拟边后主轴连成一条竖线。
+     */
+    private List<JsonNode> virtualSpineArrows(
+            List<Node> shapes, Set<String> ownIds, Partition partition,
+            List<Block> childBlocks) {
+        List<JsonNode> out = new ArrayList<>();
+        // 中转容器 = 本块自己的子块 + **不属于本块的其他块**（兄弟块）。
+        //
+        // 判据早期只看 childBlocks，实测无效：flow 图的块树是
+        //   根(shapes=[]) → [主流程(6 个主轴节点), 支付处理, 物流处理]
+        // 主轴节点全部落在「主流程」块里，而「主流程」自己没有子块，
+        // childBlocks 为空 ⇒ 虚拟边一次都没生成（A/B 探针两版坐标逐字节
+        // 相同）。真正被隔开的是**兄弟块**：`支付处理 →(支付宝/微信/银行卡)
+        // → 订单确认` 的中转在「支付处理」块里，主流程块内因此只剩
+        // `用户下单→库存检查→支付处理` 与 `订单确认→物流处理` 两条断链。
+        //
+        // 所以按「group 归属」算中转容器，不依赖块树形状：一个不在本块的
+        // 节点，它的归属容器就是 group 路径（GroupPath.key），主轴节点自己
+        // 没有 group（ownIds 覆盖）不会误判。
+        Map<String, Set<String>> members = new LinkedHashMap<>();
+        if (childBlocks != null) {
+            for (Block child : childBlocks) {
+                Map<String, Block> owner = new LinkedHashMap<>();
+                collectMemberIds(child, owner);
+                members.put(child.name == null ? "" : child.name,
+                        new LinkedHashSet<>(owner.keySet()));
+            }
+        }
+        for (Node node : partition.nodes) {
+            if (ownIds.contains(node.id)) {
+                continue;
+            }
+            String key = GroupPath.key(GroupPath.parse(node.json));
+            if (key.isEmpty()) {
+                continue;
+            }
+            members.computeIfAbsent(key, k -> new LinkedHashSet<>())
+                    .add(node.id);
+        }
+        if (members.isEmpty()) {
+            return out;
+        }
+        // 本块内已有的直连（避免重复补边、也避免盖掉真实拓扑）
+        Set<String> direct = new LinkedHashSet<>();
+        // 子块内「谁从本块进来」「谁往本块出去」
+        Map<String, Set<String>> enters = new LinkedHashMap<>();
+        Map<String, Set<String>> exits = new LinkedHashMap<>();
+        for (JsonNode element : partition.rawElements) {
+            if (!"arrow".equals(text(element, "type"))) {
+                continue;
+            }
+            String from = bindingId(element, "start");
+            String to = bindingId(element, "end");
+            if (from == null || to == null) {
+                continue;
+            }
+            boolean fromOwn = ownIds.contains(from);
+            boolean toOwn = ownIds.contains(to);
+            if (fromOwn && toOwn) {
+                direct.add(from + "\u0000" + to);
+                continue;
+            }
+            for (Map.Entry<String, Set<String>> e : members.entrySet()) {
+                Set<String> mem = e.getValue();
+                if (!fromOwn && toOwn && mem.contains(from)) {
+                    exits.computeIfAbsent(e.getKey(), k -> new LinkedHashSet<>())
+                            .add(to);
+                }
+                if (fromOwn && !toOwn && mem.contains(to)) {
+                    enters.computeIfAbsent(e.getKey(), k -> new LinkedHashSet<>())
+                            .add(from);
+                }
+            }
+        }
+        for (Map.Entry<String, Set<String>> e : enters.entrySet()) {
+            Set<String> outs = exits.get(e.getKey());
+            if (outs == null || outs.isEmpty()) {
+                continue;
+            }
+            for (String u : e.getValue()) {
+                for (String w : outs) {
+                    if (u.equals(w) || direct.contains(u + "\u0000" + w)) {
+                        continue;
+                    }
+                    direct.add(u + "\u0000" + w);
+                    ObjectNode virt = objectMapper.createObjectNode();
+                    virt.put("id", "__spine_" + u + "_" + w);
+                    virt.put("type", "arrow");
+                    virt.putObject("start").put("id", u);
+                    virt.putObject("end").put("id", w);
+                    out.add(virt);
+                }
+            }
+        }
+        return out;
+    }
+
     private Block layoutOwnShapes(
             List<Node> shapes, LayoutEngine engine, Partition partition,
-            boolean horizontal) {
+            boolean horizontal, List<Block> childBlocks) {
         Set<String> ids = new LinkedHashSet<>();
         for (Node node : shapes) {
             ids.add(node.id);
@@ -1824,6 +2115,16 @@ public class ScenePlanner {
             }
         }
         ObjectNode scene = objectMapper.createObjectNode();
+        // 主轴续接虚拟边：只喂「两端都在本块」的箭头会让主轴断成几段。
+        // 典型形态是 `A → 子块成员… → B`（A、B 在本块，中转成员在子块）：
+        // 此时引擎只看到 `…→A` 和 `B→…` 两条互不相连的链，外加孤立节点，
+        // 于是把它们并排摆成两列，端上看到「主轴断成两截」。
+        // 补一条 A→B 的**虚拟箭头**让引擎按一条链排层，排完即丢弃
+        // （不进 arrowOriginals、不写回原件）。
+        List<JsonNode> spine = spineEnabled
+                ? virtualSpineArrows(shapes, ids, partition, childBlocks)
+                : List.of();
+        sub.addAll(spine);
         scene.set("elements", sub);
         // 模块内用 layoutModule：禁掉"按视口翻转主方向"的启发式，
         // 否则竖链模块（长宽比 0.28）每张图都会被压成横排长条

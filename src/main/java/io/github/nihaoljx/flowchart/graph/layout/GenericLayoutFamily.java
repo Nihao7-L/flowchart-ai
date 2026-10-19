@@ -123,6 +123,16 @@ public final class GenericLayoutFamily implements LayoutFamily {
             // 已被 LLM 显式画框占用的容器名（matchFrames 按 name 认领时
             // 用的是去掉空白后的原名，这里同口径）→ 画框者 id。
             Map<String, String> drawnFrames = new LinkedHashMap<>();
+            // 第一遍只收 label → 该节点自己的 group 路径：`stripNodeLikeLayers`
+            // 要判断「这一层是不是某个节点自己」，必须等全集齐了才能做，
+            // 所以路径归一挪到第二遍。
+            Map<String, List<String>> labelOwners = new LinkedHashMap<>();
+            for (JsonNode el : elementsNode) {
+                String label = labelText(el);
+                if (label != null && !label.trim().isEmpty()) {
+                    labelOwners.putIfAbsent(label.trim(), GroupPath.parse(el));
+                }
+            }
             for (JsonNode el : elementsNode) {
                 String id = el.path("id").asText(null);
                 if (id != null) {
@@ -134,7 +144,11 @@ public final class GenericLayoutFamily implements LayoutFamily {
                         drawnFrames.putIfAbsent(frameName.trim(), id);
                     }
                 }
-                List<String> path = GroupPath.parse(el);
+                List<String> rawPath = GroupPath.parse(el);
+                List<String> path = GroupPath.stripNodeLikeLayers(
+                        rawPath, rawPath, labelOwners);
+                if (!rawPath.equals(path)) {
+                }
                 if (path.isEmpty()) {
                     continue;
                 }
@@ -400,6 +414,26 @@ public final class GenericLayoutFamily implements LayoutFamily {
             return null;
         }
         return value.asText();
+    }
+
+    /**
+     * 读图形上的文字，兼容两种写法：字符串，或 `{"text":"..."}` 对象
+     * （Excalidraw 风格带样式文本，LLM 实跑里两种都出现过 ——
+     * 2026-10-19 dataflow 全是对象形态，只认字符串会让 label 读成 null，
+     * 依赖 label 的判据静默失效）。
+     */
+    private static String labelText(JsonNode el) {
+        JsonNode value = el.get("label");
+        if (value == null) {
+            return null;
+        }
+        if (value.isTextual()) {
+            return value.asText();
+        }
+        if (value.isObject()) {
+            return text(value, "text");
+        }
+        return null;
     }
 
     private static double snap(double value) {
