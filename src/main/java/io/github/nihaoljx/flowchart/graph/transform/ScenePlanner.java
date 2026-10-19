@@ -355,10 +355,23 @@ public class ScenePlanner {
                 labelOwners.putIfAbsent(label, groupPath(node.json));
             }
         }
+        // 层名若是某个图形的 id（模型图省事把 group 写成英文 id：2026-10-19
+        // state-machine 实跑外层 group 写 `processing`，而那个节点的
+        // label 是「处理中」），替换成它的 label —— 框上写英文 id 用户看不懂。
+        // 只在该 id 存在且 label 非空、且两者不同时替换；同名节点自己
+        // （label == id）不替换。
+        Map<String, String> idLabels = new LinkedHashMap<>();
+        for (Node node : nodes) {
+            String label = nodeLabel(node.json);
+            if (label != null && !label.isEmpty() && !label.equals(node.id)) {
+                idLabels.putIfAbsent(node.id, label);
+            }
+        }
         Map<String, List<String>> grouped = new LinkedHashMap<>();
         for (Node node : nodes) {
             List<String> raw = groupPath(node.json);
             List<String> path = GroupPath.stripNodeLikeLayers(raw, raw, labelOwners);
+            path = translateLayers(path, idLabels);
             if (!path.isEmpty()) {
                 grouped.put(node.id, path);
             }
@@ -381,7 +394,7 @@ public class ScenePlanner {
         // 需求，它不标组说明需求里没有分区语义；后端按前缀猜错的
         // 模块比不分区更难看（mermaid 的 subgraph 同哲学：只认显式声明）。
 
-        matchFrames(root, elements, owner);
+        matchFrames(root, elements, owner, idLabels);
         // 2026-10-16 数量阈值正式废弃：分区是语义决策，不是数量决策。
         // 只要 LLM 显式标注了 group（哪怕只有一组），就按它分区 ——
         // 单组同样值得走分区路径（模块内自排、与其他图形分开打包），
@@ -458,6 +471,26 @@ public class ScenePlanner {
      * 公共的那个必然在所有分支之上，是外层。判据依次是：
      * 出现次数多者在外 → 成员集合真包含者在外 → 多数投票位置深者在内。
      */
+    /**
+     * 把分组层名里的「图形 id」换成该图形的 label，其余原样保留。
+     *
+     * <p>模型会图省事把 group 写成英文 id（2026-10-19 state-machine
+     * 实跑：外层 group 是 `processing`，对应节点的 label 是「处理中」，
+     * 端上框标题就印成英文 processing）。只替换确实存在同名图形、
+     * 且该图形 label 与 id 不同的层。
+     */
+    private static List<String> translateLayers(
+            List<String> path, Map<String, String> idLabels) {
+        if (path.isEmpty() || idLabels.isEmpty()) {
+            return path;
+        }
+        List<String> out = new ArrayList<>(path.size());
+        for (String name : path) {
+            out.add(idLabels.getOrDefault(name, name));
+        }
+        return out;
+    }
+
     private static void normalizeGroupOrientation(
             Map<String, List<String>> grouped) {
         List<List<String>> paths = new ArrayList<>(grouped.values());
@@ -600,7 +633,8 @@ public class ScenePlanner {
      * 贴合成员），其余同名框直接删 —— 它们装的是同一概念下的不同成员，
      * 合并后成员都归那一个框，删除不丢信息。
      */
-    private void matchFrames(Block root, List<JsonNode> elements, ArrayNode owner) {
+    private void matchFrames(Block root, List<JsonNode> elements, ArrayNode owner,
+            Map<String, String> idLabels) {
         Set<String> claimed = new LinkedHashSet<>();
         List<JsonNode> redundant = new ArrayList<>();
         for (JsonNode element : elements) {
@@ -613,9 +647,25 @@ public class ScenePlanner {
                 continue;
             }
             String key = name.trim();
+            // 框名若是某个图形的 id（模型画 frame 时也图省事写英文 id：
+            // 2026-10-19 state-machine 实跑 frame name=`processing`，
+            // 对应节点 label 是「处理中」），换成它的 label —— 框标题
+            // 印英文 id 用户看不懂。块名来自 group（已被 translateLayers
+            // 换过），所以这里只改框元素自己的 name、不动匹配键。
+            String display = idLabels.getOrDefault(key, key);
             Block block = findBlock(root, key);
+            if (block == null && !display.equals(key)) {
+                // 块名来自 group 路径（已被 translateLayers 换成中文），
+                // 框名还是英文 id，只按原名找会对不上 —— 框就成了没人
+                // 认领的孤儿框，名字也改不掉（2026-10-19 statemachine
+                // 实证：group 写 processing、框写 processing、块叫「处理中」）。
+                block = findBlock(root, display);
+            }
             if (block != null && block.frame == null) {
                 block.frame = (ObjectNode) element;
+                if (!display.equals(key)) {
+                    block.frame.put("name", display);
+                }
                 claimed.add(key);
                 continue;
             }
